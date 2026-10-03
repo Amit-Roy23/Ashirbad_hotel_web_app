@@ -22,6 +22,7 @@ export interface Bill {
   days: number
   actualRoomTotal: number
   billedRoomTotal: number
+  roomNumber?: string | null
   roomDescription?: string | null
   gstPercent: number
   actualGst: number
@@ -77,6 +78,7 @@ export function EditBillDialog({
   onSuccess,
 }: EditBillDialogProps) {
   const [billedRoomTotal, setBilledRoomTotal] = useState('')
+  const [roomNumber, setRoomNumber] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
   const [gstPercent, setGstPercent] = useState('12')
   const [extraCharges, setExtraCharges] = useState('0')
@@ -96,6 +98,7 @@ export function EditBillDialog({
   useEffect(() => {
     if (open && bill) {
       setBilledRoomTotal(String(bill.billedRoomTotal))
+      setRoomNumber(bill.roomNumber || bill.booking?.room?.number || '')
       setRoomDescription(bill.roomDescription || bill.booking?.room?.type || '')
       setGstPercent(String(bill.gstPercent))
       setExtraCharges(String(bill.extraCharges || 0))
@@ -161,10 +164,12 @@ export function EditBillDialog({
   const isCustom = useMemo(() => {
     if (!bill || !calc) return false
     const realType = bill.booking?.room?.type || ''
+    const realNumber = bill.booking?.room?.number || ''
     const amountDiff = Math.abs(calc.customerAmount - bill.actualRoomTotal) > 0.01
     const descDiff = roomDescription.trim() !== '' && roomDescription.trim() !== realType
-    return amountDiff || descDiff
-  }, [bill, calc, roomDescription])
+    const roomNoDiff = roomNumber.trim() !== '' && roomNumber.trim() !== realNumber
+    return amountDiff || descDiff || roomNoDiff
+  }, [bill, calc, roomDescription, roomNumber])
 
   const requiresPin = isFinalized || isCustom
 
@@ -218,6 +223,7 @@ export function EditBillDialog({
         body: JSON.stringify({
           id: bill.id,
           billedRoomTotal: parsedCustomerAmount,
+          roomNumber: roomNumber.trim() || undefined,
           roomDescription: roomDescription.trim() || undefined,
           gstPercent: parsedGst,
           extraCharges: num(extraCharges),
@@ -248,7 +254,7 @@ export function EditBillDialog({
             <Edit3 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" /> Edit Bill — {bill?.billNumber}
           </DialogTitle>
           <DialogDescription>
-            Room {bill?.booking?.room?.number} • {bill?.booking?.guest?.name} • Created {bill ? formatDateTime(bill.createdAt) : ''}
+            Room {bill?.roomNumber || bill?.booking?.room?.number} • {bill?.booking?.guest?.name} • Created {bill ? formatDateTime(bill.createdAt) : ''}
           </DialogDescription>
         </DialogHeader>
 
@@ -262,8 +268,8 @@ export function EditBillDialog({
                 </div>
                 <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
                   {isFinalized
-                    ? 'This bill is finalized. To perform administrative corrections to customer amount, GST, or room, enter Manager or Admin PIN.'
-                    : 'Custom billing amount or modified room description requires Manager or Admin PIN approval.'}
+                    ? 'This bill is finalized. To perform administrative corrections to customer amount, GST, room number, or description, enter Manager or Admin PIN.'
+                    : 'Custom billing amount, room number, or modified room description requires Manager or Admin PIN approval.'}
                 </p>
                 <div className="mt-2.5 space-y-1">
                   <Label className="text-[11px] font-semibold">Manager / Admin PIN *</Label>
@@ -299,17 +305,27 @@ export function EditBillDialog({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold">Room description (shown on invoice)</Label>
-              <Input
-                value={roomDescription}
-                onChange={(e) => setRoomDescription(e.target.value)}
-                placeholder={bill.booking?.room?.type || 'e.g. Deluxe AC Room'}
-              />
-              <p className="text-[11px] text-muted-foreground">
-                Internal revenue: {formatINR(calc.internalTotal)} (actual tariff + GST)
-              </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Room No. (shown on invoice)</Label>
+                <Input
+                  value={roomNumber}
+                  onChange={(e) => setRoomNumber(e.target.value)}
+                  placeholder={bill.booking?.room?.number || 'e.g. 101'}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Room description (shown on invoice)</Label>
+                <Input
+                  value={roomDescription}
+                  onChange={(e) => setRoomDescription(e.target.value)}
+                  placeholder={bill.booking?.room?.type || 'e.g. Deluxe AC Room'}
+                />
+              </div>
             </div>
+            <p className="text-[11px] text-muted-foreground -mt-2">
+              Internal revenue: {formatINR(calc.internalTotal)} (actual tariff + GST)
+            </p>
 
             {calc.customerAmount !== calc.actualRoomTotal && (
               <div className="flex items-start gap-2 rounded-lg bg-violet-50 p-2.5 text-xs text-violet-800 dark:bg-violet-950 dark:text-violet-200">

@@ -83,6 +83,7 @@ model Bill {
   days            Int      @default(1)
   actualRoomTotal Float    // internal: actual rate x days
   billedRoomTotal Float    // printed on bill (can be custom corporate rate)
+  roomNumber      String?  // text printed on the invoice as room number (defaults to booking.room.number if null)
   roomDescription String?  // text printed on the invoice as room description (defaults to room.type if null)
   gstPercent      Float    @default(0)
   actualGst       Float    // GST printed on the customer invoice (calculated on customer-facing billed amount)

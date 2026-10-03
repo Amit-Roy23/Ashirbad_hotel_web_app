@@ -10,6 +10,7 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
 
   const guest = bill.booking?.guest
   const room = bill.booking?.room
+  const roomNo = bill.roomNumber || room?.number || 'N/A'
   const roomDesc = bill.roomDescription || room?.type || ''
   const corporateName = bill.corporateName || guest?.company
   const gstNumber = bill.gstNumber || guest?.gst
@@ -140,7 +141,7 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
       <div class="meta-col">
         <div class="meta-row">Invoice No: <span class="val">${escapeHtml(bill.billNumber)}</span></div>
         <div class="meta-row">Date: <span class="val">${formatDateTime(bill.createdAt)}</span></div>
-        <div class="meta-row">Room: <span class="val">${escapeHtml(room?.number || 'N/A')} ${roomDesc ? `(${escapeHtml(roomDesc)})` : ''}</span></div>
+        <div class="meta-row">Room: <span class="val">${escapeHtml(roomNo)} ${roomDesc ? `(${escapeHtml(roomDesc)})` : ''}</span></div>
         <div class="meta-row">Stay: <span class="val">${bill.days} night(s) • ${formatDate(bill.booking?.checkIn)} → ${formatDate(bill.booking?.actualCheckOut || bill.booking?.checkOut)}</span></div>
       </div>
       <div class="meta-col text-right">

@@ -49,6 +49,7 @@ export interface Bill {
   days: number
   actualRoomTotal: number
   billedRoomTotal: number
+  roomNumber?: string | null
   roomDescription?: string | null
   gstPercent: number
   actualGst: number
@@ -90,6 +91,7 @@ export function GenerateBillDialog({
   const [days, setDays] = useState('1')
   const [customMode, setCustomMode] = useState(false)
   const [customTotal, setCustomTotal] = useState('')
+  const [roomNumber, setRoomNumber] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
   const [gstPercent, setGstPercent] = useState(defaultGstPercent)
   const [extraCharges, setExtraCharges] = useState('0')
@@ -109,6 +111,7 @@ export function GenerateBillDialog({
       setDays(String(booking.days || 1))
       setCustomMode(false)
       setCustomTotal('')
+      setRoomNumber(booking.room?.number || '')
       setRoomDescription(booking.room?.type || 'Non-AC')
       setGstPercent(defaultGstPercent)
       setExtraCharges('0')
@@ -188,11 +191,13 @@ export function GenerateBillDialog({
       setError('Billable Days must be at least 1')
       return
     }
+    const realRoomNo = booking.room?.number || ''
     const realType = booking.room?.type || 'Non-AC'
     const descChanged = roomDescription.trim() !== '' && roomDescription.trim() !== realType
+    const roomNoChanged = roomNumber.trim() !== '' && roomNumber.trim() !== realRoomNo
     if (customMode) {
-      if (num(customTotal) <= 0 && !descChanged) {
-        setError('Billed Amount (Custom) or a custom Room Description is required for custom billing')
+      if (num(customTotal) <= 0 && !descChanged && !roomNoChanged) {
+        setError('Billed Amount (Custom), a custom Room No., or a custom Room Description is required for custom billing')
         return
       }
       if (!managerPin || managerPin.trim().length < 3) {
@@ -218,6 +223,7 @@ export function GenerateBillDialog({
           bookingId: booking.id,
           days: num(days),
           billedRoomTotal: customMode && num(customTotal) > 0 ? num(customTotal) : undefined,
+          roomNumber: customMode && roomNumber.trim() ? roomNumber.trim() : undefined,
           roomDescription: customMode && roomDescription.trim() ? roomDescription.trim() : undefined,
           gstPercent: num(gstPercent),
           extraCharges: num(extraCharges),
@@ -256,7 +262,7 @@ export function GenerateBillDialog({
             <div className="flex items-center justify-between rounded-lg border p-3">
               <div>
                 <p className="text-sm font-medium">Corporate Custom Billing</p>
-                <p className="text-xs text-muted-foreground">Bill a custom tariff or room description (actual rate credited internally)</p>
+                <p className="text-xs text-muted-foreground">Bill a custom tariff, room number, or description (actual rate credited internally)</p>
               </div>
               <Switch checked={customMode} onCheckedChange={setCustomMode} />
             </div>
@@ -286,20 +292,33 @@ export function GenerateBillDialog({
 
             {customMode && (
               <div className="space-y-3 rounded-lg border border-violet-300 bg-violet-50/50 p-3 dark:border-violet-800 dark:bg-violet-950/30">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-violet-800 dark:text-violet-200">
-                    Room description (shown on invoice)
-                  </Label>
-                  <Input
-                    value={roomDescription}
-                    onChange={(e) => setRoomDescription(e.target.value)}
-                    placeholder={booking.room?.type || 'e.g. Deluxe AC Room'}
-                    className="bg-white dark:bg-slate-900"
-                  />
-                  <p className="text-[11px] text-muted-foreground">
-                    Internal revenue: <b>{formatINR(calc.internalTotal)}</b> (actual tariff + GST)
-                  </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-violet-800 dark:text-violet-200">
+                      Room No. (shown on invoice)
+                    </Label>
+                    <Input
+                      value={roomNumber}
+                      onChange={(e) => setRoomNumber(e.target.value)}
+                      placeholder={booking.room?.number || 'e.g. 101'}
+                      className="bg-white dark:bg-slate-900"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-violet-800 dark:text-violet-200">
+                      Room description (shown on invoice)
+                    </Label>
+                    <Input
+                      value={roomDescription}
+                      onChange={(e) => setRoomDescription(e.target.value)}
+                      placeholder={booking.room?.type || 'e.g. Deluxe AC Room'}
+                      className="bg-white dark:bg-slate-900"
+                    />
+                  </div>
                 </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Internal revenue: <b>{formatINR(calc.internalTotal)}</b> (actual tariff + GST)
+                </p>
 
                 <div className="space-y-1.5 pt-1">
                   <div className="flex items-center gap-2">

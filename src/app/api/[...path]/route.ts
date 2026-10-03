@@ -639,7 +639,7 @@ async function listBills(req: NextRequest) {
 
 async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const {
-    bookingId, days, billedRoomTotal, roomDescription, gstPercent, extraCharges, discount,
+    bookingId, days, billedRoomTotal, roomDescription, roomNumber, gstPercent, extraCharges, discount,
     payCash, payUpi, payCard, includeFood, corporateName, gstNumber, notes, checkout,
     managerPin,
   } = body
@@ -658,11 +658,13 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
 
   const realRoomType = booking.room.type || 'Non-AC'
   const cleanRoomDesc = roomDescription !== undefined && roomDescription !== null ? String(roomDescription).trim() : null
+  const cleanRoomNumber = roomNumber !== undefined && roomNumber !== null && String(roomNumber).trim() !== '' ? String(roomNumber).trim() : null
 
   // Permission control for custom corporate billing
   const isCustomRoomAmount = Math.abs(billedRoom - actualRoomTotal) > 0.01 || (billedRoomTotal !== undefined && parseFloat(String(billedRoomTotal)) > 0 && Math.abs(parseFloat(String(billedRoomTotal)) - actualRoomTotal) > 0.01)
   const isCustomDescription = cleanRoomDesc !== null && cleanRoomDesc !== '' && cleanRoomDesc !== realRoomType
-  const isCustom = isCustomRoomAmount || isCustomDescription
+  const isCustomRoomNumber = cleanRoomNumber !== null && cleanRoomNumber !== booking.room.number
+  const isCustom = isCustomRoomAmount || isCustomDescription || isCustomRoomNumber
 
   if (isCustom) {
     if (!managerPin) {
@@ -753,6 +755,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         days: billDays,
         actualRoomTotal,
         billedRoomTotal: billedRoom,
+        roomNumber: cleanRoomNumber || null,
         roomDescription: cleanRoomDesc || null,
         gstPercent: gstPct,
         actualGst: billedGst,
@@ -781,7 +784,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         action: body.status === 'DRAFT' ? 'BILL_DRAFT_CREATED' : 'BILL_FINALIZED',
         entity: 'Bill',
         entityId: createdBill.id,
-        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Amount: ₹${actualRoomTotal}, Billed Amount: ₹${billedRoom}, GST: ${gstPct}% (₹${billedGst}), Grand Total: ₹${grandTotal}, Room: ${booking.room.number}`,
+        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Amount: ₹${actualRoomTotal}, Billed Amount: ₹${billedRoom}, GST: ${gstPct}% (₹${billedGst}), Grand Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
         userName: user.name || 'Staff',
         userRole: user.role || 'RECEPTION',
       },
@@ -866,7 +869,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       'CUSTOM_BILL',
       'Bill',
       bill.id,
-      `Invoice ${billNumber}: customer billed ₹${billedRoom} vs actual tariff ₹${actualRoomTotal} (Room ${booking.room.number} [${realRoomType}${cleanRoomDesc && cleanRoomDesc !== realRoomType ? ` -> "${cleanRoomDesc}"` : ''}], ${booking.guest.name}). Internal ledger kept actual tariff.`,
+      `Invoice ${billNumber}: customer billed ₹${billedRoom} vs actual tariff ₹${actualRoomTotal} (Room ${cleanRoomNumber || booking.room.number}${cleanRoomNumber && cleanRoomNumber !== booking.room.number ? ` [real: ${booking.room.number}]` : ''} [${realRoomType}${cleanRoomDesc && cleanRoomDesc !== realRoomType ? ` -> "${cleanRoomDesc}"` : ''}], ${booking.guest.name}). Internal ledger kept actual tariff.`,
       user
     )
   } else {
@@ -928,7 +931,7 @@ async function addBillPayment(body: Record<string, unknown>, user: RequestUser) 
 
 async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   const {
-    id, billedRoomTotal, roomDescription, gstPercent, extraCharges, discount,
+    id, billedRoomTotal, roomDescription, roomNumber, gstPercent, extraCharges, discount,
     payCash, payUpi, payCard, corporateName, gstNumber, notes, roomId, managerPin,
   } = body
 
@@ -964,6 +967,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   }
 
   const newRoomDescription = roomDescription !== undefined ? (roomDescription ? String(roomDescription).trim() : null) : bill.roomDescription
+  const newRoomNumber = roomNumber !== undefined ? (roomNumber ? String(roomNumber).trim() : null) : bill.roomNumber
 
   const extra = extraCharges !== undefined ? Math.max(0, num(extraCharges)) : bill.extraCharges
   const disc = discount !== undefined ? Math.max(0, num(discount)) : bill.discount
@@ -978,6 +982,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   const isFinancialChange =
     (billedRoomTotal !== undefined && num(billedRoomTotal) !== bill.billedRoomTotal) ||
     (roomDescription !== undefined && String(roomDescription).trim() !== (bill.roomDescription || '')) ||
+    (roomNumber !== undefined && String(roomNumber).trim() !== (bill.roomNumber || bill.booking.room.number)) ||
     (gstPercent !== undefined && num(gstPercent) !== bill.gstPercent) ||
     (extraCharges !== undefined && num(extraCharges) !== bill.extraCharges) ||
     (discount !== undefined && num(discount) !== bill.discount) ||
@@ -989,7 +994,8 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   // Custom bill check
   const isCustomRoomAmount = Math.abs(newBilledRoom - actualRoomTotal) > 0.01
   const isCustomDescription = newRoomDescription !== null && newRoomDescription !== '' && newRoomDescription !== realRoomType
-  const isCustom = isCustomRoomAmount || isCustomDescription
+  const isCustomRoomNumber = newRoomNumber !== null && newRoomNumber !== '' && newRoomNumber !== bill.booking.room.number
+  const isCustom = isCustomRoomAmount || isCustomDescription || isCustomRoomNumber
 
   if (isCustom) {
     if (!managerPin) {
@@ -1067,6 +1073,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
       where: { id: bill.id },
       data: {
         billedRoomTotal: newBilledRoom,
+        roomNumber: newRoomNumber,
         roomDescription: newRoomDescription,
         gstPercent: newGstPercent,
         actualGst: newBilledGst,
@@ -1094,7 +1101,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
           action: 'ADMIN_BILL_CORRECTION',
           entity: 'Bill',
           entityId: bill.id,
-          details: `Finalized bill ${bill.billNumber} modified by ${user.name || 'Admin'}. Old Total: ₹${bill.grandTotal}, New Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, GST: ${newGstPercent}% (₹${newBilledGst}), Room: ${bill.booking.room.number}`,
+          details: `Finalized bill ${bill.billNumber} modified by ${user.name || 'Admin'}. Old Total: ₹${bill.grandTotal}, New Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, GST: ${newGstPercent}% (₹${newBilledGst}), Room: ${newRoomNumber || bill.booking.room.number}`,
           userName: user.name || 'Admin',
           userRole: user.role || 'MANAGER',
         },
@@ -1105,7 +1112,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
           action: 'BILL_FINALIZED',
           entity: 'Bill',
           entityId: bill.id,
-          details: `Bill ${bill.billNumber} finalized by ${user.name || 'Staff'}. Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, GST: ${newGstPercent}% (₹${newBilledGst}), Room: ${bill.booking.room.number}`,
+          details: `Bill ${bill.billNumber} finalized by ${user.name || 'Staff'}. Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, GST: ${newGstPercent}% (₹${newBilledGst}), Room: ${newRoomNumber || bill.booking.room.number}`,
           userName: user.name || 'Staff',
           userRole: user.role || 'RECEPTION',
         },
@@ -2069,7 +2076,7 @@ async function getReports(req: NextRequest) {
         bookingId: b.bookingId,
         guestName: b.booking.guest.name,
         phone: b.booking.guest.phone,
-        roomNumber: b.booking.room.number,
+        roomNumber: b.roomNumber || b.booking.room.number,
         grandTotal: b.grandTotal,
         paid,
         balance,
@@ -2087,7 +2094,8 @@ async function getReports(req: NextRequest) {
   const customBills = bills.filter(
     (b) =>
       Math.abs(b.billedRoomTotal - b.actualRoomTotal) > 0.01 ||
-      (!!b.roomDescription && b.roomDescription !== b.booking.room.type)
+      (!!b.roomDescription && b.roomDescription !== b.booking.room.type) ||
+      (!!b.roomNumber && b.roomNumber !== b.booking.room.number)
   )
 
   return NextResponse.json({
@@ -2126,7 +2134,7 @@ async function getReports(req: NextRequest) {
         billNumber: b.billNumber,
         date: b.createdAt,
         guestName: b.booking.guest.name,
-        roomNumber: b.booking.room.number,
+        roomNumber: b.roomNumber || b.booking.room.number,
         roomDescription: b.roomDescription || b.booking.room.type || 'Non-AC',
         actualRoomTotal: b.actualRoomTotal,
         billedRoomTotal: b.billedRoomTotal,
@@ -2135,7 +2143,7 @@ async function getReports(req: NextRequest) {
         internalGst: b.internalGst !== undefined && b.internalGst > 0 ? b.internalGst : (Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01 ? b.actualGst : Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100),
         grandTotal: b.grandTotal,
         internalTotal: b.internalTotal !== undefined && b.internalTotal > 0 ? b.internalTotal : (Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01 ? b.grandTotal : Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) + Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100),
-        isCustom: Math.abs(b.billedRoomTotal - b.actualRoomTotal) > 0.01 || (!!b.roomDescription && b.roomDescription !== b.booking.room.type),
+        isCustom: Math.abs(b.billedRoomTotal - b.actualRoomTotal) > 0.01 || (!!b.roomDescription && b.roomDescription !== b.booking.room.type) || (!!b.roomNumber && b.roomNumber !== b.booking.room.number),
         approvedBy: b.approvedBy,
       })),
     },

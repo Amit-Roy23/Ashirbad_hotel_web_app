@@ -11,6 +11,7 @@ export interface PrintableInvoiceProps {
     days: number
     actualRoomTotal: number
     billedRoomTotal: number
+    roomNumber?: string | null
     roomDescription?: string | null
     gstPercent: number
     actualGst: number
@@ -60,6 +61,7 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
 
   const guest = bill.booking?.guest
   const room = bill.booking?.room
+  const roomNo = bill.roomNumber || room?.number || 'N/A'
   const roomDesc = bill.roomDescription || room?.type || ''
   const corporateName = bill.corporateName || guest?.company
   const gstNumber = bill.gstNumber || guest?.gst
@@ -96,7 +98,7 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
           <p className="font-semibold text-slate-900 dark:text-white">Invoice No: {bill.billNumber}</p>
           <p className="text-slate-600 dark:text-slate-400">Date: {formatDateTime(bill.createdAt)}</p>
           <p className="text-slate-600 dark:text-slate-400">
-            Room: <span className="font-semibold text-slate-900 dark:text-white">{room?.number || 'N/A'}</span> {roomDesc ? `(${roomDesc})` : ''}
+            Room: <span className="font-semibold text-slate-900 dark:text-white">{roomNo}</span> {roomDesc ? `(${roomDesc})` : ''}
           </p>
           <p className="text-slate-600 dark:text-slate-400">
             Stay: {bill.days} night(s) • {formatDate(bill.booking?.checkIn)} → {formatDate(bill.booking?.actualCheckOut || bill.booking?.checkOut)}

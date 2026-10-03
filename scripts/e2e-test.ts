@@ -2,6 +2,8 @@
  * API-level E2E test for the Ashirbad Lodge billing & revenue accounting overhaul.
  * Run: npx tsx scripts/e2e-test.ts (or bun scripts/e2e-test.ts)
  */
+export {}
+
 const BASE = process.env.E2E_BASE || 'http://localhost:3000'
 
 let failures = 0

@@ -89,6 +89,7 @@ interface Bill {
   days: number
   actualRoomTotal: number
   billedRoomTotal: number
+  roomNumber?: string | null
   roomDescription?: string | null
   gstPercent: number
   actualGst: number
@@ -347,7 +348,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
     const q = search.trim().toLowerCase()
     return bills.filter((b) => {
       if (q) {
-        const hay = `${b.billNumber} ${b.booking?.guest?.name || ''} ${b.booking?.guest?.phone || ''} ${b.booking?.room?.number || ''}`.toLowerCase()
+        const hay = `${b.billNumber} ${b.booking?.guest?.name || ''} ${b.booking?.guest?.phone || ''} ${b.roomNumber || b.booking?.room?.number || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (from && new Date(b.createdAt).toISOString().slice(0, 10) < from) return false
@@ -369,7 +370,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
       'invoices.csv',
       ['Invoice', 'Date', 'Guest', 'Room', 'Actual Room', 'Billed Room', 'Food', 'GST', 'Grand Total', 'Paid', 'Balance', 'Custom', 'Approved By'],
       (filteredBills as unknown as Bill[]).map((b) => [
-        b.billNumber, formatDateTime(b.createdAt), b.booking?.guest?.name || '', b.booking?.room?.number || '',
+        b.billNumber, formatDateTime(b.createdAt), b.booking?.guest?.name || '', b.roomNumber || b.booking?.room?.number || '',
         b.actualRoomTotal, b.billedRoomTotal, b.foodTotal, b.actualGst, b.grandTotal,
         paidOf(b), balanceOf(b), b.billedRoomTotal !== b.actualRoomTotal ? 'Yes' : 'No', b.approvedBy || '',
       ])
@@ -456,7 +457,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                   <div>
                     <span className="font-medium">{b.billNumber}</span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      {b.booking?.guest?.name || 'Guest'} · Room {b.booking?.room?.number}
+                      {b.booking?.guest?.name || 'Guest'} · Room {b.roomNumber || b.booking?.room?.number}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -555,7 +556,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                     <Badge variant="outline" className="ml-1.5 h-4 border-emerald-400 px-1 text-[9px] text-emerald-700 dark:text-emerald-300">
                       FINAL
                     </Badge>
-                    {b.billedRoomTotal !== b.actualRoomTotal && (
+                    {(b.billedRoomTotal !== b.actualRoomTotal || (b.roomNumber && b.roomNumber !== b.booking?.room?.number)) && (
                       <Badge variant="outline" className="ml-1 h-4 border-violet-400 px-1 text-[9px] text-violet-700 dark:text-violet-300">
                         CUSTOM
                       </Badge>
@@ -566,7 +567,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                     <div className="text-sm font-medium">{b.booking?.guest?.name || 'Guest'}</div>
                     <div className="text-xs text-muted-foreground">{b.booking?.guest?.phone}</div>
                   </TableCell>
-                  <TableCell>{b.booking?.room?.number}</TableCell>
+                  <TableCell>{b.roomNumber || b.booking?.room?.number}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{formatINR(b.actualRoomTotal)}</TableCell>
                   <TableCell className={b.billedRoomTotal !== b.actualRoomTotal ? 'font-semibold text-violet-700 dark:text-violet-300' : ''}>
                     {formatINR(b.billedRoomTotal)}
@@ -630,7 +631,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
           <DialogHeader>
             <DialogTitle>Collect Payment — {collectBill?.billNumber}</DialogTitle>
             <DialogDescription>
-              {collectBill?.booking?.guest?.name} · Room {collectBill?.booking?.room?.number} · Outstanding{' '}
+              {collectBill?.booking?.guest?.name} · Room {collectBill?.roomNumber || collectBill?.booking?.room?.number} · Outstanding{' '}
               <b>{formatINR(collectBill ? balanceOf(collectBill) : 0)}</b>
             </DialogDescription>
           </DialogHeader>
