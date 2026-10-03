@@ -1,0 +1,258 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Room {
+  id           String      @id @default(cuid())
+  number       String      @unique
+  floor        String?     @default("1")
+  type         String      @default("Non-AC") // AC | Non-AC | Deluxe | Deluxe AC | Suite
+  capacity     Int         @default(2)
+  rate         Float       @default(1000) // actual per-night rate
+  status       String      @default("VACANT") // VACANT | OCCUPIED | MAINTENANCE | RESERVED
+  housekeeping String      @default("CLEAN") // CLEAN | DIRTY | IN_PROGRESS
+  notes        String?
+  bookings     Booking[]
+  foodOrders   FoodOrder[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @default(now()) @updatedAt
+
+  @@index([status])
+  @@index([housekeeping])
+  @@index([type])
+}
+
+model Guest {
+  id        String    @id @default(cuid())
+  phone     String    @unique
+  name      String
+  email     String?
+  company   String?
+  gst       String?
+  address   String?
+  idProof   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+  bookings  Booking[]
+
+  @@index([phone])
+  @@index([name])
+}
+
+model Booking {
+  id             String      @id @default(cuid())
+  roomId         String
+  guestId        String
+  checkIn        DateTime    @default(now())
+  checkOut       DateTime?   // expected checkout
+  actualCheckOut DateTime?
+  days           Int         @default(1)
+  guestCount     Int         @default(1)
+  ratePerDay     Float       // actual rate for this booking
+  status         String      @default("ACTIVE") // ACTIVE | BOOKED | COMPLETED | CANCELLED
+  paymentStatus  String      @default("UNPAID") // UNPAID | PARTIAL | PAID
+  advance        Float       @default(0)
+  isCorporate    Boolean     @default(false)
+  notes          String?
+  room           Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  guest          Guest       @relation(fields: [guestId], references: [id], onDelete: Restrict)
+  bills          Bill[]
+  foodOrders     FoodOrder[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @default(now()) @updatedAt
+
+  @@index([roomId])
+  @@index([guestId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([checkIn])
+  @@index([checkOut])
+  @@index([createdAt])
+}
+
+model Bill {
+  id              String   @id @default(cuid())
+  billNumber      String   @unique
+  bookingId       String
+  days            Int      @default(1)
+  actualRoomTotal Float    // internal: actual rate x days
+  billedRoomTotal Float    // printed on bill (can be custom corporate rate)
+  roomDescription String?  // text printed on the invoice as room description (defaults to room.type if null)
+  gstPercent      Float    @default(0)
+  actualGst       Float    // GST printed on the customer invoice (calculated on customer-facing billed amount)
+  internalGst     Float    @default(0) // hotel's internal accounting GST (calculated on actual room tariff)
+  internalTotal   Float    @default(0) // hotel's internal accounting total (actual room + food + extra - disc + internalGst)
+  foodTotal       Float    @default(0)
+  extraCharges    Float    @default(0)
+  discount        Float    @default(0)
+  grandTotal      Float    // full customer-facing bill amount (taxable + billed GST, advance is NOT subtracted)
+  payCash         Float    @default(0)
+  payUpi          Float    @default(0)
+  payCard         Float    @default(0)
+  advanceApplied  Float    @default(0) // advance deducted from full grandTotal to compute payable amount
+  isCorporate     Boolean  @default(false)
+  corporateName   String?
+  gstNumber       String?
+  createdBy       String?  // user name who created the bill
+  approvedBy      String?  // manager who approved custom billing
+  status          String   @default("FINAL") // DRAFT | FINAL
+  notes           String?
+  booking         Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  @@index([bookingId])
+  @@index([billNumber])
+  @@index([status])
+  @@index([createdAt])
+  @@index([isCorporate])
+}
+
+model MenuItem {
+  id         String      @id @default(cuid())
+  name       String
+  category   String      @default("Main Course")
+  price      Float
+  available  Boolean     @default(true)
+  orderItems OrderItem[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @default(now()) @updatedAt
+
+  @@index([category])
+  @@index([available])
+}
+
+model FoodOrder {
+  id        String      @id @default(cuid())
+  bookingId String?     // attached to in-house guest => can merge to room bill
+  roomId    String?
+  tableNo   String?     // walk-in restaurant table
+  total     Float       @default(0)
+  status    String      @default("PENDING") // PENDING | ADDED_TO_BILL | PAID | CANCELLED
+  createdBy String?     // user who took the order
+  notes     String?
+  items     OrderItem[]
+  booking   Booking?    @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  room      Room?       @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @default(now()) @updatedAt
+
+  @@index([bookingId])
+  @@index([roomId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id         String    @id @default(cuid())
+  orderId    String
+  menuItemId String?
+  name       String
+  price      Float
+  quantity   Int       @default(1)
+  order      FoodOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem   MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([menuItemId])
+}
+
+model Staff {
+  id        String         @id @default(cuid())
+  name      String
+  phone     String?
+  role      String         @default("Staff") // Manager | Reception | Housekeeping | Chef | Guard | Other
+  salary    Float          @default(0)
+  joinDate  DateTime       @default(now())
+  address   String?
+  aadhaar   String?
+  active    Boolean        @default(true)
+  payments  StaffPayment[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @default(now()) @updatedAt
+
+  @@index([active])
+  @@index([role])
+}
+
+model StaffPayment {
+  id            String   @id @default(cuid())
+  staffId       String
+  type          String   // SALARY | ADVANCE | BONUS | DEDUCTION
+  amount        Float
+  method        String   @default("CASH") // CASH | UPI | CARD | BANK
+  date          DateTime @default(now())
+  recoveryNotes String?  // advance recovery / adjustment notes
+  notes         String?
+  staff         Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+
+  @@index([staffId])
+  @@index([date])
+  @@index([type])
+}
+
+model LedgerEntry {
+  id          String   @id @default(cuid())
+  date        DateTime @default(now())
+  type        String   // INCOME | EXPENSE
+  category    String   // ROOM_RENT | GST | FOOD | ADVANCE | SALARY | STAFF_ADVANCE | STAFF | PURCHASE | UTILITIES | MAINTENANCE | OTHER
+  description String
+  amount      Float
+  method      String   @default("CASH") // CASH | UPI | CARD | SPLIT | BANK
+  source      String   @default("MANUAL") // AUTO | MANUAL
+  vendor      String?  // staff/vendor for expense filtering
+  refId       String?
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+  @@index([type])
+  @@index([category])
+  @@index([refId])
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  role      String   @default("RECEPTION") // ADMIN | MANAGER | RECEPTION
+  pin       String   @default("0000")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([role])
+  @@index([active])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model ExpenseCategory {
+  id     String  @id @default(cuid())
+  name   String  @unique
+  active Boolean @default(true)
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String   // CUSTOM_BILL | BILL_CREATE | BOOKING_CREATE | BOOKING_CANCEL | CHECKIN | CHECKOUT | EXTEND | CHANGE_ROOM | PAYMENT | ORDER | ORDER_PAID | USER_CREATE | USER_UPDATE | SETTINGS | STAFF_PAYMENT | LEDGER_INCOME | EXPENSE
+  entity    String   // Booking | Bill | Room | FoodOrder | Setting | User | StaffPayment | LedgerEntry
+  entityId  String?
+  details   String?  // human-readable summary
+  userName  String?
+  userRole  String?
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}

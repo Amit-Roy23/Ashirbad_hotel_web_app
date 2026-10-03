@@ -1,0 +1,819 @@
+     1→     1→import { NextRequest, NextResponse } from 'next/server'
+     2→     2→import { acquireDb, type DbSession } from '@/lib/cloud-db'
+     3→     3→import type { PrismaClient } from '@prisma/client'
+     4→     4→
+     5→     5→// Per-request Prisma client bound to the latest shared DB version
+     6→     6→let DB: PrismaClient
+     7→     7→let persistFn: () => Promise<void>
+     8→     8→
+     9→     9→// ============ ROOMS ============
+    10→    10→async function listRooms() {
+    11→    11→  const rooms = await DB.room.findMany({
+    12→    12→    orderBy: { number: 'asc' },
+    13→    13→    include: {
+    14→    14→      bookings: { where: { status: 'ACTIVE' }, include: { guest: true }, take: 1 },
+    15→    15→    },
+    16→    16→  })
+    17→    17→  return NextResponse.json(rooms)
+    18→    18→}
+    19→    19→
+    20→    20→async function updateRoom(body: Record<string, unknown>) {
+    21→    21→  const { id, status, rate, type, capacity, notes } = body
+    22→    22→  const room = await DB.room.update({
+    23→    23→    where: { id: String(id) },
+    24→    24→    data: {
+    25→    25→      ...(status !== undefined && { status: String(status) }),
+    26→    26→      ...(rate !== undefined && { rate: parseFloat(String(rate)) }),
+    27→    27→      ...(type !== undefined && { type: String(type) }),
+    28→    28→      ...(capacity !== undefined && { capacity: parseInt(String(capacity)) }),
+    29→    29→      ...(notes !== undefined && { notes: String(notes) }),
+    30→    30→    },
+    31→    31→  })
+    32→    32→  return NextResponse.json(room)
+    33→    33→}
+    34→    34→
+    35→    35→// ============ GUESTS ============
+    36→    36→async function listGuests(req: NextRequest) {
+    37→    37→  const { searchParams } = new URL(req.url)
+    38→    38→  const q = searchParams.get('q')
+    39→    39→  const guests = await DB.guest.findMany({
+    40→    40→    where: q
+    41→    41→      ? { OR: [{ name: { contains: q } }, { phone: { contains: q } }, { company: { contains: q } }] }
+    42→    42→      : undefined,
+    43→    43→    orderBy: { createdAt: 'desc' },
+    44→    44→    take: 100,
+    45→    45→    include: { bookings: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    46→    46→  })
+    47→    47→  return NextResponse.json(guests)
+    48→    48→}
+    49→    49→
+    50→    50→async function lookupGuest(req: NextRequest) {
+    51→    51→  const { searchParams } = new URL(req.url)
+    52→    52→  const phone = searchParams.get('phone') || ''
+    53→    53→  const guest = await DB.guest.findFirst({
+    54→    54→    where: { phone: { contains: phone } },
+    55→    55→    orderBy: { createdAt: 'desc' },
+    56→    56→  })
+    57→    57→  return NextResponse.json(guest || null)
+    58→    58→}
+    59→    59→
+    60→    60→async function upsertGuest(body: Record<string, unknown>) {
+    61→    61→  const { phone, name, company, gst, address, idProof } = body
+    62→    62→  if (!phone || !name) {
+    63→    63→    return NextResponse.json({ error: 'Phone and name are required' }, { status: 400 })
+    64→    64→  }
+    65→    65→  const existing = await DB.guest.findUnique({ where: { phone: String(phone) } })
+    66→    66→  let guest
+    67→    67→  if (existing) {
+    68→    68→    guest = await DB.guest.update({
+    69→    69→      where: { phone: String(phone) },
+    70→    70→      data: {
+    71→    71→        name: String(name),
+    72→    72→        ...(company !== undefined && { company: String(company) }),
+    73→    73→        ...(gst !== undefined && { gst: String(gst) }),
+    74→    74→        ...(address !== undefined && { address: String(address) }),
+    75→    75→        ...(idProof !== undefined && { idProof: String(idProof) }),
+    76→    76→      },
+    77→    77→    })
+    78→    78→  } else {
+    79→    79→    guest = await DB.guest.create({
+    80→    80→      data: {
+    81→    81→        phone: String(phone),
+    82→    82→        name: String(name),
+    83→    83→        ...(company ? { company: String(company) } : {}),
+    84→    84→        ...(gst ? { gst: String(gst) } : {}),
+    85→    85→        ...(address ? { address: String(address) } : {}),
+    86→    86→        ...(idProof ? { idProof: String(idProof) } : {}),
+    87→    87→      },
+    88→    88→    })
+    89→    89→  }
+    90→    90→  return NextResponse.json(guest)
+    91→    91→}
+    92→    92→
+    93→    93→// ============ BOOKINGS ============
+    94→    94→async function listBookings(req: NextRequest) {
+    95→    95→  const { searchParams } = new URL(req.url)
+    96→    96→  const status = searchParams.get('status')
+    97→    97→  const bookings = await DB.booking.findMany({
+    98→    98→    where: status ? { status } : undefined,
+    99→    99→    orderBy: { createdAt: 'desc' },
+   100→   100→    take: 200,
+   101→   101→    include: {
+   102→   102→      room: true,
+   103→   103→      guest: true,
+   104→   104→      foodOrders: { where: { status: 'PENDING' } },
+   105→   105→      bills: { orderBy: { createdAt: 'desc' }, take: 1 },
+   106→   106→    },
+   107→   107→  })
+   108→   108→  return NextResponse.json(bookings)
+   109→   109→}
+   110→   110→
+   111→   111→async function createBooking(body: Record<string, unknown>) {
+   112→   112→  const {
+   113→   113→    roomId, phone, name, company, gst, address, checkIn, checkOut,
+   114→   114→    guestCount, advance, isCorporate, notes,
+   115→   115→  } = body
+   116→   116→  if (!roomId || !phone || !name) {
+   117→   117→    return NextResponse.json({ error: 'Room, phone and name are required' }, { status: 400 })
+   118→   118→  }
+   119→   119→  const room = await DB.room.findUnique({ where: { id: String(roomId) } })
+   120→   120→  if (!room) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
+   121→   121→  if (room.status === 'OCCUPIED') {
+   122→   122→    return NextResponse.json({ error: `Room ${room.number} is already occupied` }, { status: 400 })
+   123→   123→  }
+   124→   124→
+   125→   125→  const guest = await DB.guest.upsert({
+   126→   126→    where: { phone: String(phone) },
+   127→   127→    update: {
+   128→   128→      name: String(name),
+   129→   129→      ...(company !== undefined && { company: String(company) }),
+   130→   130→      ...(gst !== undefined && { gst: String(gst) }),
+   131→   131→      ...(address !== undefined && { address: String(address) }),
+   132→   132→    },
+   133→   133→    create: {
+   134→   134→      phone: String(phone),
+   135→   135→      name: String(name),
+   136→   136→      ...(company ? { company: String(company) } : {}),
+   137→   137→      ...(gst ? { gst: String(gst) } : {}),
+   138→   138→      ...(address ? { address: String(address) } : {}),
+   139→   139→    },
+   140→   140→  })
+   141→   141→
+   142→   142→  const checkInDate = checkIn ? new Date(String(checkIn)) : new Date()
+   143→   143→  const checkOutDate = checkOut ? new Date(String(checkOut)) : null
+   144→   144→  let days = 1
+   145→   145→  if (checkOutDate) {
+   146→   146→    const diff = Math.ceil((checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60 * 24))
+   147→   147→    days = Math.max(1, diff)
+   148→   148→  }
+   149→   149→
+   150→   150→  const booking = await DB.booking.create({
+   151→   151→    data: {
+   152→   152→      roomId: String(roomId),
+   153→   153→      guestId: guest.id,
+   154→   154→      checkIn: checkInDate,
+   155→   155→      checkOut: checkOutDate,
+   156→   156→      days,
+   157→   157→      guestCount: parseInt(String(guestCount)) || 1,
+   158→   158→      ratePerDay: room.rate,
+   159→   159→      advance: parseFloat(String(advance)) || 0,
+   160→   160→      isCorporate: !!isCorporate,
+   161→   161→      notes: notes ? String(notes) : null,
+   162→   162→    },
+   163→   163→    include: { room: true, guest: true },
+   164→   164→  })
+   165→   165→
+   166→   166→  await DB.room.update({ where: { id: String(roomId) }, data: { status: 'OCCUPIED' } })
+   167→   167→
+   168→   168→  const adv = parseFloat(String(advance)) || 0
+   169→   169→  if (adv > 0) {
+   170→   170→    await DB.ledgerEntry.create({
+   171→   171→      data: {
+   172→   172→        date: new Date(),
+   173→   173→        type: 'INCOME',
+   174→   174→        category: 'ADVANCE',
+   175→   175→        description: `Advance from ${name} (Room ${room.number})`,
+   176→   176→        amount: adv,
+   177→   177→        method: 'CASH',
+   178→   178→        source: 'AUTO',
+   179→   179→        refId: booking.id,
+   180→   180→      },
+   181→   181→    })
+   182→   182→  }
+   183→   183→  return NextResponse.json(booking)
+   184→   184→}
+   185→   185→
+   186→   186→async function updateBooking(body: Record<string, unknown>) {
+   187→   187→  const { id, action, checkOut } = body
+   188→   188→  const booking = await DB.booking.findUnique({ where: { id: String(id) }, include: { room: true } })
+   189→   189→  if (!booking) return NextResponse.json({ error: 'Booking not found' }, { status: 404 })
+   190→   190→
+   191→   191→  if (action === 'checkout') {
+   192→   192→    const pendingFood = await DB.foodOrder.aggregate({
+   193→   193→      where: { bookingId: String(id), status: 'PENDING' },
+   194→   194→      _sum: { total: true },
+   195→   195→    })
+   196→   196→    if ((pendingFood._sum.total || 0) > 0) {
+   197→   197→      return NextResponse.json(
+   198→   198→        { error: 'Pending food orders exist. Add them to bill or mark paid first.' },
+   199→   199→        { status: 400 }
+   200→   200→      )
+   201→   201→    }
+   202→   202→    const updated = await DB.booking.update({
+   203→   203→      where: { id: String(id) },
+   204→   204→      data: { status: 'COMPLETED', actualCheckOut: new Date() },
+   205→   205→    })
+   206→   206→    await DB.room.update({ where: { id: booking.roomId }, data: { status: 'VACANT' } })
+   207→   207→    return NextResponse.json(updated)
+   208→   208→  }
+   209→   209→
+   210→   210→  if (action === 'extend') {
+   211→   211→    const newCheckOut = checkOut ? new Date(String(checkOut)) : null
+   212→   212→    if (!newCheckOut) return NextResponse.json({ error: 'New checkout date required' }, { status: 400 })
+   213→   213→    const diff = Math.ceil(
+   214→   214→      (newCheckOut.getTime() - new Date(booking.checkIn).getTime()) / (1000 * 60 * 60 * 24)
+   215→   215→    )
+   216→   216→    const days = Math.max(1, diff)
+   217→   217→    const updated = await DB.booking.update({
+   218→   218→      where: { id: String(id) },
+   219→   219→      data: { checkOut: newCheckOut, days },
+   220→   220→    })
+   221→   221→    return NextResponse.json(updated)
+   222→   222→  }
+   223→   223→
+   224→   224→  if (action === 'cancel') {
+   225→   225→    const updated = await DB.booking.update({
+   226→   226→      where: { id: String(id) },
+   227→   227→      data: { status: 'CANCELLED', actualCheckOut: new Date() },
+   228→   228→    })
+   229→   229→    await DB.room.update({ where: { id: booking.roomId }, data: { status: 'VACANT' } })
+   230→   230→    return NextResponse.json(updated)
+   231→   231→  }
+   232→   232→
+   233→   233→  return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+   234→   234→}
+   235→   235→
+   236→   236→// ============ BILLS ============
+   237→   237→async function listBills(req: NextRequest) {
+   238→   238→  const { searchParams } = new URL(req.url)
+   239→   239→  const date = searchParams.get('date')
+   240→   240→  let where = {}
+   241→   241→  if (date) {
+   242→   242→    const start = new Date(date + 'T00:00:00')
+   243→   243→    const end = new Date(date + 'T23:59:59.999')
+   244→   244→    where = { createdAt: { gte: start, lte: end } }
+   245→   245→  }
+   246→   246→  const bills = await DB.bill.findMany({
+   247→   247→    where,
+   248→   248→    orderBy: { createdAt: 'desc' },
+   249→   249→    take: 200,
+   250→   250→    include: { booking: { include: { room: true, guest: true } } },
+   251→   251→  })
+   252→   252→  return NextResponse.json(bills)
+   253→   253→}
+   254→   254→
+   255→   255→async function createBill(body: Record<string, unknown>) {
+   256→   256→  const {
+   257→   257→    bookingId, days, billedRoomTotal, gstPercent, extraCharges, discount,
+   258→   258→    payCash, payUpi, payCard, includeFood, corporateName, gstNumber, notes, checkout,
+   259→   259→  } = body
+   260→   260→
+   261→   261→  const booking = await DB.booking.findUnique({
+   262→   262→    where: { id: String(bookingId) },
+   263→   263→    include: { room: true, guest: true },
+   264→   264→  })
+   265→   265→  if (!booking) return NextResponse.json({ error: 'Booking not found' }, { status: 404 })
+   266→   266→
+   267→   267→  const billDays = parseInt(String(days)) || booking.days
+   268→   268→  const actualRoomTotal = booking.ratePerDay * billDays
+   269→   269→  const customRoom = parseFloat(String(billedRoomTotal))
+   270→   270→  const billedRoom = !isNaN(customRoom) && customRoom > 0 ? customRoom : actualRoomTotal
+   271→   271→
+   272→   272→  let foodTotal = 0
+   273→   273→  let pendingOrders: { id: string }[] = []
+   274→   274→  if (includeFood !== false) {
+   275→   275→    pendingOrders = await DB.foodOrder.findMany({
+   276→   276→      where: { bookingId: booking.id, status: 'PENDING' },
+   277→   277→      select: { id: true },
+   278→   278→    })
+   279→   279→    const agg = await DB.foodOrder.aggregate({
+   280→   280→      where: { bookingId: booking.id, status: 'PENDING' },
+   281→   281→      _sum: { total: true },
+   282→   282→    })
+   283→   283→    foodTotal = agg._sum.total || 0
+   284→   284→  }
+   285→   285→
+   286→   286→  const extra = parseFloat(String(extraCharges)) || 0
+   287→   287→  const disc = parseFloat(String(discount)) || 0
+   288→   288→  const gstPct = parseFloat(String(gstPercent)) || 0
+   289→   289→  const taxable = billedRoom + foodTotal + extra - disc
+   290→   290→  const billedGst = Math.round(taxable * gstPct) / 100
+   291→   291→  const grandTotal = Math.round((taxable + billedGst) * 100) / 100
+   292→   292→
+   293→   293→  const cash = parseFloat(String(payCash)) || 0
+   294→   294→  const upi = parseFloat(String(payUpi)) || 0
+   295→   295→  const card = parseFloat(String(payCard)) || 0
+   296→   296→  const paidTotal = cash + upi + card
+   297→   297→  if (Math.abs(paidTotal - grandTotal) > 0.01) {
+   298→   298→    return NextResponse.json(
+   299→   299→      { error: `Payment split (₹${paidTotal}) must equal bill total (₹${grandTotal})` },
+   300→   300→      { status: 400 }
+   301→   301→    )
+   302→   302→  }
+   303→   303→
+   304→   304→  const today = new Date()
+   305→   305→  const dateStr =
+   306→   306→    today.getFullYear().toString() +
+   307→   307→    String(today.getMonth() + 1).padStart(2, '0') +
+   308→   308→    String(today.getDate()).padStart(2, '0')
+   309→   309→  const countToday = await DB.bill.count({
+   310→   310→    where: { createdAt: { gte: new Date(today.toISOString().slice(0, 10) + 'T00:00:00') } },
+   311→   311→  })
+   312→   312→  const billNumber = `INV-${dateStr}-${String(countToday + 1).padStart(3, '0')}`
+   313→   313→
+   314→   314→  const bill = await DB.bill.create({
+   315→   315→    data: {
+   316→   316→      billNumber,
+   317→   317→      bookingId: booking.id,
+   318→   318→      days: billDays,
+   319→   319→      actualRoomTotal,
+   320→   320→      billedRoomTotal: billedRoom,
+   321→   321→      gstPercent: gstPct,
+   322→   322→      actualGst: billedGst,
+   323→   323→      foodTotal,
+   324→   324→      extraCharges: extra,
+   325→   325→      discount: disc,
+   326→   326→      grandTotal,
+   327→   327→      payCash: cash,
+   328→   328→      payUpi: upi,
+   329→   329→      payCard: card,
+   330→   330→      isCorporate: billedRoom !== actualRoomTotal || !!booking.isCorporate,
+   331→   331→      corporateName: corporateName ? String(corporateName) : booking.guest.company || null,
+   332→   332→      gstNumber: gstNumber ? String(gstNumber) : booking.guest.gst || null,
+   333→   333→      notes: notes ? String(notes) : null,
+   334→   334→    },
+   335→   335→  })
+   336→   336→
+   337→   337→  if (pendingOrders.length > 0) {
+   338→   338→    await DB.foodOrder.updateMany({
+   339→   339→      where: { id: { in: pendingOrders.map((o) => o.id) } },
+   340→   340→      data: { status: 'ADDED_TO_BILL' },
+   341→   341→    })
+   342→   342→  }
+   343→   343→
+   344→   344→  // ===== ACCOUNT CREDIT BALANCING =====
+   345→   345→  // Internal accounts credit ONLY actual room rate + billed GST (+ food).
+   346→   346→  const ledgerEntries: {
+   347→   347→    date: Date
+   348→   348→    type: string
+   349→   349→    category: string
+   350→   350→    description: string
+   351→   351→    amount: number
+   352→   352→    method: string
+   353→   353→    source: string
+   354→   354→    refId: string
+   355→   355→  }[] = []
+   356→   356→
+   357→   357→  if (actualRoomTotal > 0) {
+   358→   358→    ledgerEntries.push({
+   359→   359→      date: new Date(),
+   360→   360→      type: 'INCOME',
+   361→   361→      category: 'ROOM_RENT',
+   362→   362→      description: `Room ${booking.room.number} rent (${billDays} day${billDays > 1 ? 's' : ''} @ ₹${booking.ratePerDay}) - ${booking.guest.name}`,
+   363→   363→      amount: actualRoomTotal,
+   364→   364→      method: 'SPLIT',
+   365→   365→      source: 'AUTO',
+   366→   366→      refId: bill.id,
+   367→   367→    })
+   368→   368→  }
+   369→   369→  if (foodTotal > 0) {
+   370→   370→    ledgerEntries.push({
+   371→   371→      date: new Date(),
+   372→   372→      type: 'INCOME',
+   373→   373→      category: 'FOOD',
+   374→   374→      description: `Food charges - Room ${booking.room.number} - ${booking.guest.name}`,
+   375→   375→      amount: foodTotal,
+   376→   376→      method: 'SPLIT',
+   377→   377→      source: 'AUTO',
+   378→   378→      refId: bill.id,
+   379→   379→    })
+   380→   380→  }
+   381→   381→  if (billedGst > 0) {
+   382→   382→    ledgerEntries.push({
+   383→   383→      date: new Date(),
+   384→   384→      type: 'INCOME',
+   385→   385→      category: 'GST',
+   386→   386→      description: `GST ${gstPct}% on bill ${billNumber}${billedRoom !== actualRoomTotal ? ' (on billed amount)' : ''}`,
+   387→   387→      amount: billedGst,
+   388→   388→      method: 'SPLIT',
+   389→   389→      source: 'AUTO',
+   390→   390→      refId: bill.id,
+   391→   391→    })
+   392→   392→  }
+   393→   393→  if (ledgerEntries.length > 0) {
+   394→   394→    await DB.ledgerEntry.createMany({ data: ledgerEntries })
+   395→   395→  }
+   396→   396→
+   397→   397→  if (checkout !== false) {
+   398→   398→    await DB.booking.update({
+   399→   399→      where: { id: booking.id },
+   400→   400→      data: { status: 'COMPLETED', actualCheckOut: new Date() },
+   401→   401→    })
+   402→   402→    await DB.room.update({ where: { id: booking.roomId }, data: { status: 'VACANT' } })
+   403→   403→  }
+   404→   404→
+   405→   405→  return NextResponse.json({ ...bill, booking })
+   406→   406→}
+   407→   407→
+   408→   408→// ============ MENU ============
+   409→   409→async function listMenu() {
+   410→   410→  const items = await DB.menuItem.findMany({ orderBy: [{ category: 'asc' }, { name: 'asc' }] })
+   411→   411→  return NextResponse.json(items)
+   412→   412→}
+   413→   413→
+   414→   414→async function createMenuItem(body: Record<string, unknown>) {
+   415→   415→  const { name, category, price } = body
+   416→   416→  if (!name || !price) {
+   417→   417→    return NextResponse.json({ error: 'Name and price required' }, { status: 400 })
+   418→   418→  }
+   419→   419→  const item = await DB.menuItem.create({
+   420→   420→    data: {
+   421→   421→      name: String(name),
+   422→   422→      category: category ? String(category) : 'Main Course',
+   423→   423→      price: parseFloat(String(price)),
+   424→   424→    },
+   425→   425→  })
+   426→   426→  return NextResponse.json(item)
+   427→   427→}
+   428→   428→
+   429→   429→async function updateMenuItem(body: Record<string, unknown>) {
+   430→   430→  const { id, name, category, price, available } = body
+   431→   431→  const item = await DB.menuItem.update({
+   432→   432→    where: { id: String(id) },
+   433→   433→    data: {
+   434→   434→      ...(name !== undefined && { name: String(name) }),
+   435→   435→      ...(category !== undefined && { category: String(category) }),
+   436→   436→      ...(price !== undefined && { price: parseFloat(String(price)) }),
+   437→   437→      ...(available !== undefined && { available: !!available }),
+   438→   438→    },
+   439→   439→  })
+   440→   440→  return NextResponse.json(item)
+   441→   441→}
+   442→   442→
+   443→   443→async function deleteMenuItem(req: NextRequest) {
+   444→   444→  const { searchParams } = new URL(req.url)
+   445→   445→  const id = searchParams.get('id')
+   446→   446→  if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+   447→   447→  await DB.menuItem.delete({ where: { id } })
+   448→   448→  return NextResponse.json({ ok: true })
+   449→   449→}
+   450→   450→
+   451→   451→// ============ FOOD ORDERS ============
+   452→   452→async function listOrders(req: NextRequest) {
+   453→   453→  const { searchParams } = new URL(req.url)
+   454→   454→  const status = searchParams.get('status')
+   455→   455→  const orders = await DB.foodOrder.findMany({
+   456→   456→    where: status ? { status } : undefined,
+   457→   457→    orderBy: { createdAt: 'desc' },
+   458→   458→    take: 100,
+   459→   459→    include: { items: true, room: true, booking: { include: { guest: true } } },
+   460→   460→  })
+   461→   461→  return NextResponse.json(orders)
+   462→   462→}
+   463→   463→
+   464→   464→async function createOrder(body: Record<string, unknown>) {
+   465→   465→  const { bookingId, roomId, tableNo, items, notes } = body
+   466→   466→  if (!items || !Array.isArray(items) || items.length === 0) {
+   467→   467→    return NextResponse.json({ error: 'At least one item required' }, { status: 400 })
+   468→   468→  }
+   469→   469→  const total = items.reduce(
+   470→   470→    (s: number, it: { price: number; quantity: number }) => s + it.price * it.quantity,
+   471→   471→    0
+   472→   472→  )
+   473→   473→  const order = await DB.foodOrder.create({
+   474→   474→    data: {
+   475→   475→      bookingId: bookingId ? String(bookingId) : null,
+   476→   476→      roomId: roomId ? String(roomId) : null,
+   477→   477→      tableNo: tableNo ? String(tableNo) : null,
+   478→   478→      total,
+   479→   479→      notes: notes ? String(notes) : null,
+   480→   480→      items: {
+   481→   481→        create: items.map((it: { menuItemId?: string; name: string; price: number; quantity: number }) => ({
+   482→   482→          menuItemId: it.menuItemId || null,
+   483→   483→          name: String(it.name),
+   484→   484→          price: it.price,
+   485→   485→          quantity: it.quantity,
+   486→   486→        })),
+   487→   487→      },
+   488→   488→    },
+   489→   489→    include: { items: true, room: true, booking: { include: { guest: true } } },
+   490→   490→  })
+   491→   491→  return NextResponse.json(order)
+   492→   492→}
+   493→   493→
+   494→   494→async function updateOrder(body: Record<string, unknown>) {
+   495→   495→  const { id, action, method } = body
+   496→   496→  const order = await DB.foodOrder.findUnique({ where: { id: String(id) }, include: { items: true, room: true } })
+   497→   497→  if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+   498→   498→
+   499→   499→  if (action === 'paid') {
+   500→   500→    const updated = await DB.foodOrder.update({ where: { id: String(id) }, data: { status: 'PAID' } })
+   501→   501→    await DB.ledgerEntry.create({
+   502→   502→      data: {
+   503→   503→        date: new Date(),
+   504→   504→        type: 'INCOME',
+   505→   505→        category: 'FOOD',
+   506→   506→        description: `Restaurant order${order.tableNo ? ` (Table ${order.tableNo})` : ''}${order.room ? ` - Room ${order.room.number}` : ''}`,
+   507→   507→        amount: order.total,
+   508→   508→        method: method ? String(method) : 'CASH',
+   509→   509→        source: 'AUTO',
+   510→   510→        refId: order.id,
+   511→   511→      },
+   512→   512→    })
+   513→   513→    return NextResponse.json(updated)
+   514→   514→  }
+   515→   515→  return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+   516→   516→}
+   517→   517→
+   518→   518→// ============ STAFF ============
+   519→   519→async function listStaff() {
+   520→   520→  const staff = await DB.staff.findMany({
+   521→   521→    orderBy: { name: 'asc' },
+   522→   522→    include: { payments: { orderBy: { date: 'desc' } } },
+   523→   523→  })
+   524→   524→  return NextResponse.json(staff)
+   525→   525→}
+   526→   526→
+   527→   527→async function createStaff(body: Record<string, unknown>) {
+   528→   528→  const { name, phone, role, salary, joinDate, address, aadhaar } = body
+   529→   529→  if (!name) return NextResponse.json({ error: 'Name required' }, { status: 400 })
+   530→   530→  const staff = await DB.staff.create({
+   531→   531→    data: {
+   532→   532→      name: String(name),
+   533→   533→      phone: phone ? String(phone) : null,
+   534→   534→      role: role ? String(role) : 'Staff',
+   535→   535→      salary: parseFloat(String(salary)) || 0,
+   536→   536→      joinDate: joinDate ? new Date(String(joinDate)) : new Date(),
+   537→   537→      address: address ? String(address) : null,
+   538→   538→      aadhaar: aadhaar ? String(aadhaar) : null,
+   539→   539→    },
+   540→   540→  })
+   541→   541→  return NextResponse.json(staff)
+   542→   542→}
+   543→   543→
+   544→   544→async function updateStaff(body: Record<string, unknown>) {
+   545→   545→  const { id, name, phone, role, salary, address, aadhaar, active } = body
+   546→   546→  const staff = await DB.staff.update({
+   547→   547→    where: { id: String(id) },
+   548→   548→    data: {
+   549→   549→      ...(name !== undefined && { name: String(name) }),
+   550→   550→      ...(phone !== undefined && { phone: String(phone) }),
+   551→   551→      ...(role !== undefined && { role: String(role) }),
+   552→   552→      ...(salary !== undefined && { salary: parseFloat(String(salary)) }),
+   553→   553→      ...(address !== undefined && { address: String(address) }),
+   554→   554→      ...(aadhaar !== undefined && { aadhaar: String(aadhaar) }),
+   555→   555→      ...(active !== undefined && { active: !!active }),
+   556→   556→    },
+   557→   557→  })
+   558→   558→  return NextResponse.json(staff)
+   559→   559→}
+   560→   560→
+   561→   561→// ============ STAFF PAYMENTS ============
+   562→   562→async function listStaffPayments(req: NextRequest) {
+   563→   563→  const { searchParams } = new URL(req.url)
+   564→   564→  const staffId = searchParams.get('staffId')
+   565→   565→  const payments = await DB.staffPayment.findMany({
+   566→   566→    where: staffId ? { staffId } : undefined,
+   567→   567→    orderBy: { date: 'desc' },
+   568→   568→    take: 200,
+   569→   569→    include: { staff: true },
+   570→   570→  })
+   571→   571→  return NextResponse.json(payments)
+   572→   572→}
+   573→   573→
+   574→   574→async function createStaffPayment(body: Record<string, unknown>) {
+   575→   575→  const { staffId, type, amount, date, notes } = body
+   576→   576→  if (!staffId || !amount) {
+   577→   577→    return NextResponse.json({ error: 'Staff and amount required' }, { status: 400 })
+   578→   578→  }
+   579→   579→  const staff = await DB.staff.findUnique({ where: { id: String(staffId) } })
+   580→   580→  if (!staff) return NextResponse.json({ error: 'Staff not found' }, { status: 404 })
+   581→   581→
+   582→   582→  const amt = parseFloat(String(amount))
+   583→   583→  const payment = await DB.staffPayment.create({
+   584→   584→    data: {
+   585→   585→      staffId: String(staffId),
+   586→   586→      type: type ? String(type) : 'SALARY',
+   587→   587→      amount: amt,
+   588→   588→      date: date ? new Date(String(date)) : new Date(),
+   589→   589→      notes: notes ? String(notes) : null,
+   590→   590→    },
+   591→   591→    include: { staff: true },
+   592→   592→  })
+   593→   593→
+   594→   594→  if (payment.type === 'SALARY' || payment.type === 'BONUS') {
+   595→   595→    await DB.ledgerEntry.create({
+   596→   596→      data: {
+   597→   597→        date: payment.date,
+   598→   598→        type: 'EXPENSE',
+   599→   599→        category: 'SALARY',
+   600→   600→        description: `${payment.type === 'BONUS' ? 'Bonus' : 'Salary'} - ${staff.name}`,
+   601→   601→        amount: amt,
+   602→   602→        method: 'CASH',
+   603→   603→        source: 'AUTO',
+   604→   604→        refId: payment.id,
+   605→   605→      },
+   606→   606→    })
+   607→   607→  }
+   608→   608→  return NextResponse.json(payment)
+   609→   609→}
+   610→   610→
+   611→   611→// ============ LEDGER ============
+   612→   612→async function listLedger(req: NextRequest) {
+   613→   613→  const { searchParams } = new URL(req.url)
+   614→   614→  const date = searchParams.get('date')
+   615→   615→  const from = searchParams.get('from')
+   616→   616→  const to = searchParams.get('to')
+   617→   617→  const type = searchParams.get('type')
+   618→   618→
+   619→   619→  let where: Record<string, unknown> = {}
+   620→   620→  if (date) {
+   621→   621→    const start = new Date(date + 'T00:00:00')
+   622→   622→    const end = new Date(date + 'T23:59:59.999')
+   623→   623→    where = { date: { gte: start, lte: end } }
+   624→   624→  } else if (from || to) {
+   625→   625→    where = {
+   626→   626→      date: {
+   627→   627→        ...(from && { gte: new Date(from + 'T00:00:00') }),
+   628→   628→        ...(to && { lte: new Date(to + 'T23:59:59.999') }),
+   629→   629→      },
+   630→   630→    }
+   631→   631→  }
+   632→   632→  if (type) where = { ...where, type }
+   633→   633→
+   634→   634→  const entries = await DB.ledgerEntry.findMany({
+   635→   635→    where,
+   636→   636→    orderBy: { date: 'desc' },
+   637→   637→    take: 500,
+   638→   638→  })
+   639→   639→  const totalIncome = entries.filter((e) => e.type === 'INCOME').reduce((s, e) => s + e.amount, 0)
+   640→   640→  const totalExpense = entries.filter((e) => e.type === 'EXPENSE').reduce((s, e) => s + e.amount, 0)
+   641→   641→  return NextResponse.json({
+   642→   642→    entries,
+   643→   643→    totalIncome,
+   644→   644→    totalExpense,
+   645→   645→    net: totalIncome - totalExpense,
+   646→   646→  })
+   647→   647→}
+   648→   648→
+   649→   649→async function createLedgerEntry(body: Record<string, unknown>) {
+   650→   650→  const { type, category, description, amount, method, date } = body
+   651→   651→  if (!type || !amount || !description) {
+   652→   652→    return NextResponse.json({ error: 'Type, description and amount required' }, { status: 400 })
+   653→   653→  }
+   654→   654→  const entry = await DB.ledgerEntry.create({
+   655→   655→    data: {
+   656→   656→      type: type === 'INCOME' ? 'INCOME' : 'EXPENSE',
+   657→   657→      category: category ? String(category) : 'OTHER',
+   658→   658→      description: String(description),
+   659→   659→      amount: parseFloat(String(amount)),
+   660→   660→      method: method ? String(method) : 'CASH',
+   661→   661→      source: 'MANUAL',
+   662→   662→      date: date ? new Date(String(date)) : new Date(),
+   663→   663→    },
+   664→   664→  })
+   665→   665→  return NextResponse.json(entry)
+   666→   666→}
+   667→   667→
+   668→   668→// ============ STATS ============
+   669→   669→async function getStats() {
+   670→   670→  const now = new Date()
+   671→   671→  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+   672→   672→  const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59.999)
+   673→   673→
+   674→   674→  const [rooms, activeBookings, todayBills, todayLedger, pendingFood] = await Promise.all([
+   675→   675→    DB.room.findMany({ select: { status: true, rate: true } }),
+   676→   676→    DB.booking.findMany({ where: { status: 'ACTIVE' }, include: { guest: true, room: true } }),
+   677→   677→    DB.bill.findMany({ where: { createdAt: { gte: startToday, lte: endToday } } }),
+   678→   678→    DB.ledgerEntry.findMany({ where: { date: { gte: startToday, lte: endToday } } }),
+   679→   679→    DB.foodOrder.aggregate({ where: { status: 'PENDING' }, _sum: { total: true } }),
+   680→   680→  ])
+   681→   681→
+   682→   682→  const vacant = rooms.filter((r) => r.status === 'VACANT').length
+   683→   683→  const occupied = rooms.filter((r) => r.status === 'OCCUPIED').length
+   684→   684→  const maintenance = rooms.filter((r) => r.status === 'MAINTENANCE').length
+   685→   685→  const todayRevenue = todayBills.reduce((s, b) => s + b.grandTotal, 0)
+   686→   686→  const income = todayLedger.filter((e) => e.type === 'INCOME').reduce((s, e) => s + e.amount, 0)
+   687→   687→  const expense = todayLedger.filter((e) => e.type === 'EXPENSE').reduce((s, e) => s + e.amount, 0)
+   688→   688→  const potentialRevenue = rooms.filter((r) => r.status === 'OCCUPIED').reduce((s, r) => s + r.rate, 0)
+   689→   689→
+   690→   690→  return NextResponse.json({
+   691→   691→    totalRooms: rooms.length,
+   692→   692→    vacant,
+   693→   693→    occupied,
+   694→   694→    maintenance,
+   695→   695→    occupancyPercent: rooms.length ? Math.round((occupied / rooms.length) * 100) : 0,
+   696→   696→    activeGuests: activeBookings.length,
+   697→   697→    activeBookings: activeBookings.map((b) => ({
+   698→   698→      id: b.id,
+   699→   699→      guestName: b.guest.name,
+   700→   700→      roomNumber: b.room.number,
+   701→   701→      checkIn: b.checkIn,
+   702→   702→      days: b.days,
+   703→   703→      ratePerDay: b.ratePerDay,
+   704→   704→    })),
+   705→   705→    todayRevenue,
+   706→   706→    todayCash: todayBills.reduce((s, b) => s + b.payCash, 0),
+   707→   707→    todayUpi: todayBills.reduce((s, b) => s + b.payUpi, 0),
+   708→   708→    todayCard: todayBills.reduce((s, b) => s + b.payCard, 0),
+   709→   709→    todayIncome: income,
+   710→   710→    todayExpense: expense,
+   711→   711→    todayNet: income - expense,
+   712→   712→    pendingFoodAmount: pendingFood._sum.total || 0,
+   713→   713→    potentialRevenue,
+   714→   714→  })
+   715→   715→}
+   716→   716→
+   717→   717→// ============ ROUTER ============
+   718→   718→async function route(
+   719→   719→  req: NextRequest,
+   720→   720→  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+   721→   721→): Promise<NextResponse> {
+   722→   722→  const session: DbSession = await acquireDb()
+   723→   723→  DB = session.client
+   724→   724→  persistFn = session.persist
+   725→   725→  const url = new URL(req.url)
+   726→   726→  const segments = url.pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean)
+   727→   727→  const resource = segments[0] || ''
+   728→   728→  let body: Record<string, unknown> = {}
+   729→   729→  if (method === 'POST' || method === 'PATCH') {
+   730→   730→    try {
+   731→   731→      body = await req.json()
+   732→   732→    } catch {
+   733→   733→      body = {}
+   734→   734→    }
+   735→   735→  }
+   736→   736→
+   737→   737→  try {
+   738→   738→    const result = await dispatch(req, method, url, body)
+   739→   739→    if (method !== 'GET') {
+   740→   740→      await persistFn()
+   741→   741→    }
+   742→   742→    return result
+   743→   743→  } catch (e) {
+   744→   744→    const message = e instanceof Error ? e.message : 'Internal server error'
+   745→   745→    return NextResponse.json({ error: message }, { status: 500 })
+   746→   746→  }
+   747→   747→}
+   748→   748→
+   749→   749→async function dispatch(
+   750→   750→  req: NextRequest,
+   751→   751→  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+   752→   752→  url: URL,
+   753→   753→  body: Record<string, unknown>
+   754→   754→): Promise<NextResponse> {
+   755→   755→  const segments = url.pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean)
+   756→   756→  const resource = segments[0] || ''
+   757→   757→  switch (resource) {
+   758→   758→      case 'rooms':
+   759→   759→        if (method === 'GET') return await listRooms()
+   760→   760→        if (method === 'PATCH') return await updateRoom(body)
+   761→   761→        break
+   762→   762→      case 'guests':
+   763→   763→        if (method === 'GET' && url.searchParams.get('phone')) return await lookupGuest(req)
+   764→   764→        if (method === 'GET') return await listGuests(req)
+   765→   765→        if (method === 'POST') return await upsertGuest(body)
+   766→   766→        break
+   767→   767→      case 'bookings':
+   768→   768→        if (method === 'GET') return await listBookings(req)
+   769→   769→        if (method === 'POST') return await createBooking(body)
+   770→   770→        if (method === 'PATCH') return await updateBooking(body)
+   771→   771→        break
+   772→   772→      case 'bills':
+   773→   773→        if (method === 'GET') return await listBills(req)
+   774→   774→        if (method === 'POST') return await createBill(body)
+   775→   775→        break
+   776→   776→      case 'menu':
+   777→   777→        if (method === 'GET') return await listMenu()
+   778→   778→        if (method === 'POST') return await createMenuItem(body)
+   779→   779→        if (method === 'PATCH') return await updateMenuItem(body)
+   780→   780→        if (method === 'DELETE') return await deleteMenuItem(req)
+   781→   781→        break
+   782→   782→      case 'orders':
+   783→   783→        if (method === 'GET') return await listOrders(req)
+   784→   784→        if (method === 'POST') return await createOrder(body)
+   785→   785→        if (method === 'PATCH') return await updateOrder(body)
+   786→   786→        break
+   787→   787→      case 'staff':
+   788→   788→        if (method === 'GET') return await listStaff()
+   789→   789→        if (method === 'POST') return await createStaff(body)
+   790→   790→        if (method === 'PATCH') return await updateStaff(body)
+   791→   791→        break
+   792→   792→      case 'staff-payments':
+   793→   793→        if (method === 'GET') return await listStaffPayments(req)
+   794→   794→        if (method === 'POST') return await createStaffPayment(body)
+   795→   795→        break
+   796→   796→      case 'ledger':
+   797→   797→        if (method === 'GET') return await listLedger(req)
+   798→   798→        if (method === 'POST') return await createLedgerEntry(body)
+   799→   799→        break
+   800→   800→      case 'stats':
+   801→   801→        if (method === 'GET') return await getStats()
+   802→   802→        break
+   803→   803→  }
+   804→   804→  return NextResponse.json({ error: `Not found: ${method} /api/${resource}` }, { status: 404 })
+   805→   805→}
+   806→   806→
+   807→   807→export async function GET(req: NextRequest) {
+   808→   808→  return route(req, 'GET')
+   809→   809→}
+   810→   810→export async function POST(req: NextRequest) {
+   811→   811→  return route(req, 'POST')
+   812→   812→}
+   813→   813→export async function PATCH(req: NextRequest) {
+   814→   814→  return route(req, 'PATCH')
+   815→   815→}
+   816→   816→export async function DELETE(req: NextRequest) {
+   817→   817→  return route(req, 'DELETE')
+   818→   818→}
+   819→   819→
