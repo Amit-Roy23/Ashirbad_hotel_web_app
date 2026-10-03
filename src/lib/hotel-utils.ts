@@ -32,8 +32,14 @@ export function addDays(days: number): string {
 
 export async function api<T = unknown>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
+    cache: 'no-store',
     ...options,
-    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      ...(options?.headers || {}),
+    },
   })
   const data = await res.json()
   if (!res.ok) {
@@ -64,6 +70,8 @@ export function apiAs<T = unknown>(
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
     ...((options?.headers as Record<string, string>) || {}),
   }
   if (user) {
@@ -71,7 +79,7 @@ export function apiAs<T = unknown>(
     headers['X-User-Name'] = encodeURIComponent(user.name)
     headers['X-User-Role'] = user.role
   }
-  return fetch(url, { ...options, headers }).then(async (res) => {
+  return fetch(url, { cache: 'no-store', ...options, headers }).then(async (res) => {
     const data = await res.json()
     if (!res.ok) {
       throw new Error((data as { error?: string }).error || 'Something went wrong')

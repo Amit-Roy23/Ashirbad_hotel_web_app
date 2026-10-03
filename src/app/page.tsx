@@ -90,11 +90,11 @@ function Shell() {
   }, [])
 
   useEffect(() => {
-    fetch('/api/stats')
+    fetch('/api/stats', { cache: 'no-store' })
       .then((r) => r.json())
       .then((d: Stats) => setStats(d))
       .catch(() => {})
-    fetch('/api/settings')
+    fetch('/api/settings', { cache: 'no-store' })
       .then((r) => r.json())
       .then((d: { hotelName?: string }) => d.hotelName && setHotelName(d.hotelName))
       .catch(() => {})

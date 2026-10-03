@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+export const fetchCache = 'force-no-store'
+
 // ============ HELPERS ============
 interface RequestUser {
   id?: string
@@ -1693,7 +1697,7 @@ async function getStats() {
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59.999)
 
-  const [rooms, activeBookings, bookedFuture, todayBills, todayLedger, pendingFood, allActiveBills, allBills] = await Promise.all([
+  const [rooms, activeBookings, bookedFuture, todayBills, todayLedger, pendingFood, allBills] = await Promise.all([
     prisma.room.findMany({ select: { status: true, housekeeping: true, rate: true } }),
     prisma.booking.findMany({
       where: { status: 'ACTIVE' },
@@ -1701,11 +1705,33 @@ async function getStats() {
       orderBy: { checkIn: 'asc' },
     }),
     prisma.booking.count({ where: { status: 'BOOKED' } }),
-    prisma.bill.findMany({ where: { createdAt: { gte: startToday, lte: endToday } } }),
-    prisma.ledgerEntry.findMany({ where: { date: { gte: startToday, lte: endToday } } }),
+    prisma.bill.findMany({
+      where: { createdAt: { gte: startToday, lte: endToday } },
+      select: {
+        bookingId: true,
+        grandTotal: true,
+        internalTotal: true,
+        advanceApplied: true,
+        payCash: true,
+        payUpi: true,
+        payCard: true,
+      },
+    }),
+    prisma.ledgerEntry.findMany({
+      where: { date: { gte: startToday, lte: endToday } },
+      select: { type: true, category: true, amount: true, method: true, refId: true },
+    }),
     prisma.foodOrder.aggregate({ where: { status: 'PENDING' }, _sum: { total: true } }),
-    prisma.bill.findMany(),
-    prisma.bill.findMany({ select: { bookingId: true } }),
+    prisma.bill.findMany({
+      select: {
+        bookingId: true,
+        grandTotal: true,
+        advanceApplied: true,
+        payCash: true,
+        payUpi: true,
+        payCard: true,
+      },
+    }),
   ])
 
   const vacant = rooms.filter((r) => r.status === 'VACANT').length
@@ -1731,7 +1757,7 @@ async function getStats() {
     return co >= startToday && co <= endToday
   })
 
-  const outstanding = allActiveBills.reduce((s, b) => {
+  const outstanding = allBills.reduce((s, b) => {
     const totalRec = b.advanceApplied + b.payCash + b.payUpi + b.payCard
     const balance = b.grandTotal - totalRec
     return balance > 0.01 ? s + balance : s
@@ -2003,7 +2029,7 @@ async function getReports(req: NextRequest) {
   const endUtc = new Date(`${toStr}T23:59:59.999Z`)
   const end = isNaN(endLocal.getTime()) ? endUtc : (endLocal > endUtc ? endLocal : endUtc)
 
-  const [bills, orders, ledger, bookings, staffPays, rooms, activeBookings] = await Promise.all([
+  const [bills, orders, ledger, bookings, staffPays, rooms, activeBookings, outstandingBookings] = await Promise.all([
     prisma.bill.findMany({
       where: { createdAt: { gte: start, lte: end } },
       include: { booking: { include: { room: true, guest: true } } },
@@ -2024,15 +2050,15 @@ async function getReports(req: NextRequest) {
     }),
     prisma.room.findMany({ select: { status: true, rate: true } }),
     prisma.booking.findMany({ where: { status: 'ACTIVE' }, include: { guest: true, room: true } }),
+    prisma.bill.findMany({
+      include: { booking: { include: { room: true, guest: true } } },
+    }),
   ])
 
   const occupiedRooms = rooms.filter((r) => r.status === 'OCCUPIED').length
   const daysDiff = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)))
   const roomNights = bills.reduce((s, b) => s + b.days, 0)
 
-  const outstandingBookings = await prisma.bill.findMany({
-    include: { booking: { include: { room: true, guest: true } } },
-  })
   const outstandingRows = outstandingBookings
     .map((b) => {
       const paid = b.advanceApplied + b.payCash + b.payUpi + b.payCard
@@ -2191,11 +2217,17 @@ async function route(
   }
 
   try {
-    return await dispatch(req, method, url, body)
+    const res = await dispatch(req, method, url, body)
+    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0')
+    res.headers.set('Pragma', 'no-cache')
+    res.headers.set('Expires', '0')
+    return res
   } catch (e) {
     console.error(`API Error [${method} ${url.pathname}]:`, e)
     const message = e instanceof Error ? e.message : 'Internal server error'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const res = NextResponse.json({ error: message }, { status: 500 })
+    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0')
+    return res
   }
 }
 
