@@ -54,6 +54,7 @@ interface Booking {
   guestCount: number
   ratePerDay: number
   advance: number
+  status?: string
   guest: Guest
 }
 
@@ -82,6 +83,8 @@ interface Stats {
   totalRooms: number
   vacant: number
   occupied: number
+  booked?: number
+  bookedFuture?: number
   maintenance: number
   dirtyRooms: number
   occupancyPercent: number
@@ -247,131 +250,172 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Card className="border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
-              <DoorOpen className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Vacant / Total</p>
-              <p className="text-xl font-bold">
-                {stats?.vacant}/{stats?.totalRooms}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-red-200 bg-gradient-to-br from-red-50 to-transparent dark:border-red-900 dark:from-red-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
-              <BedDouble className="h-5 w-5 text-red-700 dark:text-red-300" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Occupied</p>
-              <p className="text-xl font-bold">{stats?.occupied}</p>
-              <p className="text-[10px] text-muted-foreground">{stats?.occupancyPercent}% occupancy</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-teal-200 bg-gradient-to-br from-teal-50 to-transparent dark:border-teal-900 dark:from-teal-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="rounded-full bg-teal-100 p-2.5 dark:bg-teal-900">
-              <IndianRupee className="h-5 w-5 text-teal-700 dark:text-teal-300" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Today Revenue</p>
-              <p className="text-xl font-bold">{formatINR(stats?.todayRevenue)}</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-amber-200 bg-gradient-to-br from-amber-50 to-transparent dark:border-amber-900 dark:from-amber-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="rounded-full bg-amber-100 p-2.5 dark:bg-amber-900">
-              <Users className="h-5 w-5 text-amber-700 dark:text-amber-300" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">In-House Guests</p>
-              <p className="text-xl font-bold">{stats?.activeGuests}</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {(() => {
+        const bookedCount = stats?.booked ?? rooms.filter((r) => r.status === 'BOOKED' || (!r.status.match(/OCCUPIED|MAINTENANCE/) && r.bookings?.[0]?.status === 'BOOKED')).length
+        return (
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <Card
+                className="cursor-pointer transition-all hover:shadow-md border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40"
+                onClick={() => onNavigate({ tab: 'rooms' })}
+              >
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
+                    <DoorOpen className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Vacant / Total</p>
+                    <p className="text-xl font-bold">
+                      {stats?.vacant}/{stats?.totalRooms}
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
 
-      {/* Collections + money summary */}
-      <div className="grid gap-3 lg:grid-cols-2">
-        <Card>
-          <CardContent className="p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Wallet className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
-              <p className="text-sm font-semibold">Today&apos;s Collection (Cash / UPI / Card)</p>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-lg bg-muted p-3 text-center">
-                <Banknote className="mx-auto mb-1 h-5 w-5 text-emerald-700 dark:text-emerald-400" />
-                <p className="text-[11px] text-muted-foreground">Cash</p>
-                <p className="text-sm font-bold">{formatINR(stats?.todayCash)}</p>
-              </div>
-              <div className="rounded-lg bg-muted p-3 text-center">
-                <Smartphone className="mx-auto mb-1 h-5 w-5 text-violet-600" />
-                <p className="text-[11px] text-muted-foreground">UPI</p>
-                <p className="text-sm font-bold">{formatINR(stats?.todayUpi)}</p>
-              </div>
-              <div className="rounded-lg bg-muted p-3 text-center">
-                <CreditCard className="mx-auto mb-1 h-5 w-5 text-orange-600" />
-                <p className="text-[11px] text-muted-foreground">Card</p>
-                <p className="text-sm font-bold">{formatINR(stats?.todayCard)}</p>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap justify-between gap-2 border-t pt-3 text-xs">
-              <span className="text-muted-foreground">
-                Income <b className="text-foreground">{formatINR(stats?.todayIncome)}</b>
-              </span>
-              <span className="text-muted-foreground">
-                Expenses <b className="text-foreground">{formatINR(stats?.todayExpense)}</b>
-              </span>
-              <span className="text-muted-foreground">
-                Net <b className={stats && stats.todayNet < 0 ? 'text-red-600' : 'text-emerald-600'}>{formatINR(stats?.todayNet)}</b>
-              </span>
-            </div>
-          </CardContent>
-        </Card>
+              <Card
+                className="cursor-pointer transition-all hover:shadow-md border-amber-300 bg-gradient-to-br from-amber-50 to-transparent dark:border-amber-800 dark:from-amber-950/40"
+                onClick={() => onNavigate({ tab: 'rooms' })}
+              >
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="rounded-full bg-amber-100 p-2.5 dark:bg-amber-900">
+                    <CalendarCheck className="h-5 w-5 text-amber-700 dark:text-amber-300" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Booked Rooms</p>
+                    <p className="text-xl font-bold text-amber-900 dark:text-amber-200">{bookedCount}</p>
+                    <p className="text-[10px] text-muted-foreground">advance reserved</p>
+                  </div>
+                </CardContent>
+              </Card>
 
-        <div className="grid grid-rows-2 gap-3">
-          <Card className="border-red-200 dark:border-red-900">
-            <CardContent className="flex items-center gap-3 p-4">
-              <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
-                <AlertCircle className="h-5 w-5 text-red-700 dark:text-red-300" />
+              <Card
+                className="cursor-pointer transition-all hover:shadow-md border-red-200 bg-gradient-to-br from-red-50 to-transparent dark:border-red-900 dark:from-red-950/40"
+                onClick={() => onNavigate({ tab: 'rooms' })}
+              >
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
+                    <BedDouble className="h-5 w-5 text-red-700 dark:text-red-300" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Occupied</p>
+                    <p className="text-xl font-bold">{stats?.occupied}</p>
+                    <p className="text-[10px] text-muted-foreground">{stats?.occupancyPercent}% occupancy</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-teal-200 bg-gradient-to-br from-teal-50 to-transparent dark:border-teal-900 dark:from-teal-950/40">
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="rounded-full bg-teal-100 p-2.5 dark:bg-teal-900">
+                    <IndianRupee className="h-5 w-5 text-teal-700 dark:text-teal-300" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Today Revenue</p>
+                    <p className="text-xl font-bold">{formatINR(stats?.todayRevenue)}</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card
+                className="cursor-pointer transition-all hover:shadow-md border-indigo-200 bg-gradient-to-br from-indigo-50 to-transparent dark:border-indigo-900 dark:from-indigo-950/40 sm:col-span-2 lg:col-span-1"
+                onClick={() => onNavigate({ tab: 'guests' })}
+              >
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="rounded-full bg-indigo-100 p-2.5 dark:bg-indigo-900">
+                    <Users className="h-5 w-5 text-indigo-700 dark:text-indigo-300" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">In-House Guests</p>
+                    <p className="text-xl font-bold">{stats?.activeGuests}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Collections + money summary */}
+            <div className="grid gap-3 lg:grid-cols-2">
+              <Card>
+                <CardContent className="p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Wallet className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
+                    <p className="text-sm font-semibold">Today&apos;s Collection (Cash / UPI / Card)</p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-lg bg-muted p-3 text-center">
+                      <Banknote className="mx-auto mb-1 h-5 w-5 text-emerald-700 dark:text-emerald-400" />
+                      <p className="text-[11px] text-muted-foreground">Cash</p>
+                      <p className="text-sm font-bold">{formatINR(stats?.todayCash)}</p>
+                    </div>
+                    <div className="rounded-lg bg-muted p-3 text-center">
+                      <Smartphone className="mx-auto mb-1 h-5 w-5 text-violet-600" />
+                      <p className="text-[11px] text-muted-foreground">UPI</p>
+                      <p className="text-sm font-bold">{formatINR(stats?.todayUpi)}</p>
+                    </div>
+                    <div className="rounded-lg bg-muted p-3 text-center">
+                      <CreditCard className="mx-auto mb-1 h-5 w-5 text-orange-600" />
+                      <p className="text-[11px] text-muted-foreground">Card</p>
+                      <p className="text-sm font-bold">{formatINR(stats?.todayCard)}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap justify-between gap-2 border-t pt-3 text-xs">
+                    <span className="text-muted-foreground">
+                      Income <b className="text-foreground">{formatINR(stats?.todayIncome)}</b>
+                    </span>
+                    <span className="text-muted-foreground">
+                      Expenses <b className="text-foreground">{formatINR(stats?.todayExpense)}</b>
+                    </span>
+                    <span className="text-muted-foreground">
+                      Net <b className={stats && stats.todayNet < 0 ? 'text-red-600' : 'text-emerald-600'}>{formatINR(stats?.todayNet)}</b>
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="grid grid-rows-2 gap-3">
+                <Card className="border-red-200 dark:border-red-900">
+                  <CardContent className="flex items-center gap-3 p-4">
+                    <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
+                      <AlertCircle className="h-5 w-5 text-red-700 dark:text-red-300" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Outstanding Balance (all bills)</p>
+                      <p className="text-xl font-bold text-red-700 dark:text-red-400">{formatINR(stats?.outstanding)}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="flex flex-wrap items-center gap-3 p-4">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <CalendarCheck className="h-4 w-4 text-amber-600" />
+                      <span>
+                        <b className="text-foreground">{bookedCount}</b> booked
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <BrushCleaning className="h-4 w-4 text-amber-600" />
+                      <span>
+                        <b className="text-foreground">{stats?.dirtyRooms}</b> room(s) to clean
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Coffee className="h-4 w-4 text-orange-500" />
+                      <span>
+                        Pending food <b className="text-foreground">{formatINR(stats?.pendingFoodAmount)}</b>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Wrench className="h-4 w-4 text-zinc-500" />
+                      <span>
+                        Maintenance <b className="text-foreground">{stats?.maintenance}</b>
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Outstanding Balance (all bills)</p>
-                <p className="text-xl font-bold text-red-700 dark:text-red-400">{formatINR(stats?.outstanding)}</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex flex-wrap items-center gap-3 p-4">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <BrushCleaning className="h-4 w-4 text-amber-600" />
-                <span>
-                  <b className="text-foreground">{stats?.dirtyRooms}</b> room(s) to clean
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Coffee className="h-4 w-4 text-orange-500" />
-                <span>
-                  Pending food <b className="text-foreground">{formatINR(stats?.pendingFoodAmount)}</b>
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Wrench className="h-4 w-4 text-zinc-500" />
-                <span>
-                  Maintenance <b className="text-foreground">{stats?.maintenance}</b>
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+            </div>
+          </>
+        )
+      })()}
 
       {/* Arrivals & Departures */}
       <div className="grid gap-3 lg:grid-cols-2">
@@ -433,109 +477,245 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
         }}
       />
 
-      {/* Occupied/Maintenance/Dirty room view */}
+      {/* Occupied/Booked/Maintenance/Dirty room view */}
       <Dialog open={!!viewRoom} onOpenChange={(open) => !open && setViewRoom(null)}>
         <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              Room {viewRoom?.number} <RoomStatusBadge status={viewRoom?.status || ''} housekeeping={viewRoom?.housekeeping} />
-            </DialogTitle>
-            <DialogDescription>
-              {viewRoom?.type} • {formatINR(viewRoom?.rate)}/night
-            </DialogDescription>
-          </DialogHeader>
-          {viewRoom?.status === 'OCCUPIED' && viewRoom.bookings?.[0] && (
-            <div className="space-y-3">
-              <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Guest</span>
-                  <span className="font-semibold">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Phone</span>
-                  <a href={`tel:${viewRoom.bookings[0].guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
-                    {viewRoom.bookings[0].guest?.phone || '-'}
-                  </a>
-                </div>
-                {viewRoom.bookings[0].guest?.company && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Company</span>
-                    <span className="font-semibold">{viewRoom.bookings[0].guest.company}</span>
+          {(() => {
+            const isBooked = viewRoom?.status === 'BOOKED' || viewRoom?.status === 'RESERVED' || (!viewRoom?.status.match(/OCCUPIED|MAINTENANCE/) && viewRoom?.bookings?.[0]?.status === 'BOOKED')
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    Room {viewRoom?.number}{' '}
+                    <RoomStatusBadge status={isBooked ? 'BOOKED' : viewRoom?.status || ''} housekeeping={viewRoom?.housekeeping} />
+                  </DialogTitle>
+                  <DialogDescription>
+                    {viewRoom?.type} • {formatINR(viewRoom?.rate)}/night
+                  </DialogDescription>
+                </DialogHeader>
+
+                {/* Advance Reservation Room details */}
+                {isBooked && viewRoom?.bookings?.[0] && (
+                  <div className="space-y-3">
+                    <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
+                      <div className="flex items-center justify-between border-b border-amber-200/60 pb-1.5 dark:border-amber-800/60">
+                        <span className="font-bold text-amber-900 dark:text-amber-200">Advance Reservation</span>
+                        <span className="text-[11px] font-semibold rounded bg-amber-200/70 px-1.5 py-0.5 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
+                          Booked
+                        </span>
+                      </div>
+                      <div className="flex justify-between pt-1">
+                        <span className="text-muted-foreground">Guest</span>
+                        <span className="font-semibold text-foreground">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Phone</span>
+                        <a href={`tel:${viewRoom.bookings[0].guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
+                          {viewRoom.bookings[0].guest?.phone || '-'}
+                        </a>
+                      </div>
+                      {viewRoom.bookings[0].guest?.company && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Company</span>
+                          <span className="font-semibold">{viewRoom.bookings[0].guest.company}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Booked Check-In</span>
+                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Expected Out</span>
+                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Guests</span>
+                        <span className="font-semibold">{viewRoom.bookings[0].guestCount}</span>
+                      </div>
+                      {viewRoom.bookings[0].advance > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Advance Paid</span>
+                          <span className="font-bold text-emerald-700 dark:text-emerald-400">{formatINR(viewRoom.bookings[0].advance)}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                        disabled={busy}
+                        onClick={async () => {
+                          if (!viewRoom?.bookings?.[0]) return
+                          setBusy(true)
+                          try {
+                            const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
+                              method: 'PATCH',
+                              body: JSON.stringify({ id: viewRoom.bookings[0].id, action: 'checkin' }),
+                            })
+                            if (res && res.error) {
+                              toast({ variant: 'destructive', title: 'Check-In Failed', description: res.error })
+                              return
+                            }
+                            await load()
+                            onDataChanged()
+                            setViewRoom(null)
+                            toast({
+                              variant: 'success',
+                              title: 'Check-In Completed',
+                              description: `Guest ${viewRoom.bookings[0].guest?.name || ''} checked into Room ${viewRoom.number}.`,
+                            })
+                          } catch (e) {
+                            toast({
+                              variant: 'destructive',
+                              title: 'Error',
+                              description: e instanceof Error ? e.message : 'Check-in failed',
+                            })
+                          } finally {
+                            setBusy(false)
+                          }
+                        }}
+                      >
+                        {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <LogIn className="mr-1.5 h-4 w-4" />}
+                        Check-In Now
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                        disabled={busy}
+                        onClick={async () => {
+                          if (!viewRoom?.bookings?.[0]) return
+                          if (!confirm(`Are you sure you want to cancel the advance booking for ${viewRoom.bookings[0].guest?.name || 'Guest'} in Room ${viewRoom.number}?`)) return
+                          setBusy(true)
+                          try {
+                            const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
+                              method: 'PATCH',
+                              body: JSON.stringify({ id: viewRoom.bookings[0].id, action: 'cancel' }),
+                            })
+                            if (res && res.error) {
+                              toast({ variant: 'destructive', title: 'Cancellation Failed', description: res.error })
+                              return
+                            }
+                            await load()
+                            onDataChanged()
+                            setViewRoom(null)
+                            toast({
+                              variant: 'success',
+                              title: 'Booking Cancelled',
+                              description: `Advance reservation for Room ${viewRoom.number} has been cancelled.`,
+                            })
+                          } catch (e) {
+                            toast({
+                              variant: 'destructive',
+                              title: 'Error',
+                              description: e instanceof Error ? e.message : 'Cancellation failed',
+                            })
+                          } finally {
+                            setBusy(false)
+                          }
+                        }}
+                      >
+                        {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <CalendarX2 className="mr-1.5 h-4 w-4" />}
+                        Cancel Booking
+                      </Button>
+                    </div>
                   </div>
                 )}
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Check-In</span>
-                  <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Expected Out</span>
-                  <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Guests</span>
-                  <span className="font-semibold">{viewRoom.bookings[0].guestCount}</span>
-                </div>
-                {viewRoom.bookings[0].advance > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Advance</span>
-                    <span className="font-semibold">{formatINR(viewRoom.bookings[0].advance)}</span>
+
+                {viewRoom?.status === 'OCCUPIED' && viewRoom.bookings?.[0] && (
+                  <div className="space-y-3">
+                    <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Guest</span>
+                        <span className="font-semibold">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Phone</span>
+                        <a href={`tel:${viewRoom.bookings[0].guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
+                          {viewRoom.bookings[0].guest?.phone || '-'}
+                        </a>
+                      </div>
+                      {viewRoom.bookings[0].guest?.company && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Company</span>
+                          <span className="font-semibold">{viewRoom.bookings[0].guest.company}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Check-In</span>
+                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Expected Out</span>
+                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Guests</span>
+                        <span className="font-semibold">{viewRoom.bookings[0].guestCount}</span>
+                      </div>
+                      {viewRoom.bookings[0].advance > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Advance</span>
+                          <span className="font-semibold">{formatINR(viewRoom.bookings[0].advance)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                        onClick={() => {
+                          onNavigate({ tab: 'billing', q: viewRoom.number })
+                          setViewRoom(null)
+                        }}
+                      >
+                        <Printer className="mr-1.5 h-4 w-4" /> Print Bill
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          onNavigate({ tab: 'billing', q: viewRoom.number })
+                          setViewRoom(null)
+                        }}
+                      >
+                        <Wallet className="mr-1.5 h-4 w-4" /> Billing &amp; Checkout
+                      </Button>
+                    </div>
                   </div>
                 )}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                  onClick={() => {
-                    onNavigate({ tab: 'billing', q: viewRoom.number })
-                    setViewRoom(null)
-                  }}
-                >
-                  <Printer className="mr-1.5 h-4 w-4" /> Print Bill
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    onNavigate({ tab: 'billing', q: viewRoom.number })
-                    setViewRoom(null)
-                  }}
-                >
-                  <Wallet className="mr-1.5 h-4 w-4" /> Billing &amp; Checkout
-                </Button>
-              </div>
-            </div>
-          )}
-          {viewRoom?.status === 'MAINTENANCE' && (
-            <p className="text-sm text-muted-foreground">This room is under maintenance.</p>
-          )}
-          {viewRoom && viewRoom.status === 'VACANT' && viewRoom.housekeeping === 'DIRTY' && (
-            <Button
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
-              onClick={() => markClean(viewRoom)}
-              disabled={busy}
-            >
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
-              Mark Clean (Ready for check-in)
-            </Button>
-          )}
-          {viewRoom && viewRoom.status !== 'OCCUPIED' && (
-            <Button
-              className="w-full"
-              variant="outline"
-              onClick={() => toggleMaintenance(viewRoom)}
-              disabled={busy}
-            >
-              {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {viewRoom.status === 'MAINTENANCE' ? (
-                <>
-                  <ArrowLeftRight className="mr-2 h-4 w-4" /> Mark as Vacant
-                </>
-              ) : (
-                <>
-                  <Wrench className="mr-2 h-4 w-4" /> Mark Under Maintenance
-                </>
-              )}
-            </Button>
-          )}
+                {viewRoom?.status === 'MAINTENANCE' && (
+                  <p className="text-sm text-muted-foreground">This room is under maintenance.</p>
+                )}
+                {viewRoom && viewRoom.status === 'VACANT' && viewRoom.housekeeping === 'DIRTY' && !isBooked && (
+                  <Button
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
+                    onClick={() => markClean(viewRoom)}
+                    disabled={busy}
+                  >
+                    {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
+                    Mark Clean (Ready for check-in)
+                  </Button>
+                )}
+                {viewRoom && viewRoom.status !== 'OCCUPIED' && !isBooked && (
+                  <Button
+                    className="w-full"
+                    variant="outline"
+                    onClick={() => toggleMaintenance(viewRoom)}
+                    disabled={busy}
+                  >
+                    {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {viewRoom.status === 'MAINTENANCE' ? (
+                      <>
+                        <ArrowLeftRight className="mr-2 h-4 w-4" /> Mark as Vacant
+                      </>
+                    ) : (
+                      <>
+                        <Wrench className="mr-2 h-4 w-4" /> Mark Under Maintenance
+                      </>
+                    )}
+                  </Button>
+                )}
+              </>
+            )
+          })()}
         </DialogContent>
       </Dialog>
     </div>

@@ -108,7 +108,14 @@ export function GenerateBillDialog({
 
   useEffect(() => {
     if (open && booking) {
-      setDays(String(booking.days || 1))
+      const initDays = booking.days || 1
+      const initRoom = booking.ratePerDay * initDays
+      const gst = parseFloat(defaultGstPercent) || 0
+      const initGrand = Math.round((initRoom + (initRoom * gst) / 100) * 100) / 100
+      const initAdv = Math.min(booking.advance || 0, initGrand)
+      const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
+
+      setDays(String(initDays))
       setCustomMode(false)
       setCustomTotal('')
       setRoomNumber(booking.room?.number || '')
@@ -117,7 +124,7 @@ export function GenerateBillDialog({
       setExtraCharges('0')
       setDiscount('0')
       setIncludeFood(false)
-      setPayCash('0')
+      setPayCash(String(initPayable))
       setPayUpi('0')
       setPayCard('0')
       setCorporateName(booking.guest?.company || '')
@@ -269,21 +276,21 @@ export function GenerateBillDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Room Charge (Actual)</Label>
-                <div className="rounded-md bg-muted px-3 py-2 text-sm font-semibold">
+                <Label className="text-xs font-semibold text-foreground">Room Charge (Actual)</Label>
+                <div className="h-9 rounded-md bg-muted px-3 flex items-center text-xs font-semibold">
                   {formatINR(calc.actualRoomTotal)}{' '}
-                  <span className="text-xs font-normal text-muted-foreground">({num(days)}n × {formatINR(booking.ratePerDay)})</span>
+                  <span className="text-[11px] font-normal text-muted-foreground ml-1">({num(days)}n × {formatINR(booking.ratePerDay)})</span>
                 </div>
               </div>
               {customMode ? (
                 <div className="space-y-1.5">
-                  <Label className="text-violet-700 dark:text-violet-300">Billed Amount (Custom) *</Label>
-                  <Input type="number" value={customTotal} onChange={(e) => setCustomTotal(e.target.value)} placeholder="e.g. 1500" />
+                  <Label className="text-xs font-semibold text-violet-700 dark:text-violet-300">Billed Amount (Custom) *</Label>
+                  <Input type="number" value={customTotal} onChange={(e) => setCustomTotal(e.target.value)} placeholder="e.g. 1500" className="h-9 text-xs" />
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  <Label>Billed Amount</Label>
-                  <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold dark:bg-emerald-950">
+                  <Label className="text-xs font-semibold text-foreground">Billed Amount</Label>
+                  <div className="h-9 rounded-md bg-emerald-50 px-3 flex items-center text-xs font-semibold text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
                     {formatINR(calc.billedRoom)}
                   </div>
                 </div>
@@ -301,7 +308,7 @@ export function GenerateBillDialog({
                       value={roomNumber}
                       onChange={(e) => setRoomNumber(e.target.value)}
                       placeholder={booking.room?.number || 'e.g. 101'}
-                      className="bg-white dark:bg-slate-900"
+                      className="h-9 text-xs bg-white dark:bg-slate-900"
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -312,7 +319,7 @@ export function GenerateBillDialog({
                       value={roomDescription}
                       onChange={(e) => setRoomDescription(e.target.value)}
                       placeholder={booking.room?.type || 'e.g. Deluxe AC Room'}
-                      className="bg-white dark:bg-slate-900"
+                      className="h-9 text-xs bg-white dark:bg-slate-900"
                     />
                   </div>
                 </div>
@@ -321,9 +328,9 @@ export function GenerateBillDialog({
                 </p>
 
                 <div className="space-y-1.5 pt-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     <ShieldCheck className="h-4 w-4 text-violet-700 dark:text-violet-300" />
-                    <Label htmlFor="mgr-pin" className="text-xs font-medium text-violet-800 dark:text-violet-200">
+                    <Label htmlFor="mgr-pin" className="text-xs font-semibold text-violet-800 dark:text-violet-200">
                       Manager / Admin PIN (approval) *
                     </Label>
                   </div>
@@ -335,7 +342,7 @@ export function GenerateBillDialog({
                     value={managerPin}
                     onChange={(e) => setManagerPin(e.target.value)}
                     autoComplete="off"
-                    className="bg-white dark:bg-slate-900"
+                    className="h-9 text-xs bg-white dark:bg-slate-900"
                   />
                   <p className="text-[11px] text-muted-foreground">
                     Login name: {getCachedUser()?.name || 'not signed in'} — must be ADMIN or MANAGER role.
@@ -346,71 +353,58 @@ export function GenerateBillDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Food {calc.foodTotal > 0 && `(${formatINR(calc.foodTotal)})`}</Label>
-                <div className="flex items-center justify-between rounded-md border px-2.5 py-2">
-                  <span className="text-xs">Add to bill</span>
+                <Label className="text-xs font-semibold text-foreground">Food {calc.foodTotal > 0 && `(${formatINR(calc.foodTotal)})`}</Label>
+                <div className="flex h-9 items-center justify-between rounded-md border px-2.5">
+                  <span className="text-xs text-muted-foreground">Add to bill</span>
                   <Switch checked={includeFood} onCheckedChange={setIncludeFood} className="scale-75" />
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label>Discount (₹)</Label>
-                <Input type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+                <Label className="text-xs font-semibold text-foreground">Discount (₹)</Label>
+                <Input type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} className="h-9 text-xs" />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <Label>GST % *</Label>
+                  <Label className="text-xs font-semibold text-foreground">GST % *</Label>
                   <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setGstPercent('0')}
-                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                        num(gstPercent) === 0 ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      Non-GST (0%)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGstPercent('12')}
-                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                        num(gstPercent) === 12 ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      12%
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGstPercent('18')}
-                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                        num(gstPercent) === 18 ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      18%
-                    </button>
+                    {(['0', '12', '18'] as const).map((pct) => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setGstPercent(pct)}
+                        className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
+                          num(gstPercent) === num(pct)
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-muted text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {pct === '0' ? '0%' : `${pct}%`}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <Input type="number" value={gstPercent} onChange={(e) => setGstPercent(e.target.value)} />
+                <Input type="number" value={gstPercent} onChange={(e) => setGstPercent(e.target.value)} className="h-9 text-xs" />
               </div>
               <div className="space-y-1.5">
-                <Label>Billable Days *</Label>
-                <Input type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)} />
+                <Label className="text-xs font-semibold text-foreground">Billable Days *</Label>
+                <Input type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)} className="h-9 text-xs" />
               </div>
             </div>
 
             {(corporateName || gstNumber || num(gstPercent) > 0 || booking.isCorporate) && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label>
+                  <Label className="text-xs font-semibold text-foreground">
                     Bill To (Company) {booking.isCorporate ? <span className="text-red-500">*</span> : ''}
                   </Label>
-                  <Input value={corporateName} onChange={(e) => setCorporateName(e.target.value)} placeholder="Company name" />
+                  <Input value={corporateName} onChange={(e) => setCorporateName(e.target.value)} placeholder="Company name" className="h-9 text-xs" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>GSTIN</Label>
-                  <Input value={gstNumber} onChange={(e) => setGstNumber(e.target.value)} placeholder="GST number" />
+                  <Label className="text-xs font-semibold text-foreground">GSTIN</Label>
+                  <Input value={gstNumber} onChange={(e) => setGstNumber(e.target.value)} placeholder="GST number" className="h-9 text-xs uppercase" />
                 </div>
               </div>
             )}
@@ -418,7 +412,7 @@ export function GenerateBillDialog({
             <Separator />
 
             {/* Breakdown summary */}
-            <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
+            <div className="space-y-1.5 rounded-lg bg-muted/50 p-3 text-xs">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Room ({customMode ? 'custom billed' : 'actual'})</span>
                 <span className="font-medium">{formatINR(calc.billedRoom)}</span>
@@ -448,7 +442,7 @@ export function GenerateBillDialog({
                 </div>
               )}
               <Separator />
-              <div className="flex justify-between font-bold">
+              <div className="flex justify-between font-bold text-sm">
                 <span>Grand Total</span>
                 <span className="text-slate-900 dark:text-white">{formatINR(calc.grandTotal)}</span>
               </div>
@@ -458,53 +452,66 @@ export function GenerateBillDialog({
                   <span className="font-medium">-{formatINR(calc.advanceApplied)}</span>
                 </div>
               )}
-              <div className="flex justify-between text-base font-bold text-emerald-700 dark:text-emerald-400 pt-1 border-t">
+              <div className="flex justify-between text-sm font-bold text-emerald-700 dark:text-emerald-400 pt-1 border-t">
                 <span>Payable now</span>
                 <span>{formatINR(calc.payable)}</span>
               </div>
             </div>
 
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-sm font-semibold">Payment Split</p>
-                <span className="text-[11px] text-muted-foreground">Pay less than payable to leave an outstanding balance</span>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-foreground">Payment Split</p>
+                <span className="text-[10px] text-muted-foreground">Split across Cash, UPI, Card</span>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-1">
-                  <Label className="text-[11px]">Cash</Label>
-                  <Input type="number" value={payCash} onChange={(e) => setPayCash(e.target.value)} className="h-9" />
+                  <Label className="text-[11px] font-medium">Cash</Label>
+                  <Input type="number" value={payCash} onChange={(e) => setPayCash(e.target.value)} className="h-9 text-xs" />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[11px]">UPI</Label>
-                  <Input type="number" value={payUpi} onChange={(e) => setPayUpi(e.target.value)} className="h-9" />
+                  <Label className="text-[11px] font-medium">UPI</Label>
+                  <Input type="number" value={payUpi} onChange={(e) => setPayUpi(e.target.value)} className="h-9 text-xs" />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[11px]">Card</Label>
-                  <Input type="number" value={payCard} onChange={(e) => setPayCard(e.target.value)} className="h-9" />
+                  <Label className="text-[11px] font-medium">Card</Label>
+                  <Input type="number" value={payCard} onChange={(e) => setPayCard(e.target.value)} className="h-9 text-xs" />
                 </div>
               </div>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex gap-1.5">
-                  <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => autoBalance('CASH')}>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CASH')}>
                     All Cash
                   </Button>
-                  <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => autoBalance('UPI')}>
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('UPI')}>
                     All UPI
                   </Button>
-                  <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => autoBalance('CARD')}>
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CARD')}>
                     All Card
                   </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px] text-muted-foreground hover:bg-muted"
+                    onClick={() => {
+                      setPayCash('0')
+                      setPayUpi('0')
+                      setPayCard('0')
+                    }}
+                  >
+                    Unpaid / Credit
+                  </Button>
                 </div>
-                <span className={calc.balance > 0.01 ? 'font-bold text-amber-600' : 'font-bold text-emerald-700 dark:text-emerald-400'}>
+                <span className={calc.balance > 0.01 ? 'font-bold text-amber-600 text-xs' : 'font-bold text-emerald-700 dark:text-emerald-400 text-xs'}>
                   {calc.balance > 0.01 ? `Outstanding: ${formatINR(calc.balance)}` : '✓ Fully paid'}
                 </span>
               </div>
             </div>
 
-            {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+            {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
-            <Button className="w-full bg-emerald-600 hover:bg-emerald-700" onClick={generateBill} disabled={saving}>
-              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs" onClick={generateBill} disabled={saving}>
+              {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Generate Bill &amp; Check Out
             </Button>
           </div>

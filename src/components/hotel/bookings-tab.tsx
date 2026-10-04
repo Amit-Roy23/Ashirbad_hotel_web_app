@@ -138,7 +138,12 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
     return bookings.filter((b) => {
       if (q && !(`${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.room?.number || ''}`.toLowerCase().includes(q))) return false
       if (status !== 'ALL' && b.status !== status) return false
-      if (paymentStatus !== 'ALL' && b.paymentStatus !== paymentStatus) return false
+      if (paymentStatus !== 'ALL') {
+        const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
+        const eff = hasDue ? 'PARTIAL' : 'PAID'
+        if (paymentStatus === 'PAID' && eff !== 'PAID') return false
+        if (paymentStatus === 'PARTIAL' && eff !== 'PARTIAL') return false
+      }
       if (roomFilter !== 'ALL' && b.room?.id !== roomFilter) return false
       const created = new Date(b.checkIn).toISOString().slice(0, 10)
       if (from && created < from) return false
@@ -163,10 +168,14 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
     exportCSV(
       'bookings.csv',
       ['Guest', 'Phone', 'Room', 'Check-in', 'Check-out', 'Nights', 'Rate/Night', 'Advance', 'Status', 'Payment', 'Corporate'],
-      (filtered as unknown as Booking[]).map((b) => [
-        b.guest?.name || '', b.guest?.phone || '', b.room?.number || '', formatDate(b.checkIn), formatDate(b.checkOut),
-        b.days, b.ratePerDay, b.advance, b.status, b.paymentStatus, b.isCorporate ? 'Yes' : 'No',
-      ])
+      (filtered as unknown as Booking[]).map((b) => {
+        const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
+        const effPayment = hasDue ? 'PARTIAL' : 'PAID'
+        return [
+          b.guest?.name || '', b.guest?.phone || '', b.room?.number || '', formatDate(b.checkIn), formatDate(b.checkOut),
+          b.days, b.ratePerDay, b.advance, b.status, effPayment, b.isCorporate ? 'Yes' : 'No',
+        ]
+      })
     )
   }
 
@@ -280,7 +289,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
           <p className="text-xs text-muted-foreground">
             {bookings.filter((b) => b.status === 'ACTIVE').length} in-house ·{' '}
             {bookings.filter((b) => b.status === 'BOOKED').length} upcoming ·{' '}
-            {bookings.filter((b) => b.paymentStatus !== 'PAID' && (b.status === 'ACTIVE' || b.status === 'COMPLETED')).length} with balance
+            {bookings.filter((b) => b.bills?.[0] && balanceDue(b.bills[0]) > 0.01).length} with balance
           </p>
         </div>
         <Button className="gap-2 bg-emerald-600 hover:bg-emerald-700" onClick={() => setNewOpen(true)}>
@@ -298,9 +307,8 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
             key: 'payment',
             label: 'Payment',
             options: [
-              { value: 'PAID', label: 'Paid' },
-              { value: 'PARTIAL', label: 'Partial' },
-              { value: 'UNPAID', label: 'Unpaid' },
+              { value: 'PAID', label: 'Paid / Confirmed' },
+              { value: 'PARTIAL', label: 'Partial / Balance Due' },
             ],
           },
           {
@@ -318,10 +326,10 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
         onReset={resetFilters}
         onExport={doExport}
       >
-        <div className="flex items-center gap-1">
-          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[130px] text-xs" aria-label="From date" />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-[130px] text-xs" aria-label="To date" />
+        <div className="flex items-center gap-1.5">
+          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />
+          <span className="text-xs text-muted-foreground font-medium">to</span>
+          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="To date" />
         </div>
       </TableControls>
 
@@ -350,6 +358,8 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
             )}
             {(paged as unknown as Booking[]).map((b) => {
               const busy = busyId === b.id
+              const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
+              const effPaymentStatus = hasDue ? 'PARTIAL' : 'PAID'
               return (
                 <TableRow key={b.id}>
                   <TableCell>
@@ -371,7 +381,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                         b.status === 'ACTIVE'
                           ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300'
                           : b.status === 'BOOKED'
-                            ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                            ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300'
                             : b.status === 'COMPLETED'
                               ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
                               : 'border-zinc-300 bg-zinc-50 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
@@ -381,9 +391,9 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <PaymentStatusBadge status={b.paymentStatus} />
-                    {b.bills[0] && balanceDue(b.bills[0]) > 0.01 && (
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    <PaymentStatusBadge status={effPaymentStatus} />
+                    {hasDue && (
+                      <div className="mt-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
                         due {formatINR(balanceDue(b.bills[0]))}
                       </div>
                     )}

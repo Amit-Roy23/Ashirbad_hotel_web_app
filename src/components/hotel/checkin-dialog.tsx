@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -13,9 +13,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
-import { api, apiAs, addDays, formatINR, sanitizePhone } from '@/lib/hotel-utils'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
-import { Loader2, UserSearch } from 'lucide-react'
+import { toast } from '@/hooks/use-toast'
+import { Loader2, UserSearch, LogIn, CalendarCheck } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface Room {
   id: string
@@ -30,17 +39,21 @@ interface CheckinDialogProps {
   onOpenChange: (open: boolean) => void
   room: Room | null
   onSuccess: () => void
+  initialMode?: 'CHECKIN' | 'BOOKING'
 }
 
-export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDialogProps) {
+export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode = 'CHECKIN' }: CheckinDialogProps) {
+  const [bookingMode, setBookingMode] = useState<'CHECKIN' | 'BOOKING'>(initialMode)
   const [phone, setPhone] = useState('')
   const [name, setName] = useState('')
   const [company, setCompany] = useState('')
   const [gst, setGst] = useState('')
   const [address, setAddress] = useState('')
+  const [checkInDate, setCheckInDate] = useState(todayStr())
   const [checkOut, setCheckOut] = useState(addDays(1))
   const [guestCount, setGuestCount] = useState('1')
   const [advance, setAdvance] = useState('')
+  const [advanceMethod, setAdvanceMethod] = useState('CASH')
   const [isCorporate, setIsCorporate] = useState(false)
   const [notes, setNotes] = useState('')
   const [autoFilled, setAutoFilled] = useState(false)
@@ -50,20 +63,32 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
 
   useEffect(() => {
     if (open && room) {
+      setBookingMode(initialMode)
       setPhone('')
       setName('')
       setCompany('')
       setGst('')
       setAddress('')
+      setCheckInDate(todayStr())
       setCheckOut(addDays(1))
       setGuestCount('1')
       setAdvance('')
+      setAdvanceMethod('CASH')
       setIsCorporate(false)
       setNotes('')
       setAutoFilled(false)
       setError('')
     }
-  }, [open, room])
+  }, [open, room, initialMode])
+
+  const effectiveCheckIn = bookingMode === 'BOOKING' ? checkInDate : todayStr()
+  const nights = useMemo(() => {
+    const diff = Math.ceil(
+      (new Date(checkOut + 'T11:00:00').getTime() - new Date(effectiveCheckIn + 'T12:00:00').getTime()) /
+        (1000 * 60 * 60 * 24)
+    )
+    return Math.max(1, diff)
+  }, [effectiveCheckIn, checkOut])
 
   // AUTO-FILL: when phone matches an old customer, fetch their details
   async function lookupGuest(value: string) {
@@ -80,6 +105,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
           setCompany(guest.company || '')
           setGst(guest.gst || '')
           setAddress(guest.address || '')
+          if (guest.company) setIsCorporate(true)
           setAutoFilled(true)
         } else {
           setAutoFilled(false)
@@ -118,6 +144,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
     setSaving(true)
     setError('')
     try {
+      const isAdvance = bookingMode === 'BOOKING'
       await apiAs('/api/bookings', getCachedUser(), {
         method: 'POST',
         body: JSON.stringify({
@@ -127,18 +154,34 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
           company: company.trim() || undefined,
           gst: gst.trim() || undefined,
           address: address.trim() || undefined,
-          checkIn: new Date().toISOString(),
+          checkIn: isAdvance ? checkInDate : new Date().toISOString(),
           checkOut,
           guestCount,
           advance: advance || '0',
+          advanceMethod,
           isCorporate,
           notes: notes.trim() || undefined,
+          bookingType: isAdvance ? 'BOOKING' : 'CHECKIN',
+          status: isAdvance ? 'BOOKED' : 'ACTIVE',
         }),
       })
       onSuccess()
       onOpenChange(false)
+      if (isAdvance) {
+        toast({
+          variant: 'success',
+          title: 'Room Booked in Advance',
+          description: `Room ${room.number} reserved for ${name.trim()} from ${formatDate(checkInDate)} to ${formatDate(checkOut)}.`,
+        })
+      } else {
+        toast({
+          variant: 'success',
+          title: 'Check-In Successful',
+          description: `Guest ${name.trim()} checked into Room ${room.number}.`,
+        })
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Check-in failed')
+      setError(e instanceof Error ? e.message : 'Operation failed')
     } finally {
       setSaving(false)
     }
@@ -148,15 +191,106 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Check-In — Room {room?.number}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            {bookingMode === 'CHECKIN' ? 'Check-In' : 'Advance Booking'} — Room {room?.number}
+          </DialogTitle>
           <DialogDescription>
             {room?.type} • {formatINR(room?.rate)}/night • Max {room?.capacity} guests
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3.5">
+        {/* Toggle between Check-In and Advance Booking */}
+        <div className="grid grid-cols-2 p-1 bg-muted rounded-lg text-xs font-semibold gap-1">
+          <button
+            type="button"
+            onClick={() => setBookingMode('CHECKIN')}
+            className={cn(
+              "flex items-center justify-center gap-2 py-2 rounded-md transition-all",
+              bookingMode === 'CHECKIN'
+                ? "bg-background text-emerald-700 dark:text-emerald-400 shadow-sm font-bold"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <LogIn className="h-4 w-4 text-emerald-600" />
+            Direct Check-In
+          </button>
+          <button
+            type="button"
+            onClick={() => setBookingMode('BOOKING')}
+            className={cn(
+              "flex items-center justify-center gap-2 py-2 rounded-md transition-all",
+              bookingMode === 'BOOKING'
+                ? "bg-background text-amber-800 dark:text-amber-300 shadow-sm font-bold"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <CalendarCheck className="h-4 w-4 text-amber-600" />
+            Advance Booking
+          </button>
+        </div>
+
+        <div className="space-y-3.5 pt-1">
+          {/* Date selection */}
+          {bookingMode === 'BOOKING' ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="ci-in" className="text-xs font-semibold text-foreground">Check-In Date *</Label>
+                <Input
+                  id="ci-in"
+                  type="date"
+                  value={checkInDate}
+                  min={todayStr()}
+                  className="h-9 text-xs"
+                  onChange={(e) => {
+                    setCheckInDate(e.target.value)
+                    if (e.target.value >= checkOut) {
+                      setCheckOut(addDays(1, new Date(e.target.value)))
+                    }
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ci-out" className="text-xs font-semibold text-foreground">Check-Out Date *</Label>
+                <Input
+                  id="ci-out"
+                  type="date"
+                  value={checkOut}
+                  min={checkInDate}
+                  className="h-9 text-xs"
+                  onChange={(e) => setCheckOut(e.target.value)}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-foreground">Check-In</Label>
+                <div className="h-9 px-3 bg-muted/60 rounded-md border text-xs flex items-center font-medium text-emerald-700 dark:text-emerald-400">
+                  Today (Now)
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="checkout" className="text-xs font-semibold text-foreground">Expected Check-Out *</Label>
+                <Input
+                  id="checkout"
+                  type="date"
+                  value={checkOut}
+                  min={todayStr()}
+                  className="h-9 text-xs"
+                  onChange={(e) => setCheckOut(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+
+          <p className="-mt-1 text-xs text-muted-foreground">
+            {nights} night{nights > 1 ? 's' : ''}
+            {room ? ` · ${formatINR(room.rate)} × ${nights} = ${formatINR(room.rate * nights)}` : ''}
+            {bookingMode === 'BOOKING' ? ' · room reserved with yellow status until arrival' : ''}
+          </p>
+
           <div className="space-y-1.5">
-            <Label htmlFor="phone" className="text-sm font-medium">
+            <Label htmlFor="phone" className="text-xs font-semibold text-foreground">
               Phone Number (10 Digits) *
             </Label>
             <div className="relative">
@@ -168,7 +302,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
                 placeholder="10-digit mobile number"
                 value={phone}
                 onChange={(e) => lookupGuest(e.target.value)}
-                className="pr-10"
+                className="h-9 pr-10 text-xs"
               />
               {searching && (
                 <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
@@ -189,17 +323,18 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
             )}
             {autoFilled && (
               <p className="text-xs text-emerald-600 font-medium">
-                ✓ Old customer found — details auto-filled!
+                ✓ Returning customer found — details auto-filled!
               </p>
             )}
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="name">Guest Name *</Label>
+            <Label htmlFor="name" className="text-xs font-semibold text-foreground">Guest Name *</Label>
             <Input
               id="name"
               placeholder="Full name"
               value={name}
+              className="h-9 text-xs"
               onChange={(e) => {
                 setName(e.target.value)
                 setAutoFilled(false)
@@ -208,93 +343,118 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess }: CheckinDi
           </div>
 
           {isCorporate && (
-            <>
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="company" className="text-sm font-medium">
+                <Label htmlFor="company" className="text-xs font-semibold text-foreground">
                   Company Name <span className="text-red-500">*</span>
                 </Label>
                 <Input
                   id="company"
-                  placeholder="Company name (mandatory)"
+                  placeholder="Company name"
                   value={company}
+                  className="h-9 text-xs"
                   onChange={(e) => setCompany(e.target.value)}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="gst">GST Number</Label>
+                <Label htmlFor="gst" className="text-xs font-semibold text-foreground">GST Number</Label>
                 <Input
                   id="gst"
                   placeholder="GSTIN (optional)"
                   value={gst}
+                  className="h-9 text-xs uppercase"
                   onChange={(e) => setGst(e.target.value)}
                 />
               </div>
-            </>
+            </div>
           )}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="checkout">Expected Check-Out *</Label>
-              <Input
-                id="checkout"
-                type="date"
-                value={checkOut}
-                min={new Date().toISOString().slice(0, 10)}
-                onChange={(e) => setCheckOut(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="gcount">Guests *</Label>
+              <Label htmlFor="gcount" className="text-xs font-semibold text-foreground">Guests *</Label>
               <Input
                 id="gcount"
                 type="number"
                 min="1"
                 value={guestCount}
+                className="h-9 text-xs"
                 onChange={(e) => setGuestCount(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="advance" className="text-xs font-semibold text-foreground">Advance Payment (₹)</Label>
+              <Input
+                id="advance"
+                type="number"
+                min="0"
+                placeholder="0"
+                value={advance}
+                className="h-9 text-xs"
+                onChange={(e) => setAdvance(e.target.value)}
               />
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="advance">Advance Payment (₹) *</Label>
-            <Input
-              id="advance"
-              type="number"
-              min="0"
-              placeholder="0"
-              value={advance}
-              onChange={(e) => setAdvance(e.target.value)}
-            />
-          </div>
+          {parseFloat(advance) > 0 && (
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-foreground">Advance Payment Method</Label>
+              <Select value={advanceMethod} onValueChange={setAdvanceMethod}>
+                <SelectTrigger className="h-9 text-xs" aria-label="Advance method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CASH" className="text-xs">Cash</SelectItem>
+                  <SelectItem value="UPI" className="text-xs">UPI</SelectItem>
+                  <SelectItem value="CARD" className="text-xs">Card</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div>
-              <p className="text-sm font-medium">Corporate Guest</p>
-              <p className="text-xs text-muted-foreground">Company / GST billing</p>
+          <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/20">
+            <div className="space-y-0.5">
+              <p className="text-xs font-semibold text-foreground">Corporate Guest</p>
+              <p className="text-[11px] text-muted-foreground">Company / GST billing</p>
             </div>
             <Switch checked={isCorporate} onCheckedChange={setIsCorporate} />
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="notes">Notes</Label>
+            <Label htmlFor="notes" className="text-xs font-semibold text-foreground">Notes</Label>
             <Textarea
               id="notes"
-              placeholder="Any special instruction..."
+              placeholder="Any special instruction or request..."
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
+              className="text-xs"
             />
           </div>
 
-          {error && <p className="text-sm text-red-600 font-medium">{error}</p>}
+          {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
 
-          <div className="flex gap-2 pt-1">
-            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+          <div className="flex items-center gap-2 pt-2 border-t">
+            <Button variant="outline" className="flex-1 h-9 text-xs" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button className="flex-1 bg-emerald-600 hover:bg-emerald-700" onClick={submit} disabled={saving}>
-              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Confirm Check-In
+            <Button
+              className={cn(
+                "flex-1 h-9 text-xs font-semibold text-white",
+                bookingMode === 'BOOKING'
+                  ? "bg-amber-600 hover:bg-amber-700"
+                  : "bg-emerald-600 hover:bg-emerald-700"
+              )}
+              onClick={submit}
+              disabled={saving}
+            >
+              {saving ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : bookingMode === 'BOOKING' ? (
+                <CalendarCheck className="mr-1.5 h-3.5 w-3.5" />
+              ) : (
+                <LogIn className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {bookingMode === 'BOOKING' ? 'Confirm Advance Booking' : 'Confirm Check-In'}
             </Button>
           </div>
         </div>

@@ -24,8 +24,8 @@ export function todayStr(): string {
   return d.toISOString().slice(0, 10)
 }
 
-export function addDays(days: number): string {
-  const d = new Date()
+export function addDays(days: number, fromDate?: string | Date): string {
+  const d = fromDate ? new Date(fromDate) : new Date()
   d.setDate(d.getDate() + days)
   return d.toISOString().slice(0, 10)
 }

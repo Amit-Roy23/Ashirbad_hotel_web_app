@@ -334,10 +334,10 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
         onReset={resetFilters}
         onExport={doExport}
       >
-        <div className="flex items-center gap-1">
-          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[130px] text-xs" aria-label="From date" />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-[130px] text-xs" aria-label="To date" />
+        <div className="flex items-center gap-1.5">
+          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />
+          <span className="text-xs text-muted-foreground font-medium">to</span>
+          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="To date" />
         </div>
       </TableControls>
 

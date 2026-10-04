@@ -149,12 +149,12 @@ export function TableControls({
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-[160px] flex-1 sm:max-w-xs">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" aria-hidden />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden />
           <Input
             value={search}
             onChange={(e) => onSearch(e.target.value)}
             placeholder={searchPlaceholder}
-            className="pl-8"
+            className="h-9 pl-8 text-xs"
             aria-label="Search table"
           />
         </div>
@@ -164,8 +164,8 @@ export function TableControls({
             value={filterValues?.[f.key] || 'ALL'}
             onValueChange={(v) => onFilterChange?.(f.key, v)}
           >
-            <SelectTrigger className="h-9 w-[140px]" aria-label={f.label}>
-              <Filter className="mr-1 h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+            <SelectTrigger className="h-9 w-[140px] text-xs" aria-label={f.label}>
+              <Filter className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" aria-hidden />
               <SelectValue placeholder={f.label} />
             </SelectTrigger>
             <SelectContent>
@@ -180,7 +180,7 @@ export function TableControls({
         ))}
         {children}
         {onReset && (
-          <Button variant="ghost" size="sm" onClick={onReset} className="gap-1">
+          <Button variant="ghost" size="sm" onClick={onReset} className="h-9 gap-1.5 text-xs">
             <RotateCcw className="h-3.5 w-3.5" aria-hidden />
             Reset
           </Button>
@@ -189,7 +189,7 @@ export function TableControls({
           <Button
             variant="outline"
             size="sm"
-            className="gap-1"
+            className="h-9 gap-1.5 text-xs font-semibold"
             onClick={
               onExport ||
               (() => exportCSV(`${exportName}.csv`, ['data'], []))

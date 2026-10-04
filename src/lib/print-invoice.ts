@@ -346,6 +346,124 @@ export function triggerPrintFoodBill(order: any, settings: Record<string, string
   }, 300)
 }
 
+export function triggerPrintAdvanceReceipt(booking: any, settings: Record<string, string> = {}) {
+  if (!booking) return
+
+  const hotelName = settings.hotelName || 'Ashirbad Lodge'
+  const hotelAddress = settings.hotelAddress || 'Station Road, Kolkata'
+  const hotelPhone = settings.hotelPhone || '+91 90000 00000'
+  const hotelGstin = settings.hotelGstin || ''
+
+  const guest = booking.guest
+  const room = booking.room
+  const receiptNo = `ADV-${booking.id?.slice(-6).toUpperCase() || '1001'}`
+  const stayTotal = (booking.ratePerDay || 0) * (booking.days || 1)
+  const advance = booking.advance || 0
+  const estBalance = Math.max(0, stayTotal - advance)
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Advance Booking Receipt ${receiptNo} - ${hotelName}</title>
+  <style>
+    @page { size: A4 portrait; margin: 0mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #111827; background: #ffffff; padding: 12mm 15mm; font-size: 13px; line-height: 1.5;
+    }
+    .receipt-card {
+      max-width: 680px; margin: 0 auto; border: 1px solid #d1d5db; border-radius: 8px; padding: 24px;
+    }
+    .text-center { text-align: center; }
+    .text-right { text-align: right; }
+    .bold { font-weight: 700; }
+    .hotel-name { font-size: 22px; font-weight: 800; color: #111827; margin-bottom: 2px; }
+    .badge {
+      display: inline-block; margin-top: 8px; padding: 4px 12px; font-size: 11px; font-weight: 700;
+      border-radius: 9999px; background: #fef3c7; color: #92400e; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .divider { border-top: 1px solid #e5e7eb; margin: 16px 0; }
+    .meta-grid { display: flex; justify-content: space-between; gap: 20px; font-size: 12px; }
+    .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; color: #374151; }
+    .row.advance { font-size: 16px; font-weight: 800; color: #047857; border-top: 2px solid #047857; padding-top: 10px; margin-top: 6px; }
+    .note-box { background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 12px; margin-top: 16px; font-size: 11px; color: #92400e; }
+  </style>
+</head>
+<body>
+  <div class="receipt-card">
+    <div class="text-center">
+      <div class="hotel-name">${escapeHtml(hotelName)}</div>
+      ${hotelAddress ? `<div style="font-size:12px; color:#4b5563;">${escapeHtml(hotelAddress)}</div>` : ''}
+      ${hotelPhone ? `<div style="font-size:12px; color:#4b5563;">Ph: ${escapeHtml(hotelPhone)}</div>` : ''}
+      ${hotelGstin ? `<div style="font-size:12px; font-weight:600; color:#374151;">GSTIN: ${escapeHtml(hotelGstin)}</div>` : ''}
+      <div class="badge">ADVANCE BOOKING RECEIPT</div>
+    </div>
+    <div class="divider"></div>
+    <div class="meta-grid">
+      <div>
+        <div>Receipt No: <span class="bold">${receiptNo}</span></div>
+        <div>Date: <span class="bold">${booking.createdAt ? formatDateTime(booking.createdAt) : formatDateTime(new Date())}</span></div>
+        <div>Room: <span class="bold">Room ${escapeHtml(room?.number || '—')}</span> (${escapeHtml(room?.type || '')})</div>
+        <div>Stay: <span class="bold">${formatDate(booking.checkIn)} → ${formatDate(booking.checkOut)}</span> (${booking.days || 1} nights)</div>
+      </div>
+      <div class="text-right">
+        <div>Guest: <span class="bold">${escapeHtml(guest?.name || 'Guest')}</span></div>
+        <div>Phone: <span class="bold">${escapeHtml(guest?.phone || '—')}</span></div>
+        ${guest?.company ? `<div>Company: <span class="bold">${escapeHtml(guest.company)}</span></div>` : ''}
+        ${guest?.gst ? `<div>GSTIN: <span class="bold">${escapeHtml(guest.gst)}</span></div>` : ''}
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="row">
+      <span>Estimated Room Tariff (${booking.days || 1} night(s) @ ${formatINR(booking.ratePerDay)})</span>
+      <span class="bold">${formatINR(stayTotal)}</span>
+    </div>
+    <div class="row advance">
+      <span>Advance Payment Received</span>
+      <span>${formatINR(advance)}</span>
+    </div>
+    <div class="row" style="color: #6b7280; font-size: 12px; padding-top: 4px;">
+      <span>Estimated Balance on Checkout</span>
+      <span class="bold">${formatINR(estBalance)}</span>
+    </div>
+    <div class="note-box">
+      <b>Booking Confirmation Note:</b> This receipt confirms advance reservation payment. The remaining stay balance, along with any food orders or extra charges, will be settled upon checkout.
+    </div>
+    <p class="text-center" style="font-size: 11px; color: #6b7280; margin-top: 16px;">
+      Thank you for choosing ${escapeHtml(hotelName)}! We look forward to hosting you.
+    </p>
+  </div>
+</body>
+</html>`
+
+  const iframe = document.createElement('iframe')
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
+  document.body.appendChild(iframe)
+
+  const doc = iframe.contentWindow?.document
+  if (!doc) return
+
+  doc.open()
+  doc.write(html)
+  doc.close()
+
+  setTimeout(() => {
+    iframe.contentWindow?.focus()
+    iframe.contentWindow?.print()
+    setTimeout(() => {
+      document.body.removeChild(iframe)
+    }, 1000)
+  }, 300)
+}
+
 function escapeHtml(str: string): string {
   if (!str) return ''
   return String(str)

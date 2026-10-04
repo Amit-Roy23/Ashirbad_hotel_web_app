@@ -214,11 +214,11 @@ export function ReportsTab({ refreshKey }: TabProps) {
         <CardContent className="flex flex-wrap items-end gap-3 p-4">
           <div className="space-y-1.5">
             <Label htmlFor="rep-from">From</Label>
-            <Input id="rep-from" type="date" value={from} max={todayStr()} onChange={(e) => setFrom(e.target.value)} />
+            <Input id="rep-from" type="date" value={from} max={todayStr()} onChange={(e) => setFrom(e.target.value)} className="h-9 w-40 text-xs" />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="rep-to">To</Label>
-            <Input id="rep-to" type="date" value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} />
+            <Input id="rep-to" type="date" value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} className="h-9 w-40 text-xs" />
           </div>
           <Button onClick={load} disabled={loading}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Refresh

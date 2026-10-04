@@ -339,35 +339,22 @@ export function EditBillDialog({
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs font-semibold">GST % *</Label>
+                  <Label className="text-xs font-semibold text-foreground">GST % *</Label>
                   <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setGstPercent('0')}
-                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                        num(gstPercent) === 0 ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      0%
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGstPercent('12')}
-                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                        num(gstPercent) === 12 ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      12%
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGstPercent('18')}
-                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                        num(gstPercent) === 18 ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      18%
-                    </button>
+                    {(['0', '12', '18'] as const).map((pct) => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setGstPercent(pct)}
+                        className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
+                          num(gstPercent) === num(pct)
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-muted text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {pct === '0' ? '0%' : `${pct}%`}
+                      </button>
+                    ))}
                   </div>
                 </div>
                 <Input
@@ -377,23 +364,24 @@ export function EditBillDialog({
                   step="0.1"
                   value={gstPercent}
                   onChange={(e) => setGstPercent(e.target.value)}
+                  className="h-9 text-xs"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Discount (₹)</Label>
-                <Input type="number" min="0" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+                <Label className="text-xs font-semibold text-foreground">Discount (₹)</Label>
+                <Input type="number" min="0" value={discount} onChange={(e) => setDiscount(e.target.value)} className="h-9 text-xs" />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Extra Charges (₹)</Label>
-                <Input type="number" min="0" value={extraCharges} onChange={(e) => setExtraCharges(e.target.value)} />
+                <Label className="text-xs font-semibold text-foreground">Extra Charges (₹)</Label>
+                <Input type="number" min="0" value={extraCharges} onChange={(e) => setExtraCharges(e.target.value)} className="h-9 text-xs" />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Food Charges (Read-only)</Label>
-                <div className="rounded-md bg-muted px-3 py-2 text-sm font-medium">
+                <Label className="text-xs font-semibold text-foreground">Food Charges (Read-only)</Label>
+                <div className="h-9 rounded-md bg-muted px-3 flex items-center text-xs font-medium">
                   {formatINR(bill.foodTotal)}
                 </div>
               </div>
@@ -401,19 +389,19 @@ export function EditBillDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Bill To / Company</Label>
-                <Input value={corporateName} onChange={(e) => setCorporateName(e.target.value)} placeholder="Company name" />
+                <Label className="text-xs font-semibold text-foreground">Bill To / Company</Label>
+                <Input value={corporateName} onChange={(e) => setCorporateName(e.target.value)} placeholder="Company name" className="h-9 text-xs" />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">GSTIN</Label>
-                <Input value={gstNumber} onChange={(e) => setGstNumber(e.target.value)} placeholder="GST number" />
+                <Label className="text-xs font-semibold text-foreground">GSTIN</Label>
+                <Input value={gstNumber} onChange={(e) => setGstNumber(e.target.value)} placeholder="GST number" className="h-9 text-xs uppercase" />
               </div>
             </div>
 
             <Separator />
 
             {/* Recalculated breakdown preview */}
-            <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
+            <div className="space-y-1.5 rounded-lg bg-muted/50 p-3 text-xs">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Customer Room Amount</span>
                 <span className="font-medium">{formatINR(calc.customerAmount)}</span>
@@ -447,9 +435,9 @@ export function EditBillDialog({
                   <span>₹0</span>
                 </div>
               )}
-              <div className="flex justify-between font-bold">
+              <div className="flex justify-between font-bold text-sm">
                 <span>Grand Total</span>
-                <span className="text-emerald-700 dark:text-emerald-400">{formatINR(calc.grandTotal)}</span>
+                <span className="text-slate-900 dark:text-white">{formatINR(calc.grandTotal)}</span>
               </div>
               {calc.advanceApplied > 0 && (
                 <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
@@ -458,53 +446,54 @@ export function EditBillDialog({
                 </div>
               )}
               <Separator />
-              <div className="flex justify-between text-base font-bold">
+              <div className="flex justify-between text-sm font-bold text-emerald-700 dark:text-emerald-400 pt-1 border-t">
                 <span>Payable now</span>
                 <span>{formatINR(calc.payable)}</span>
               </div>
             </div>
 
             {/* Payment split adjustment */}
-            <div>
-              <div className="mb-1 flex items-center justify-between">
-                <p className="text-xs font-semibold">Payment Received Split</p>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-foreground">Payment Received Split</p>
+                <span className="text-[10px] text-muted-foreground">Split across Cash, UPI, Card</span>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-1">
-                  <Label className="text-[11px]">Cash</Label>
-                  <Input type="number" value={payCash} onChange={(e) => setPayCash(e.target.value)} className="h-8 text-xs" />
+                  <Label className="text-[11px] font-medium">Cash</Label>
+                  <Input type="number" value={payCash} onChange={(e) => setPayCash(e.target.value)} className="h-9 text-xs" />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[11px]">UPI</Label>
-                  <Input type="number" value={payUpi} onChange={(e) => setPayUpi(e.target.value)} className="h-8 text-xs" />
+                  <Label className="text-[11px] font-medium">UPI</Label>
+                  <Input type="number" value={payUpi} onChange={(e) => setPayUpi(e.target.value)} className="h-9 text-xs" />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[11px]">Card</Label>
-                  <Input type="number" value={payCard} onChange={(e) => setPayCard(e.target.value)} className="h-8 text-xs" />
+                  <Label className="text-[11px] font-medium">Card</Label>
+                  <Input type="number" value={payCard} onChange={(e) => setPayCard(e.target.value)} className="h-9 text-xs" />
                 </div>
               </div>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex gap-1">
-                  <Button type="button" variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => autoBalance('CASH')}>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CASH')}>
                     All Cash
                   </Button>
-                  <Button type="button" variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => autoBalance('UPI')}>
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('UPI')}>
                     All UPI
                   </Button>
-                  <Button type="button" variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => autoBalance('CARD')}>
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CARD')}>
                     All Card
                   </Button>
                 </div>
-                <span className={calc.balance > 0.01 ? 'font-bold text-amber-600' : 'font-bold text-emerald-700 dark:text-emerald-400'}>
+                <span className={calc.balance > 0.01 ? 'font-bold text-amber-600 text-xs' : 'font-bold text-emerald-700 dark:text-emerald-400 text-xs'}>
                   {calc.balance > 0.01 ? `Outstanding: ${formatINR(calc.balance)}` : '✓ Fully paid'}
                 </span>
               </div>
             </div>
 
-            {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+            {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
-            <Button className="w-full bg-emerald-600 hover:bg-emerald-700" onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs" onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Save &amp; Recalculate Bill
             </Button>
           </div>

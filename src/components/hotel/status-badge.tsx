@@ -1,6 +1,6 @@
 'use client'
 
-import { DoorOpen, DoorClosed, Wrench, BrushCleaning, CheckCircle2 } from 'lucide-react'
+import { DoorOpen, DoorClosed, Wrench, BrushCleaning, CheckCircle2, CalendarCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 /** Room status badge — always pairs color with an icon + text label (PRD 8: no color-alone status) */
@@ -27,6 +27,19 @@ export function RoomStatusBadge({
       </span>
     )
   }
+  if (status === 'BOOKED' || status === 'RESERVED') {
+    return (
+      <span
+        className={cn(
+          'inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:bg-amber-950 dark:border-amber-700 dark:text-amber-200',
+          className
+        )}
+      >
+        <CalendarCheck className="h-3 w-3 text-amber-700 dark:text-amber-300" aria-hidden />
+        Booked
+      </span>
+    )
+  }
   if (status === 'MAINTENANCE') {
     return (
       <span
@@ -44,7 +57,7 @@ export function RoomStatusBadge({
     return (
       <span
         className={cn(
-          'inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+          'inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-semibold text-orange-800 dark:bg-orange-950 dark:text-orange-300',
           className
         )}
       >

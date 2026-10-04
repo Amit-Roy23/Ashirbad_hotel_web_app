@@ -40,8 +40,8 @@ export class BookingService {
   static async refreshBookingPaymentStatus(bookingId: string) {
     const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
     if (!booking) return
-    let paymentStatus = 'UNPAID'
-    if (booking.status === 'CANCELLED') {
+    let paymentStatus = 'PAID'
+    if (booking.status === 'CANCELLED' || booking.status === 'BOOKED') {
       paymentStatus = 'PAID'
     } else {
       const bill = await prisma.bill.findFirst({
@@ -49,9 +49,11 @@ export class BookingService {
         orderBy: { createdAt: 'desc' },
       })
       if (bill) {
-        const paid = bill.payCash + bill.payUpi + bill.payCard
+        const paid = (bill.advanceApplied || 0) + bill.payCash + bill.payUpi + bill.payCard
         if (paid >= bill.grandTotal - 0.01) paymentStatus = 'PAID'
-        else if (paid > 0) paymentStatus = 'PARTIAL'
+        else paymentStatus = 'PARTIAL'
+      } else {
+        paymentStatus = 'PAID'
       }
     }
     if (paymentStatus !== booking.paymentStatus) {

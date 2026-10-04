@@ -87,12 +87,12 @@ function parseDateInput(value: unknown, fallbackTime = 'T12:00:00'): Date | null
   return isNaN(d.getTime()) ? null : d
 }
 
-/** Recompute UNPAID | PARTIAL | PAID for a booking from its latest bill */
+/** Recompute PARTIAL | PAID for a booking from its latest bill */
 async function refreshBookingPaymentStatus(bookingId: string) {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
   if (!booking) return
-  let paymentStatus = 'UNPAID'
-  if (booking.status === 'CANCELLED') {
+  let paymentStatus = 'PAID'
+  if (booking.status === 'CANCELLED' || booking.status === 'BOOKED') {
     paymentStatus = 'PAID'
   } else {
     const bill = await prisma.bill.findFirst({
@@ -100,9 +100,11 @@ async function refreshBookingPaymentStatus(bookingId: string) {
       orderBy: { createdAt: 'desc' },
     })
     if (bill) {
-      const paid = bill.advanceApplied + bill.payCash + bill.payUpi + bill.payCard
+      const paid = (bill.advanceApplied || 0) + bill.payCash + bill.payUpi + bill.payCard
       if (paid >= bill.grandTotal - 0.01) paymentStatus = 'PAID'
-      else if (paid > 0) paymentStatus = 'PARTIAL'
+      else paymentStatus = 'PARTIAL'
+    } else {
+      paymentStatus = 'PAID'
     }
   }
   if (paymentStatus !== booking.paymentStatus) {
@@ -123,7 +125,11 @@ async function listRooms(req: NextRequest) {
     },
     orderBy: { number: 'asc' },
     include: {
-      bookings: { where: { status: 'ACTIVE' }, include: { guest: true }, take: 1 },
+      bookings: {
+        where: { status: { in: ['ACTIVE', 'BOOKED'] } },
+        include: { guest: true },
+        orderBy: { checkIn: 'asc' },
+      },
     },
   })
   const filtered = floor ? rooms.filter((r) => r.number.startsWith(floor)) : rooms
@@ -301,6 +307,18 @@ async function listBookings(req: NextRequest) {
   const guestId = searchParams.get('guestId')
   const from = searchParams.get('from')
   const to = searchParams.get('to')
+
+  // Clean any legacy UNPAID records in DB
+  await prisma.booking.updateMany({
+    where: {
+      paymentStatus: 'UNPAID',
+      OR: [
+        { status: { in: ['BOOKED', 'ACTIVE', 'CANCELLED'] } },
+      ],
+    },
+    data: { paymentStatus: 'PAID' },
+  }).catch(() => {})
+
   const bookings = await prisma.booking.findMany({
     where: {
       ...(status ? { status } : {}),
@@ -331,7 +349,7 @@ async function listBookings(req: NextRequest) {
 async function createBooking(body: Record<string, unknown>, user: RequestUser) {
   const {
     roomId, phone, name, company, gst, address, checkIn, checkOut,
-    guestCount, advance, advanceMethod, isCorporate, notes,
+    guestCount, advance, advanceMethod, isCorporate, notes, bookingType, status: reqStatus,
   } = body
   if (!roomId || !phone || !name) {
     return NextResponse.json({ error: 'Room, phone and name are required' }, { status: 400 })
@@ -360,7 +378,9 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     checkInDate.getFullYear() > today.getFullYear() ||
     (checkInDate.getFullYear() === today.getFullYear() && checkInDate.getMonth() === today.getMonth() && checkInDate.getDate() > today.getDate())
 
-  if (room.status === 'OCCUPIED' && !isFuture) {
+  const isAdvanceBooking = bookingType === 'BOOKING' || reqStatus === 'BOOKED' || isFuture
+
+  if (room.status === 'OCCUPIED') {
     return NextResponse.json({ error: `Room ${room.number} is already occupied` }, { status: 400 })
   }
   if (room.status === 'MAINTENANCE') {
@@ -391,7 +411,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
       ],
     },
   })
-  if (overlapping && !isFuture) {
+  if (overlapping) {
     return NextResponse.json(
       { error: `Room ${room.number} already has an active booking for this period` },
       { status: 400 }
@@ -428,7 +448,8 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         days,
         guestCount: parseInt(String(guestCount)) || 1,
         ratePerDay: room.rate,
-        status: isFuture ? 'BOOKED' : 'ACTIVE',
+        status: isAdvanceBooking ? 'BOOKED' : 'ACTIVE',
+        paymentStatus: 'PAID',
         advance: adv,
         isCorporate: !!isCorporate,
         notes: notes ? String(notes) : null,
@@ -436,7 +457,9 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
       include: { room: true, guest: true },
     })
 
-    if (!isFuture) {
+    if (isAdvanceBooking) {
+      await tx.room.update({ where: { id: String(roomId) }, data: { status: 'BOOKED' } })
+    } else {
       await tx.room.update({ where: { id: String(roomId) }, data: { status: 'OCCUPIED' } })
     }
 
@@ -462,7 +485,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     'BOOKING_CREATE',
     'Booking',
     booking.id,
-    `${isFuture ? 'Future booking' : 'Check-in'}: ${name} → Room ${room.number}, ${days} night(s) @ ₹${room.rate}${adv > 0 ? `, advance ₹${adv}` : ''}`,
+    `${isAdvanceBooking ? 'Advance booking' : 'Check-in'}: ${name} → Room ${room.number}, ${days} night(s) @ ₹${room.rate}${adv > 0 ? `, advance ₹${adv}` : ''}`,
     user
   )
   return NextResponse.json(booking)
@@ -478,7 +501,7 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       return NextResponse.json({ error: 'Only booked reservations can be checked in' }, { status: 400 })
     }
     const room = await prisma.room.findUnique({ where: { id: booking.roomId } })
-    if (!room || room.status === 'OCCUPIED') {
+    if (!room || (room.status !== 'VACANT' && room.status !== 'BOOKED')) {
       return NextResponse.json({ error: `Room ${booking.room.number} is not available` }, { status: 400 })
     }
     const updated = await prisma.$transaction(async (tx) => {
@@ -573,6 +596,11 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
           where: { id: booking.roomId },
           data: { status: 'VACANT', housekeeping: 'DIRTY' },
         })
+      } else {
+        await tx.room.update({
+          where: { id: booking.roomId },
+          data: { status: 'VACANT' },
+        })
       }
       return b
     })
@@ -582,27 +610,112 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
   }
 
   if (action === 'update') {
-    const { name, phone, ratePerDay, advance, guestCount, notes } = body
-    if (name || phone) {
+    const {
+      name,
+      phone,
+      company,
+      gst,
+      address,
+      ratePerDay,
+      advance,
+      advanceMethod,
+      guestCount,
+      notes,
+      checkIn,
+      checkOut,
+      days,
+      isCorporate,
+    } = body
+
+    if (name || phone || company !== undefined || gst !== undefined || address !== undefined) {
       const guestData: Record<string, string> = {}
       if (name) guestData.name = String(name).trim()
-      if (phone) guestData.phone = String(phone).replace(/\D/g, '')
+      if (phone) {
+        const clean = String(phone).replace(/\D/g, '')
+        if (clean) guestData.phone = clean
+      }
+      if (company !== undefined) guestData.company = String(company)
+      if (gst !== undefined) guestData.gst = String(gst)
+      if (address !== undefined) guestData.address = String(address)
+
       await prisma.guest.update({
         where: { id: booking.guestId },
         data: guestData,
       })
     }
+
     const updateData: Record<string, unknown> = {}
     if (ratePerDay !== undefined) updateData.ratePerDay = num(ratePerDay)
     if (advance !== undefined) updateData.advance = num(advance)
-    if (guestCount !== undefined) updateData.guestCount = parseInt(String(guestCount))
+    if (guestCount !== undefined) updateData.guestCount = parseInt(String(guestCount)) || 1
     if (notes !== undefined) updateData.notes = String(notes)
+    if (isCorporate !== undefined) updateData.isCorporate = !!isCorporate
+
+    if (checkIn !== undefined) {
+      const parsedCheckIn = parseDateInput(checkIn, 'T12:00:00')
+      if (parsedCheckIn) updateData.checkIn = parsedCheckIn
+    }
+    if (checkOut !== undefined) {
+      const parsedCheckOut = parseDateInput(checkOut, 'T11:00:00')
+      if (parsedCheckOut) updateData.checkOut = parsedCheckOut
+    }
+    if (days !== undefined) {
+      updateData.days = Math.max(1, parseInt(String(days)) || 1)
+    } else if (updateData.checkIn && updateData.checkOut) {
+      const diff = Math.ceil(
+        ((updateData.checkOut as Date).getTime() - (updateData.checkIn as Date).getTime()) /
+          (1000 * 60 * 60 * 24)
+      )
+      updateData.days = Math.max(1, diff)
+    }
 
     const updated = await prisma.booking.update({
       where: { id: String(id) },
       data: updateData,
+      include: { room: true, guest: true },
     })
-    await logAudit('BOOKING_UPDATE', 'Booking', booking.id, `Updated booking for Room ${booking.room.number} (${booking.guest.name})`, user)
+
+    if (advance !== undefined) {
+      const advNum = num(advance)
+      const existingLedger = await prisma.ledgerEntry.findFirst({
+        where: { refId: booking.id, category: 'ADVANCE' },
+      })
+      if (existingLedger) {
+        if (advNum > 0) {
+          await prisma.ledgerEntry.update({
+            where: { id: existingLedger.id },
+            data: {
+              amount: advNum,
+              description: `Advance from ${name || booking.guest.name} (Room ${booking.room.number})`,
+              ...(advanceMethod ? { method: String(advanceMethod) } : {}),
+            },
+          })
+        } else {
+          await prisma.ledgerEntry.delete({ where: { id: existingLedger.id } })
+        }
+      } else if (advNum > 0) {
+        await prisma.ledgerEntry.create({
+          data: {
+            date: new Date(),
+            type: 'INCOME',
+            category: 'ADVANCE',
+            description: `Advance from ${name || booking.guest.name} (Room ${booking.room.number})`,
+            amount: advNum,
+            method: advanceMethod ? String(advanceMethod) : 'CASH',
+            source: 'AUTO',
+            refId: booking.id,
+          },
+        })
+      }
+    }
+
+    await logAudit(
+      'BOOKING_UPDATE',
+      'Booking',
+      booking.id,
+      `Updated booking details/advance for Room ${booking.room.number} (${booking.guest.name})`,
+      user
+    )
     return NextResponse.json(updated)
   }
 
@@ -1743,6 +1856,7 @@ async function getStats() {
 
   const vacant = rooms.filter((r) => r.status === 'VACANT').length
   const occupied = rooms.filter((r) => r.status === 'OCCUPIED').length
+  const booked = rooms.filter((r) => r.status === 'BOOKED').length
   const maintenance = rooms.filter((r) => r.status === 'MAINTENANCE').length
   const dirtyRooms = rooms.filter((r) => r.housekeeping === 'DIRTY').length
   const todayRevenue = todayBills.reduce((s, b) => s + (b.internalTotal !== undefined && b.internalTotal > 0 ? b.internalTotal : b.grandTotal), 0)
@@ -1774,6 +1888,7 @@ async function getStats() {
     totalRooms: rooms.length,
     vacant,
     occupied,
+    booked,
     maintenance,
     dirtyRooms,
     occupancyPercent: rooms.length ? Math.round((occupied / rooms.length) * 100) : 0,
