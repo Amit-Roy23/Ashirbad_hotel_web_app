@@ -14,6 +14,7 @@ import { CheckinDialog } from './checkin-dialog'
 import { RoomStatusBadge } from './status-badge'
 import { api, apiAs, formatINR, formatDate } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
+import { toast } from '@/hooks/use-toast'
 import {
   BedDouble,
   DoorOpen,
@@ -139,14 +140,33 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
     setBusy(true)
     try {
       const newStatus = room.status === 'MAINTENANCE' ? 'VACANT' : 'MAINTENANCE'
-      await apiAs(
+      const res = await apiAs<{ error?: string }>(
         '/api/rooms',
         getCachedUser(),
         { method: 'PATCH', body: JSON.stringify({ id: room.id, status: newStatus, housekeeping: 'CLEAN' }) }
       )
+      if (res && res.error) {
+        toast({
+          variant: 'destructive',
+          title: 'Update Failed',
+          description: res.error,
+        })
+        return
+      }
       await load()
       onDataChanged()
       setViewRoom(null)
+      toast({
+        variant: 'success',
+        title: 'Room Status Updated',
+        description: `Room ${room.number} is now marked ${newStatus === 'MAINTENANCE' ? 'Under Maintenance' : 'Vacant'}.`,
+      })
+    } catch (e) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: e instanceof Error ? e.message : 'Failed to update room status',
+      })
     } finally {
       setBusy(false)
     }
@@ -155,12 +175,32 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
   async function markClean(room: Room) {
     setBusy(true)
     try {
-      await apiAs('/api/rooms', getCachedUser(), {
+      const res = await apiAs<{ error?: string }>('/api/rooms', getCachedUser(), {
         method: 'PATCH',
         body: JSON.stringify({ id: room.id, housekeeping: 'CLEAN' }),
       })
+      if (res && res.error) {
+        toast({
+          variant: 'destructive',
+          title: 'Update Failed',
+          description: res.error,
+        })
+        return
+      }
       await load()
       onDataChanged()
+      setViewRoom(null)
+      toast({
+        variant: 'success',
+        title: 'Room Marked Clean',
+        description: `Room ${room.number} is clean and ready for check-in.`,
+      })
+    } catch (e) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: e instanceof Error ? e.message : 'Failed to mark room clean',
+      })
     } finally {
       setBusy(false)
     }
@@ -468,7 +508,11 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
             <p className="text-sm text-muted-foreground">This room is under maintenance.</p>
           )}
           {viewRoom && viewRoom.status === 'VACANT' && viewRoom.housekeeping === 'DIRTY' && (
-            <Button className="w-full" onClick={() => markClean(viewRoom)} disabled={busy}>
+            <Button
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
+              onClick={() => markClean(viewRoom)}
+              disabled={busy}
+            >
               {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
               Mark Clean (Ready for check-in)
             </Button>

@@ -28,6 +28,7 @@ import { TableControls } from './table-controls'
 import { Separator } from '@/components/ui/separator'
 import { api, apiAs, formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
+import { toast } from '@/hooks/use-toast'
 import { Loader2, Plus, BrushCleaning, Wrench, BedDouble, Printer, Wallet, Trash2, Receipt, Building2, Edit3 } from 'lucide-react'
 
 interface Guest {
@@ -124,7 +125,15 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
       if (q && !`${r.number} ${r.type}`.toLowerCase().includes(q)) return false
       if (floor !== 'ALL' && (r.floor ? r.floor !== floor : !r.number.startsWith(floor))) return false
       if (type !== 'ALL' && r.type !== type) return false
-      if (status !== 'ALL' && r.status !== status) return false
+      if (status !== 'ALL') {
+        if (status === 'DIRTY') {
+          if (r.housekeeping !== 'DIRTY') return false
+        } else if (status === 'VACANT') {
+          if (r.status !== 'VACANT' || r.housekeeping === 'DIRTY') return false
+        } else if (r.status !== status) {
+          return false
+        }
+      }
       return true
     })
   }, [rooms, search, floor, type, status])
@@ -148,9 +157,58 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   async function patchRoom(room: Room, data: Record<string, unknown>) {
     setBusy(true)
     try {
-      await apiAs('/api/rooms', getCachedUser(), { method: 'PATCH', body: JSON.stringify({ id: room.id, ...data }) })
+      const res = await apiAs<{ error?: string }>('/api/rooms', getCachedUser(), {
+        method: 'PATCH',
+        body: JSON.stringify({ id: room.id, ...data }),
+      })
+      if (res && res.error) {
+        toast({
+          variant: 'destructive',
+          title: 'Update Failed',
+          description: res.error,
+        })
+        return
+      }
+
       await load()
       onDataChanged()
+
+      if (data.housekeeping === 'CLEAN' && (!data.status || data.status === 'VACANT')) {
+        toast({
+          variant: 'success',
+          title: 'Room Marked Clean',
+          description: `Room ${room.number} is clean and ready for check-in.`,
+        })
+        setViewRoom(null)
+      } else if (data.status) {
+        const isMaint = data.status === 'MAINTENANCE'
+        toast({
+          variant: 'success',
+          title: 'Room Status Updated',
+          description: `Room ${room.number} is now marked ${isMaint ? 'Under Maintenance' : 'Vacant'}.`,
+        })
+        setViewRoom(null)
+      } else if (data.rate !== undefined) {
+        toast({
+          variant: 'success',
+          title: 'Rate Updated',
+          description: `Room ${room.number} rate updated to ${formatINR(Number(data.rate))}/night.`,
+        })
+        setViewRoom((prev) => (prev ? ({ ...prev, ...data } as Room) : null))
+      } else if (data.type !== undefined) {
+        toast({
+          variant: 'success',
+          title: 'Room Type Updated',
+          description: `Room ${room.number} type updated to ${data.type}.`,
+        })
+        setViewRoom((prev) => (prev ? ({ ...prev, ...data } as Room) : null))
+      }
+    } catch (e) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: e instanceof Error ? e.message : 'Could not update room',
+      })
     } finally {
       setBusy(false)
     }
@@ -176,13 +234,26 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         { method: 'DELETE' }
       )
       if (res && res.error) {
-        alert(res.error)
+        toast({
+          variant: 'destructive',
+          title: 'Delete Failed',
+          description: res.error,
+        })
         await load()
       } else {
+        toast({
+          variant: 'success',
+          title: 'Room Deleted',
+          description: `Room ${num} has been deleted.`,
+        })
         onDataChanged()
       }
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not delete room')
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: e instanceof Error ? e.message : 'Could not delete room',
+      })
       await load()
     } finally {
       setBusy(false)
@@ -194,7 +265,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     if (!cleanNum) return
     setBusy(true)
     try {
-      await apiAs('/api/rooms', getCachedUser(), {
+      const res = await apiAs<{ error?: string }>('/api/rooms', getCachedUser(), {
         method: 'POST',
         body: JSON.stringify({
           number: cleanNum,
@@ -204,13 +275,30 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
           capacity: newCapacity,
         }),
       })
+      if (res && res.error) {
+        toast({
+          variant: 'destructive',
+          title: 'Add Room Failed',
+          description: res.error,
+        })
+        return
+      }
       setAddOpen(false)
       setNewNumber('')
       setNewFloor('1')
       await load()
       onDataChanged()
+      toast({
+        variant: 'success',
+        title: 'Room Added',
+        description: `Room ${cleanNum} has been added successfully.`,
+      })
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not add room')
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: e instanceof Error ? e.message : 'Could not add room',
+      })
     } finally {
       setBusy(false)
     }
@@ -230,7 +318,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         <div>
           <h2 className="text-lg font-bold">Rooms</h2>
           <p className="text-xs text-muted-foreground">
-            {rooms.filter((r) => r.status === 'VACANT').length} vacant ·{' '}
+            {rooms.filter((r) => r.status === 'VACANT' && r.housekeeping !== 'DIRTY').length} vacant ·{' '}
             {rooms.filter((r) => r.status === 'OCCUPIED').length} occupied ·{' '}
             {rooms.filter((r) => r.housekeeping === 'DIRTY').length} to clean ·{' '}
             {rooms.filter((r) => r.status === 'MAINTENANCE').length} maintenance
@@ -261,7 +349,8 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
             key: 'status',
             label: 'Status',
             options: [
-              { value: 'VACANT', label: 'Vacant' },
+              { value: 'VACANT', label: 'Vacant (Clean)' },
+              { value: 'DIRTY', label: 'Dirty (To Clean)' },
               { value: 'OCCUPIED', label: 'Occupied' },
               { value: 'MAINTENANCE', label: 'Maintenance' },
             ],
@@ -413,8 +502,13 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
             )}
 
             {viewRoom && viewRoom.status === 'VACANT' && viewRoom.housekeeping === 'DIRTY' && (
-              <Button className="w-full" disabled={busy} onClick={() => patchRoom(viewRoom, { housekeeping: 'CLEAN' })}>
-                <BrushCleaning className="mr-2 h-4 w-4" /> Mark Clean
+              <Button
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
+                disabled={busy}
+                onClick={() => patchRoom(viewRoom, { housekeeping: 'CLEAN' })}
+              >
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
+                Mark Clean (Ready for check-in)
               </Button>
             )}
             {viewRoom && viewRoom.status !== 'OCCUPIED' && (
