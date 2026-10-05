@@ -20,10 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate } from '@/lib/hotel-utils'
+import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
-import { Loader2, UserSearch, LogIn, CalendarCheck } from 'lucide-react'
+import { RoomDatePicker } from './room-date-picker'
+import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface BookingInfo {
@@ -101,19 +102,40 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     return Math.max(1, diff)
   }, [effectiveCheckIn, checkOut])
 
+  // Check if current selected date range conflicts with an existing booking
+  const overlappingBooking = useMemo(() => {
+    if (!room?.bookings) return null
+    return (
+      room.bookings.find((b) => {
+        if (b.status !== 'ACTIVE' && b.status !== 'BOOKED') return false
+        return doDateRangesOverlap(effectiveCheckIn, checkOut, b.checkIn, b.checkOut)
+      }) || null
+    )
+  }, [room, effectiveCheckIn, checkOut])
+
   const upcomingBooking = useMemo(() => {
     if (!room?.bookings) return null
-    const effStart = new Date(effectiveCheckIn + 'T00:00:00').getTime()
+    const effInStr = toDateStr(effectiveCheckIn)
     return (
       room.bookings
-        .filter((b) => b.status === 'BOOKED' && new Date(b.checkIn).getTime() > effStart)
+        .filter((b) => b.status === 'BOOKED' && toDateStr(b.checkIn) > effInStr)
         .sort((a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime())[0] || null
+    )
+  }, [room, effectiveCheckIn])
+
+  const priorBooking = useMemo(() => {
+    if (!room?.bookings) return null
+    const effInStr = toDateStr(effectiveCheckIn)
+    return (
+      room.bookings
+        .filter((b) => (b.status === 'ACTIVE' || b.status === 'BOOKED') && toDateStr(b.checkOut) === effInStr)
+        .sort((a, b) => new Date(b.checkOut || '').getTime() - new Date(a.checkOut || '').getTime())[0] || null
     )
   }, [room, effectiveCheckIn])
 
   const maxCheckOutDate = useMemo(() => {
     if (!upcomingBooking) return undefined
-    return new Date(upcomingBooking.checkIn).toISOString().slice(0, 10)
+    return toDateStr(upcomingBooking.checkIn)
   }, [upcomingBooking])
 
   // AUTO-FILL: when phone matches an old customer, fetch their details
@@ -146,6 +168,12 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
 
   async function submit() {
     if (!room) return
+    if (overlappingBooking) {
+      setError(
+        `Selected dates overlap with an existing booking for ${overlappingBooking.guest?.name || 'Guest'} (${formatDate(overlappingBooking.checkIn)} to ${formatDate(overlappingBooking.checkOut)}). Please choose non-overlapping dates.`
+      )
+      return
+    }
     const cleanPhone = sanitizePhone(phone)
     if (cleanPhone.length !== 10) {
       setError('Phone number must be a valid 10-digit mobile number (e.g. 9876543210)')
@@ -163,7 +191,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
       setError('Expected Check-Out date is required')
       return
     }
-    if (maxCheckOutDate && checkOut > maxCheckOutDate) {
+    if (maxCheckOutDate && checkOut > maxCheckOutDate && checkInDate < maxCheckOutDate) {
       setError(
         `Check-out cannot exceed ${formatDate(maxCheckOutDate)} because Room ${room.number} is reserved for ${upcomingBooking?.guest?.name || 'advance guest'}.`
       )
@@ -266,73 +294,99 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           </button>
         </div>
 
+        {priorBooking && (
+          <div className="rounded-lg border border-emerald-300 bg-emerald-50/90 p-2 text-xs text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+            <span className="font-semibold text-emerald-900 dark:text-emerald-300">
+              ✨ Ready for Check-In on {formatDate(effectiveCheckIn)}
+            </span>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Previous guest ({priorBooking.guest?.name || 'Guest'}) checks out on {formatDate(priorBooking.checkOut)}. Room is ready for this booking!
+            </p>
+          </div>
+        )}
+
         {/* Upcoming booking alert if room is booked in future */}
         {upcomingBooking && (
           <div className="rounded-lg border border-amber-300 bg-amber-50/90 p-2.5 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
             <div className="flex items-center gap-1.5 font-semibold text-amber-900 dark:text-amber-200">
               <CalendarCheck className="h-4 w-4 text-amber-600 shrink-0" />
-              <span>Upcoming Advance Reservation</span>
+              <span>Upcoming Advance Reservation on Room {room?.number}</span>
             </div>
             <p className="mt-1 text-[11px] leading-relaxed">
-              Room is reserved for <b>{upcomingBooking.guest?.name || 'Guest'}</b> starting <b>{formatDate(upcomingBooking.checkIn)}</b>.
-              Stay must check out on or before <b>{formatDate(upcomingBooking.checkIn)}</b>.
+              Reserved for <b>{upcomingBooking.guest?.name || 'Guest'}</b> starting <b>{formatDate(upcomingBooking.checkIn)}</b>.
+              Maximum stay check-out is <b>{formatDate(upcomingBooking.checkIn)}</b>.
+            </p>
+          </div>
+        )}
+
+        {/* Overlapping Booking Warning Banner */}
+        {overlappingBooking && (
+          <div className="rounded-lg border border-red-300 bg-red-50/95 p-3 text-xs text-red-950 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200 space-y-1">
+            <div className="flex items-center gap-1.5 font-bold text-red-800 dark:text-red-300">
+              <AlertCircle className="h-4 w-4 text-red-600 shrink-0" />
+              <span>Date Overlap Conflict</span>
+            </div>
+            <p className="text-[11px] leading-relaxed">
+              Room <b>{room?.number}</b> is already booked for <b>{overlappingBooking.guest?.name || 'Guest'}</b> from <b>{formatDate(overlappingBooking.checkIn)}</b> to <b>{formatDate(overlappingBooking.checkOut)}</b>.
+            </p>
+            <p className="text-[11px] font-medium text-red-700 dark:text-red-300">
+              👉 Please choose check-out on/before <b>{formatDate(overlappingBooking.checkIn)}</b> or check-in from <b>{formatDate(overlappingBooking.checkOut)}</b>.
             </p>
           </div>
         )}
 
         <div className="space-y-3.5 pt-1">
-          {/* Date selection */}
+          {/* Date selection with RoomDatePicker */}
           {bookingMode === 'BOOKING' ? (
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="ci-in" className="text-xs font-semibold text-foreground">Check-In Date *</Label>
-                <Input
-                  id="ci-in"
-                  type="date"
-                  value={checkInDate}
-                  min={todayStr()}
-                  className="h-9 text-xs"
-                  onChange={(e) => {
-                    setCheckInDate(e.target.value)
-                    if (e.target.value >= checkOut) {
-                      setCheckOut(addDays(1, new Date(e.target.value)))
-                    }
-                  }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="ci-out" className="text-xs font-semibold text-foreground">Check-Out Date *</Label>
-                <Input
-                  id="ci-out"
-                  type="date"
-                  value={checkOut}
-                  min={checkInDate}
-                  max={maxCheckOutDate}
-                  className="h-9 text-xs"
-                  onChange={(e) => setCheckOut(e.target.value)}
-                />
-              </div>
+              <RoomDatePicker
+                id="ci-in"
+                label="Check-In Date *"
+                value={checkInDate}
+                mode="checkIn"
+                minDate={todayStr()}
+                roomBookings={room?.bookings}
+                roomNumber={room?.number}
+                onChange={(newIn) => {
+                  setCheckInDate(newIn)
+                  if (newIn >= checkOut) {
+                    setCheckOut(addDays(1, newIn))
+                  }
+                }}
+              />
+              <RoomDatePicker
+                id="ci-out"
+                label="Check-Out Date *"
+                value={checkOut}
+                mode="checkOut"
+                checkInValue={checkInDate}
+                roomBookings={room?.bookings}
+                roomNumber={room?.number}
+                onChange={(newOut) => {
+                  setCheckOut(newOut)
+                }}
+              />
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs font-semibold text-foreground">Check-In</Label>
                 <div className="h-9 px-3 bg-muted/60 rounded-md border text-xs flex items-center font-medium text-emerald-700 dark:text-emerald-400">
-                  Today (Now)
+                  Today ({formatDate(todayStr())})
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="checkout" className="text-xs font-semibold text-foreground">Expected Check-Out *</Label>
-                <Input
-                  id="checkout"
-                  type="date"
-                  value={checkOut}
-                  min={todayStr()}
-                  max={maxCheckOutDate}
-                  className="h-9 text-xs"
-                  onChange={(e) => setCheckOut(e.target.value)}
-                />
-              </div>
+              <RoomDatePicker
+                id="checkout"
+                label="Expected Check-Out *"
+                value={checkOut}
+                mode="checkOut"
+                checkInValue={todayStr()}
+                roomBookings={room?.bookings}
+                roomNumber={room?.number}
+                onChange={(newOut) => {
+                  setCheckOut(newOut)
+                }}
+              />
             </div>
           )}
 

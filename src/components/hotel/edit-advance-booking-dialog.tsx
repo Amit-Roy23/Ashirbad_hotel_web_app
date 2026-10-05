@@ -13,8 +13,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
-import { apiAs, formatINR } from '@/lib/hotel-utils'
+import { apiAs, formatINR, todayStr, addDays } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
+import { RoomDatePicker } from './room-date-picker'
 import { Loader2, Edit3, Banknote, Calendar, User, FileText, CheckCircle2 } from 'lucide-react'
 
 export interface BookingData {
@@ -278,21 +279,24 @@ export function EditAdvanceBookingDialog({
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div>
-                <Label className="text-xs font-semibold text-foreground">Check-In Date *</Label>
-                <Input
-                  type="date"
+                <RoomDatePicker
+                  id="edit-adv-in"
+                  label="Check-In Date *"
                   value={checkIn}
-                  onChange={(e) => handleCheckInChange(e.target.value)}
-                  className="h-9 mt-1 text-xs"
+                  mode="checkIn"
+                  roomNumber={booking.room?.number}
+                  onChange={(val) => handleCheckInChange(val)}
                 />
               </div>
               <div>
-                <Label className="text-xs font-semibold text-foreground">Check-Out Date</Label>
-                <Input
-                  type="date"
+                <RoomDatePicker
+                  id="edit-adv-out"
+                  label="Check-Out Date"
                   value={checkOut}
-                  onChange={(e) => handleCheckOutChange(e.target.value)}
-                  className="h-9 mt-1 text-xs"
+                  mode="checkOut"
+                  checkInValue={checkIn}
+                  roomNumber={booking.room?.number}
+                  onChange={(val) => handleCheckOutChange(val)}
                 />
               </div>
               <div>

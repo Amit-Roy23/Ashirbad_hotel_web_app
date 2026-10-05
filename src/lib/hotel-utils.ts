@@ -21,13 +21,53 @@ export function formatDateTime(d: string | Date | null | undefined): string {
 
 export function todayStr(): string {
   const d = new Date()
-  return d.toISOString().slice(0, 10)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+export function toDateStr(d: string | Date | null | undefined): string {
+  if (!d) return ''
+  const date = typeof d === 'string' ? new Date(d) : d
+  if (isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 export function addDays(days: number, fromDate?: string | Date): string {
   const d = fromDate ? new Date(fromDate) : new Date()
   d.setDate(d.getDate() + days)
-  return d.toISOString().slice(0, 10)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * Checks if two date ranges [inA, outA] and [inB, outB] overlap in hotel calendar days.
+ * In hotel reservations:
+ * - A guest staying 08/01 to 10/01 occupies the nights of 08/01 and 09/01, leaving 10/01 at checkout.
+ * - A guest arriving 10/01 occupies nights starting 10/01.
+ * They do NOT overlap because outA (10/01) == inB (10/01).
+ * Range overlap condition: inA < outB AND outA > inB (strictly in date-only format YYYY-MM-DD).
+ */
+export function doDateRangesOverlap(
+  inA: string | Date | null | undefined,
+  outA: string | Date | null | undefined,
+  inB: string | Date | null | undefined,
+  outB: string | Date | null | undefined
+): boolean {
+  const startA = toDateStr(inA)
+  if (!startA) return false
+  const endA = outA ? toDateStr(outA) : addDays(1, inA as string | Date)
+  const startB = toDateStr(inB)
+  if (!startB) return false
+  const endB = outB ? toDateStr(outB) : addDays(1, inB as string | Date)
+
+  return startA < endB && endA > startB
 }
 
 export async function api<T = unknown>(url: string, options?: RequestInit): Promise<T> {
@@ -196,6 +236,9 @@ export interface RoomOperationalState {
   todayBooking: BookingSummary | null
   hasFutureBooking: boolean
   nextFutureBooking: BookingSummary | null
+  futureAvailableFromDate: string | null
+  futureAvailableFromFormatted: string | null
+  allFutureBookings: BookingSummary[]
   availableUntilDate: string | null
   availableUntilFormatted: string | null
   maxNightsAvailable: number | null
@@ -208,139 +251,121 @@ export interface RoomOperationalState {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getRoomOperationalState(room: RoomWithBookings | any): RoomOperationalState {
-  if (!room) {
-    return {
-      isOccupied: false,
-      activeBooking: null,
-      isBookedToday: false,
-      todayBooking: null,
-      hasFutureBooking: false,
-      nextFutureBooking: null,
-      availableUntilDate: null,
-      availableUntilFormatted: null,
-      maxNightsAvailable: null,
-      displayStatus: 'VACANT',
-    }
-  }
-
-  if (room.status === 'MAINTENANCE') {
-    return {
-      isOccupied: false,
-      activeBooking: null,
-      isBookedToday: false,
-      todayBooking: null,
-      hasFutureBooking: false,
-      nextFutureBooking: null,
-      availableUntilDate: null,
-      availableUntilFormatted: null,
-      maxNightsAvailable: null,
-      displayStatus: 'MAINTENANCE',
-    }
-  }
-
-  const today = new Date()
-  today.setHours(23, 59, 59, 999)
-  const todayStart = new Date()
-  todayStart.setHours(0, 0, 0, 0)
-
-  const activeBooking = room.bookings?.find((b) => b.status === 'ACTIVE') || null
-
-  const bookedReservations = (room.bookings?.filter((b) => b.status === 'BOOKED') || []).sort(
-    (a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime()
-  )
-
-  // Today booking = checkIn date is today or past, not yet checked in
-  const todayBooking =
-    bookedReservations.find((b) => new Date(b.checkIn).getTime() <= today.getTime()) || null
-
-  // Future booking = checkIn date is strictly after today
-  const nextFutureBooking =
-    bookedReservations.find((b) => new Date(b.checkIn).getTime() > today.getTime()) || null
-
-  const hasFutureBooking = !!nextFutureBooking
-
-  let availableUntilDate: string | null = null
-  let availableUntilFormatted: string | null = null
-  let maxNightsAvailable: number | null = null
-
-  if (nextFutureBooking) {
-    const fDate = new Date(nextFutureBooking.checkIn)
-    availableUntilDate = fDate.toISOString().slice(0, 10)
-    availableUntilFormatted = formatDate(nextFutureBooking.checkIn)
-    const diffMs = fDate.getTime() - todayStart.getTime()
-    maxNightsAvailable = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24)))
-  }
-
-  if (activeBooking) {
-    return {
-      isOccupied: true,
-      activeBooking,
-      isBookedToday: !!todayBooking,
-      todayBooking,
-      hasFutureBooking,
-      nextFutureBooking,
-      availableUntilDate,
-      availableUntilFormatted,
-      maxNightsAvailable,
-      displayStatus: 'OCCUPIED',
-    }
-  }
-
-  if (todayBooking) {
-    return {
-      isOccupied: false,
-      activeBooking: null,
-      isBookedToday: true,
-      todayBooking,
-      hasFutureBooking,
-      nextFutureBooking,
-      availableUntilDate,
-      availableUntilFormatted,
-      maxNightsAvailable,
-      displayStatus: 'BOOKED',
-    }
-  }
-
-  if (room.housekeeping === 'DIRTY') {
-    return {
-      isOccupied: false,
-      activeBooking: null,
-      isBookedToday: false,
-      todayBooking: null,
-      hasFutureBooking,
-      nextFutureBooking,
-      availableUntilDate,
-      availableUntilFormatted,
-      maxNightsAvailable,
-      displayStatus: 'DIRTY',
-    }
-  }
-
-  if (hasFutureBooking) {
-    return {
-      isOccupied: false,
-      activeBooking: null,
-      isBookedToday: false,
-      todayBooking: null,
-      hasFutureBooking: true,
-      nextFutureBooking,
-      availableUntilDate,
-      availableUntilFormatted,
-      maxNightsAvailable,
-      displayStatus: 'VACANT_WITH_FUTURE',
-    }
-  }
-
-  return {
+  const emptyState: RoomOperationalState = {
     isOccupied: false,
     activeBooking: null,
     isBookedToday: false,
     todayBooking: null,
     hasFutureBooking: false,
     nextFutureBooking: null,
+    futureAvailableFromDate: null,
+    futureAvailableFromFormatted: null,
+    allFutureBookings: [],
     availableUntilDate: null,
     availableUntilFormatted: null,
     maxNightsAvailable: null,
+    displayStatus: 'VACANT',
+  }
+
+  if (!room) return emptyState
+
+  if (room.status === 'MAINTENANCE') {
+    return {
+      ...emptyState,
+      displayStatus: 'MAINTENANCE',
+    }
+  }
+
+  const curTodayStr = todayStr()
+  const todayStart = new Date(curTodayStr + 'T00:00:00')
+
+  const activeBooking = room.bookings?.find((b: BookingSummary) => b.status === 'ACTIVE') || null
+
+  const bookedReservations: BookingSummary[] = (room.bookings?.filter((b: BookingSummary) => b.status === 'BOOKED') || []).sort(
+    (a: BookingSummary, b: BookingSummary) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime()
+  )
+
+  // Today booking = checkIn date is today or past, not yet checked in
+  const todayBooking =
+    bookedReservations.find((b) => toDateStr(b.checkIn) <= curTodayStr) || null
+
+  // Future bookings = checkIn date is strictly after today
+  const allFutureBookings = bookedReservations.filter((b) => toDateStr(b.checkIn) > curTodayStr)
+  const nextFutureBooking = allFutureBookings[0] || null
+
+  const hasFutureBooking = !!nextFutureBooking
+
+  let availableUntilDate: string | null = null
+  let availableUntilFormatted: string | null = null
+  let maxNightsAvailable: number | null = null
+  let futureAvailableFromDate: string | null = null
+  let futureAvailableFromFormatted: string | null = null
+
+  if (nextFutureBooking) {
+    const fCheckInStr = toDateStr(nextFutureBooking.checkIn)
+    availableUntilDate = fCheckInStr
+    availableUntilFormatted = formatDate(nextFutureBooking.checkIn)
+    const diffMs = new Date(fCheckInStr + 'T00:00:00').getTime() - todayStart.getTime()
+    maxNightsAvailable = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24)))
+
+    if (nextFutureBooking.checkOut) {
+      futureAvailableFromDate = toDateStr(nextFutureBooking.checkOut)
+      futureAvailableFromFormatted = formatDate(nextFutureBooking.checkOut)
+    }
+  } else if (todayBooking && todayBooking.checkOut) {
+    futureAvailableFromDate = toDateStr(todayBooking.checkOut)
+    futureAvailableFromFormatted = formatDate(todayBooking.checkOut)
+  } else if (activeBooking && activeBooking.checkOut) {
+    futureAvailableFromDate = toDateStr(activeBooking.checkOut)
+    futureAvailableFromFormatted = formatDate(activeBooking.checkOut)
+  }
+
+  const baseResult = {
+    isOccupied: false,
+    activeBooking,
+    isBookedToday: !!todayBooking,
+    todayBooking,
+    hasFutureBooking,
+    nextFutureBooking,
+    futureAvailableFromDate,
+    futureAvailableFromFormatted,
+    allFutureBookings,
+    availableUntilDate,
+    availableUntilFormatted,
+    maxNightsAvailable,
+  }
+
+  if (activeBooking) {
+    return {
+      ...baseResult,
+      isOccupied: true,
+      displayStatus: 'OCCUPIED',
+    }
+  }
+
+  if (todayBooking) {
+    return {
+      ...baseResult,
+      displayStatus: 'BOOKED',
+    }
+  }
+
+  if (room.housekeeping === 'DIRTY') {
+    return {
+      ...baseResult,
+      displayStatus: 'DIRTY',
+    }
+  }
+
+  if (hasFutureBooking) {
+    return {
+      ...baseResult,
+      displayStatus: 'VACANT_WITH_FUTURE',
+    }
+  }
+
+  return {
+    ...baseResult,
     displayStatus: 'VACANT',
   }
 }

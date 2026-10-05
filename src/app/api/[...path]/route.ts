@@ -85,6 +85,33 @@ function formatDate(d: string | Date | null | undefined): string {
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
+function toDateStr(d: string | Date | null | undefined): string {
+  if (!d) return ''
+  const date = typeof d === 'string' ? new Date(d) : d
+  if (isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function doDateRangesOverlap(
+  inA: string | Date | null | undefined,
+  outA: string | Date | null | undefined,
+  inB: string | Date | null | undefined,
+  outB: string | Date | null | undefined
+): boolean {
+  const startA = toDateStr(inA)
+  if (!startA) return false
+  const endA = outA ? toDateStr(outA) : startA
+  const startB = toDateStr(inB)
+  if (!startB) return false
+  const endB = outB ? toDateStr(outB) : startB
+
+  // In hotel reservations: checkout on day X and checkin on day X do NOT overlap
+  return startA < endB && endA > startB
+}
+
 function parseDateInput(value: unknown, fallbackTime = 'T12:00:00'): Date | null {
   if (value === undefined || value === null || value === '') return null
   const s = String(value).trim()
@@ -413,24 +440,23 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     days = Math.max(1, diff)
   }
 
-  // Double-booking prevention
-  const overlapFrom = checkOutDate || new Date(checkInDate.getTime() + 24 * 3600 * 1000)
-  const overlapping = await prisma.booking.findFirst({
+  // Double-booking prevention using date-only boundary logic
+  const existingBookings = await prisma.booking.findMany({
     where: {
       roomId: String(roomId),
       status: { in: ['ACTIVE', 'BOOKED'] },
-      OR: [
-        { checkIn: { lt: overlapFrom }, OR: [{ checkOut: { gt: checkInDate } }, { checkOut: null }] },
-      ],
     },
     include: { guest: true },
   })
+  const overlapping = existingBookings.find((b) =>
+    doDateRangesOverlap(checkInDate, checkOutDate, b.checkIn, b.checkOut)
+  )
   if (overlapping) {
     const fromStr = formatDate(overlapping.checkIn)
     const toStr = overlapping.checkOut ? formatDate(overlapping.checkOut) : 'open'
     return NextResponse.json(
       {
-        error: `Room ${room.number} is already reserved for ${overlapping.guest.name} from ${fromStr} to ${toStr}. Please choose a stay period before or after this reservation.`,
+        error: `Room ${room.number} is already reserved for ${overlapping.guest.name} from ${fromStr} to ${toStr}. Room is available before ${fromStr} or after ${toStr}.`,
       },
       { status: 400 }
     )
@@ -568,16 +594,17 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     if (!newCheckOut) return NextResponse.json({ error: 'Valid new checkout date required' }, { status: 400 })
 
     // Double-booking check when extending stay
-    const overlapFuture = await prisma.booking.findFirst({
+    const existingBookings = await prisma.booking.findMany({
       where: {
         roomId: booking.roomId,
         id: { not: booking.id },
         status: { in: ['ACTIVE', 'BOOKED'] },
-        checkIn: { lt: newCheckOut },
-        OR: [{ checkOut: { gt: new Date(booking.checkIn) } }, { checkOut: null }],
       },
       include: { guest: true },
     })
+    const overlapFuture = existingBookings.find((b) =>
+      doDateRangesOverlap(booking.checkIn, newCheckOut, b.checkIn, b.checkOut)
+    )
     if (overlapFuture) {
       return NextResponse.json(
         {
@@ -717,6 +744,30 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
           (1000 * 60 * 60 * 24)
       )
       updateData.days = Math.max(1, diff)
+    }
+
+    if (updateData.checkIn || updateData.checkOut) {
+      const finalIn = (updateData.checkIn as Date) || booking.checkIn
+      const finalOut = (updateData.checkOut as Date) || booking.checkOut
+      const otherBookings = await prisma.booking.findMany({
+        where: {
+          roomId: booking.roomId,
+          id: { not: booking.id },
+          status: { in: ['ACTIVE', 'BOOKED'] },
+        },
+        include: { guest: true },
+      })
+      const conflict = otherBookings.find((b) =>
+        doDateRangesOverlap(finalIn, finalOut, b.checkIn, b.checkOut)
+      )
+      if (conflict) {
+        return NextResponse.json(
+          {
+            error: `Date conflict: Room is already reserved for ${conflict.guest.name} from ${formatDate(conflict.checkIn)} to ${formatDate(conflict.checkOut)}.`,
+          },
+          { status: 400 }
+        )
+      }
     }
 
     const updated = await prisma.booking.update({
@@ -2144,14 +2195,91 @@ async function deleteExpenseCategory(req: NextRequest) {
 }
 
 // ============ GLOBAL SEARCH ============
+const searchCache = new Map<string, { data: unknown; expires: number }>()
+
 async function globalSearch(req: NextRequest) {
   const { searchParams } = new URL(req.url)
+  const isIndex = searchParams.get('index') === '1'
+
+  if (isIndex) {
+    const cacheKey = '__INDEX__'
+    const cached = searchCache.get(cacheKey)
+    if (cached && cached.expires > Date.now()) {
+      return NextResponse.json(cached.data)
+    }
+
+    const [guests, bookings, bills, rooms] = await Promise.all([
+      prisma.guest.findMany({
+        take: 100,
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          company: true,
+          address: true,
+          bookings: {
+            take: 1,
+            orderBy: { createdAt: 'desc' },
+            select: { id: true, room: { select: { number: true } }, status: true },
+          },
+        },
+      }),
+      prisma.booking.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          status: true,
+          paymentStatus: true,
+          guest: { select: { name: true, phone: true } },
+          room: { select: { number: true } },
+        },
+      }),
+      prisma.bill.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          billNumber: true,
+          grandTotal: true,
+          createdAt: true,
+          booking: {
+            select: {
+              guest: { select: { name: true, phone: true } },
+              room: { select: { number: true } },
+            },
+          },
+        },
+      }),
+      prisma.room.findMany({
+        orderBy: { number: 'asc' },
+        select: {
+          id: true,
+          number: true,
+          type: true,
+          status: true,
+        },
+      }),
+    ])
+
+    const data = { guests, bookings, bills, rooms }
+    searchCache.set(cacheKey, { data, expires: Date.now() + 20_000 })
+    return NextResponse.json(data)
+  }
+
   const q = (searchParams.get('q') || '').trim()
-  if (!q || q.length < 1) {
+  if (!q) {
     return NextResponse.json({ guests: [], bookings: [], bills: [], rooms: [] })
   }
 
-  const [guests, bills, rooms] = await Promise.all([
+  const cacheKey = `Q:${q.toLowerCase()}`
+  const cached = searchCache.get(cacheKey)
+  if (cached && cached.expires > Date.now()) {
+    return NextResponse.json(cached.data)
+  }
+
+  const [guests, bookings, bills, rooms] = await Promise.all([
     prisma.guest.findMany({
       where: {
         OR: [
@@ -2160,30 +2288,84 @@ async function globalSearch(req: NextRequest) {
           { company: { contains: q, mode: 'insensitive' } },
         ],
       },
-      take: 5,
-      include: { bookings: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      take: 8,
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        company: true,
+        bookings: {
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+          select: { id: true, room: { select: { number: true } }, status: true },
+        },
+      },
+    }),
+    prisma.booking.findMany({
+      where: {
+        OR: [
+          { id: { startsWith: q, mode: 'insensitive' } },
+          { guest: { name: { contains: q, mode: 'insensitive' } } },
+          { guest: { phone: { contains: q } } },
+          { room: { number: { contains: q } } },
+        ],
+      },
+      take: 8,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        paymentStatus: true,
+        guest: { select: { name: true, phone: true } },
+        room: { select: { number: true } },
+      },
     }),
     prisma.bill.findMany({
-      where: { billNumber: { contains: q, mode: 'insensitive' } },
-      take: 5,
-      include: { booking: { include: { room: true, guest: true } } },
+      where: {
+        OR: [
+          { billNumber: { contains: q, mode: 'insensitive' } },
+          { booking: { guest: { name: { contains: q, mode: 'insensitive' } } } },
+          { booking: { guest: { phone: { contains: q } } } },
+          { booking: { room: { number: { contains: q } } } },
+        ],
+      },
+      take: 8,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        billNumber: true,
+        grandTotal: true,
+        createdAt: true,
+        booking: {
+          select: {
+            guest: { select: { name: true, phone: true } },
+            room: { select: { number: true } },
+          },
+        },
+      },
     }),
     prisma.room.findMany({
-      where: { number: { contains: q, mode: 'insensitive' } },
-      take: 5,
-      include: { bookings: { where: { status: 'ACTIVE' }, include: { guest: true }, take: 1 } },
+      where: {
+        OR: [
+          { number: { contains: q, mode: 'insensitive' } },
+          { type: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      take: 8,
+      orderBy: { number: 'asc' },
+      select: {
+        id: true,
+        number: true,
+        type: true,
+        status: true,
+      },
     }),
   ])
 
-  const bookings = q.length > 5
-    ? await prisma.booking.findMany({
-      where: { id: { startsWith: q, mode: 'insensitive' } },
-      take: 3,
-      include: { room: true, guest: true },
-    })
-    : []
-
-  return NextResponse.json({ guests, bookings, bills, rooms })
+  const resultData = { guests, bookings, bills, rooms }
+  searchCache.set(cacheKey, { data: resultData, expires: Date.now() + 30_000 })
+  return NextResponse.json(resultData)
 }
 
 // ============ REPORTS ============

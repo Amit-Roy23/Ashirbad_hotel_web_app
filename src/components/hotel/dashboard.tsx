@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { CheckinDialog } from './checkin-dialog'
+import { BookingDialog } from './booking-dialog'
 import { RoomStatusBadge } from './status-badge'
 import { api, apiAs, formatINR, formatDate, getRoomOperationalState } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
@@ -38,6 +39,8 @@ import {
   CalendarX2,
   Printer,
   Trash2,
+  CalendarPlus,
+  Sparkles,
 } from 'lucide-react'
 
 interface Guest {
@@ -122,6 +125,11 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
   const [loading, setLoading] = useState(true)
   const [checkinRoom, setCheckinRoom] = useState<Room | null>(null)
   const [viewRoom, setViewRoom] = useState<Room | null>(null)
+  const [bookingDialogState, setBookingDialogState] = useState<{
+    open: boolean
+    roomId?: string
+    initialCheckInDate?: string
+  } | null>(null)
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
@@ -603,6 +611,39 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                           </Button>
                         </div>
                       </div>
+
+                      {/* Post-checkout Availability & Booking Card */}
+                      {opState.futureAvailableFromFormatted && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50/70 p-3 text-xs space-y-2 dark:border-sky-800 dark:bg-sky-950/30">
+                          <div className="flex items-center justify-between font-semibold text-sky-900 dark:text-sky-200">
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="h-4 w-4 text-sky-600" />
+                              Available for Booking (Post-Checkout)
+                            </span>
+                            <span className="rounded bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-900 dark:bg-sky-900 dark:text-sky-200">
+                              From {opState.futureAvailableFromFormatted}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                            Previous guest checkout is on <b>{opState.futureAvailableFromFormatted}</b>. Another guest can reserve starting on or after {opState.futureAvailableFromFormatted}.
+                          </p>
+                          <Button
+                            size="sm"
+                            className="w-full bg-sky-600 hover:bg-sky-700 text-white font-semibold gap-1.5 shadow-sm"
+                            onClick={() => {
+                              setBookingDialogState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                initialCheckInDate: opState.futureAvailableFromDate || undefined,
+                              })
+                              setViewRoom(null)
+                            }}
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5" />
+                            Book Room (From {opState.futureAvailableFromFormatted})
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -730,6 +771,39 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                           Cancel Booking
                         </Button>
                       </div>
+
+                      {/* Post-checkout Availability for Today's Booking */}
+                      {opState.futureAvailableFromFormatted && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50/70 p-3 text-xs space-y-2 dark:border-sky-800 dark:bg-sky-950/30">
+                          <div className="flex items-center justify-between font-semibold text-sky-900 dark:text-sky-200">
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="h-4 w-4 text-sky-600" />
+                              Available for Next Booking
+                            </span>
+                            <span className="rounded bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-900 dark:bg-sky-900 dark:text-sky-200">
+                              From {opState.futureAvailableFromFormatted}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                            Expected checkout is on <b>{opState.futureAvailableFromFormatted}</b>. Next guest can reserve from this date onwards.
+                          </p>
+                          <Button
+                            size="sm"
+                            className="w-full bg-sky-600 hover:bg-sky-700 text-white font-semibold gap-1.5 shadow-sm"
+                            onClick={() => {
+                              setBookingDialogState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                initialCheckInDate: opState.futureAvailableFromDate || undefined,
+                              })
+                              setViewRoom(null)
+                            }}
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5" />
+                            Book Next Stay (From {opState.futureAvailableFromFormatted})
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -797,6 +871,37 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                           <Wallet className="mr-1.5 h-4 w-4" /> Billing &amp; Checkout
                         </Button>
                       </div>
+
+                      {/* Post-checkout Availability for Occupied Room */}
+                      {opState.futureAvailableFromFormatted && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50/70 p-2.5 text-xs space-y-1.5 dark:border-sky-800 dark:bg-sky-950/30">
+                          <div className="flex items-center justify-between font-semibold text-sky-900 dark:text-sky-200">
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="h-4 w-4 text-sky-600" />
+                              Available Next
+                            </span>
+                            <span className="rounded bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-900 dark:bg-sky-900 dark:text-sky-200">
+                              From {opState.futureAvailableFromFormatted}
+                            </span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full h-8 border-sky-300 text-sky-900 bg-sky-50 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-200 font-medium gap-1.5 shadow-sm"
+                            onClick={() => {
+                              setBookingDialogState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                initialCheckInDate: opState.futureAvailableFromDate || undefined,
+                              })
+                              setViewRoom(null)
+                            }}
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5" />
+                            Book Future Stay (From {opState.futureAvailableFromFormatted})
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -838,6 +943,21 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* Booking Dialog */}
+      {bookingDialogState?.open && (
+        <BookingDialog
+          open={bookingDialogState.open}
+          onOpenChange={(open) => !open && setBookingDialogState(null)}
+          roomId={bookingDialogState.roomId}
+          initialCheckInDate={bookingDialogState.initialCheckInDate}
+          onSuccess={() => {
+            setBookingDialogState(null)
+            load()
+            onDataChanged()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -136,7 +136,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return bookings.filter((b) => {
-      if (q && !(`${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.room?.number || ''}`.toLowerCase().includes(q))) return false
+      if (q && !(`${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.guest?.company || ''} ${b.room?.number || ''} ${b.id || ''}`.toLowerCase().includes(q))) return false
       if (status !== 'ALL' && b.status !== status) return false
       if (paymentStatus !== 'ALL') {
         const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01

@@ -23,13 +23,35 @@ import { GenerateBillDialog, type Bill } from './generate-bill-dialog'
 import { EditBillDialog } from './edit-bill-dialog'
 import { PrintableInvoice } from './printable-invoice'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
+import { BookingDialog } from './booking-dialog'
 import { RoomStatusBadge } from './status-badge'
 import { TableControls } from './table-controls'
 import { Separator } from '@/components/ui/separator'
-import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState, todayStr, addDays, toDateStr } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
-import { Loader2, Plus, BrushCleaning, Wrench, BedDouble, Printer, Wallet, Trash2, Receipt, Building2, Edit3, LogIn, CalendarCheck, DoorOpen } from 'lucide-react'
+import {
+  Loader2,
+  Plus,
+  BrushCleaning,
+  Wrench,
+  BedDouble,
+  Printer,
+  Wallet,
+  Trash2,
+  Receipt,
+  Building2,
+  Edit3,
+  LogIn,
+  CalendarCheck,
+  DoorOpen,
+  CalendarDays,
+  LayoutGrid,
+  ChevronLeft,
+  ChevronRight,
+  CalendarPlus,
+  Sparkles,
+} from 'lucide-react'
 
 interface Guest {
   id: string
@@ -95,10 +117,35 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   const [billBooking, setBillBooking] = useState<any | null>(null)
   const [lastBill, setLastBill] = useState<Bill | null>(null)
   const [editBill, setEditBill] = useState<Bill | null>(null)
+  const [viewMode, setViewMode] = useState<'grid' | 'calendar'>('grid')
+  const [calendarStartDate, setCalendarStartDate] = useState<string>(todayStr())
+  const [bookingDialogState, setBookingDialogState] = useState<{
+    open: boolean
+    roomId?: string
+    initialCheckInDate?: string
+  } | null>(null)
 
   useEffect(() => {
     if (initialFilter) setSearch(initialFilter)
   }, [initialFilter])
+
+  const calendarDates = useMemo(() => {
+    const dates: { dateStr: string; label: string; dayName: string; isToday: boolean }[] = []
+    const today = todayStr()
+    for (let i = 0; i < 14; i++) {
+      const dStr = addDays(i, calendarStartDate)
+      const d = new Date(dStr + 'T00:00:00')
+      const dayName = d.toLocaleDateString('en-IN', { weekday: 'short' })
+      const label = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+      dates.push({
+        dateStr: dStr,
+        label,
+        dayName,
+        isToday: dStr === today,
+      })
+    }
+    return dates
+  }, [calendarStartDate])
 
   const load = useCallback(async () => {
     try {
@@ -125,7 +172,10 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     const q = search.trim().toLowerCase()
     return rooms.filter((r) => {
       const opState = getRoomOperationalState(r)
-      if (q && !`${r.number} ${r.type} ${r.bookings?.[0]?.guest?.name || ''} ${opState.nextFutureBooking?.guest?.name || ''}`.toLowerCase().includes(q)) return false
+      const allGuestInfo = (r.bookings || [])
+        .map((b) => `${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.guest?.company || ''}`)
+        .join(' ')
+      if (q && !`${r.number} ${r.type} ${allGuestInfo} ${opState.nextFutureBooking?.guest?.name || ''} ${opState.nextFutureBooking?.guest?.phone || ''}`.toLowerCase().includes(q)) return false
       if (floor !== 'ALL' && (r.floor ? r.floor !== floor : !r.number.startsWith(floor))) return false
       if (type !== 'ALL' && r.type !== type) return false
       if (status !== 'ALL') {
@@ -344,6 +394,26 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* View Mode Toggle */}
+          <div className="flex items-center rounded-lg border bg-muted/40 p-0.5">
+            <Button
+              size="sm"
+              variant={viewMode === 'grid' ? 'default' : 'ghost'}
+              className="h-8 gap-1.5 px-2.5 text-xs font-medium"
+              onClick={() => setViewMode('grid')}
+            >
+              <LayoutGrid className="h-3.5 w-3.5" /> Grid View
+            </Button>
+            <Button
+              size="sm"
+              variant={viewMode === 'calendar' ? 'default' : 'ghost'}
+              className="h-8 gap-1.5 px-2.5 text-xs font-medium"
+              onClick={() => setViewMode('calendar')}
+            >
+              <CalendarDays className="h-3.5 w-3.5" /> 📅 Schedule View
+            </Button>
+          </div>
+
           <Button variant="outline" className="gap-2" onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4" /> Add Room
           </Button>
@@ -386,83 +456,311 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         onReset={resetFilters}
       />
 
-      {Object.entries(grouped).map(([f, floorRooms]) => (
-        <div key={f}>
-          <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Floor {f}</h3>
-          <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-10">
-            {floorRooms.map((room) => {
-              const opState = getRoomOperationalState(room)
-              const borderCls =
-                opState.displayStatus === 'OCCUPIED'
-                  ? 'border-red-300 bg-red-50 hover:border-red-400 dark:border-red-800 dark:bg-red-950/40'
-                  : opState.displayStatus === 'BOOKED'
-                    ? 'border-amber-400 bg-amber-50/90 hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/60'
-                    : opState.displayStatus === 'VACANT_WITH_FUTURE'
-                      ? 'border-emerald-400 bg-gradient-to-b from-emerald-50 to-amber-50/40 hover:border-emerald-500 hover:bg-emerald-100/90 dark:border-emerald-700 dark:from-emerald-950/60 dark:to-amber-950/30'
-                      : opState.displayStatus === 'DIRTY'
-                        ? 'border-orange-300 bg-orange-50 hover:border-orange-400 dark:border-orange-800 dark:bg-orange-950/40'
-                        : opState.displayStatus === 'MAINTENANCE'
-                          ? 'border-zinc-300 bg-zinc-50 hover:border-zinc-400 dark:border-zinc-600 dark:bg-zinc-800/60'
-                          : 'border-emerald-300 bg-emerald-50 hover:border-emerald-400 dark:border-emerald-800 dark:bg-emerald-950/40'
+      {viewMode === 'grid' ? (
+        Object.entries(grouped).map(([f, floorRooms]) => (
+          <div key={f}>
+            <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Floor {f}</h3>
+            <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-10">
+              {floorRooms.map((room) => {
+                const opState = getRoomOperationalState(room)
+                const borderCls =
+                  opState.displayStatus === 'OCCUPIED'
+                    ? 'border-red-300 bg-red-50 hover:border-red-400 dark:border-red-800 dark:bg-red-950/40'
+                    : opState.displayStatus === 'BOOKED'
+                      ? 'border-amber-400 bg-amber-50/90 hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/60'
+                      : opState.displayStatus === 'VACANT_WITH_FUTURE'
+                        ? 'border-emerald-400 bg-gradient-to-b from-emerald-50 to-amber-50/40 hover:border-emerald-500 hover:bg-emerald-100/90 dark:border-emerald-700 dark:from-emerald-950/60 dark:to-amber-950/30'
+                        : opState.displayStatus === 'DIRTY'
+                          ? 'border-orange-300 bg-orange-50 hover:border-orange-400 dark:border-orange-800 dark:bg-orange-950/40'
+                          : opState.displayStatus === 'MAINTENANCE'
+                            ? 'border-zinc-300 bg-zinc-50 hover:border-zinc-400 dark:border-zinc-600 dark:bg-zinc-800/60'
+                            : 'border-emerald-300 bg-emerald-50 hover:border-emerald-400 dark:border-emerald-800 dark:bg-emerald-950/40'
 
-              return (
-                <button
-                  key={room.id}
-                  onClick={() => {
-                    if (opState.displayStatus === 'VACANT') {
-                      setCheckinRoom(room)
-                    } else {
-                      setViewRoom(room)
-                    }
-                  }}
-                  className={`min-h-[92px] rounded-xl border-2 p-2.5 text-left transition-all active:scale-95 hover:shadow-md ${borderCls}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-base font-bold">{room.number}</span>
-                    {opState.hasFutureBooking ? (
-                      <span className="rounded bg-amber-200/90 px-1 py-0.5 text-[9px] font-bold text-amber-950 dark:bg-amber-900 dark:text-amber-200">
-                        {opState.availableUntilFormatted ? `Till ${opState.availableUntilFormatted.slice(0, 6)}` : 'Reserved'}
-                      </span>
-                    ) : (
-                      <BedDouble className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-                    )}
-                  </div>
-                  <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{room.type}</p>
-                  {opState.displayStatus === 'OCCUPIED' && opState.activeBooking ? (
-                    <div className="mt-1">
-                      <p className="truncate text-[10px] font-semibold text-red-700 dark:text-red-400">
-                        {opState.activeBooking.guest?.name || 'Guest'}
+                return (
+                  <button
+                    key={room.id}
+                    onClick={() => {
+                      if (opState.displayStatus === 'VACANT') {
+                        setCheckinRoom(room)
+                      } else {
+                        setViewRoom(room)
+                      }
+                    }}
+                    className={`min-h-[92px] rounded-xl border-2 p-2.5 text-left transition-all active:scale-95 hover:shadow-md ${borderCls}`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-base font-bold">{room.number}</span>
+                      {opState.hasFutureBooking ? (
+                        <span className="rounded bg-amber-200/90 px-1 py-0.5 text-[9px] font-bold text-amber-950 dark:bg-amber-900 dark:text-amber-200">
+                          {opState.availableUntilFormatted ? `Till ${opState.availableUntilFormatted.slice(0, 6)}` : 'Reserved'}
+                        </span>
+                      ) : (
+                        <BedDouble className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                      )}
+                    </div>
+                    <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{room.type}</p>
+                    {opState.displayStatus === 'OCCUPIED' && opState.activeBooking ? (
+                      <div className="mt-1">
+                        <p className="truncate text-[10px] font-semibold text-red-700 dark:text-red-400">
+                          {opState.activeBooking.guest?.name || 'Guest'}
+                        </p>
+                        {opState.hasFutureBooking && (
+                          <p className="truncate text-[9px] font-medium text-amber-800 dark:text-amber-300">
+                            Next: {opState.nextFutureBooking?.guest?.name?.split(' ')[0]} ({opState.availableUntilFormatted?.slice(0, 6)})
+                          </p>
+                        )}
+                      </div>
+                    ) : opState.displayStatus === 'BOOKED' ? (
+                      <p className="mt-1 truncate text-[10px] font-semibold text-amber-900 dark:text-amber-200">
+                        Booked: {opState.todayBooking?.guest?.name || 'Guest'} (Today)
                       </p>
-                      {opState.hasFutureBooking && (
+                    ) : opState.displayStatus === 'VACANT_WITH_FUTURE' ? (
+                      <div className="mt-1">
+                        <p className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
+                          {formatINR(room.rate)} · Vacant
+                        </p>
                         <p className="truncate text-[9px] font-medium text-amber-800 dark:text-amber-300">
                           Next: {opState.nextFutureBooking?.guest?.name?.split(' ')[0]} ({opState.availableUntilFormatted?.slice(0, 6)})
                         </p>
-                      )}
-                    </div>
-                  ) : opState.displayStatus === 'BOOKED' ? (
-                    <p className="mt-1 truncate text-[10px] font-semibold text-amber-900 dark:text-amber-200">
-                      Booked: {opState.todayBooking?.guest?.name || 'Guest'} (Today)
-                    </p>
-                  ) : opState.displayStatus === 'VACANT_WITH_FUTURE' ? (
-                    <div className="mt-1">
-                      <p className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
-                        {formatINR(room.rate)} · Vacant
-                      </p>
-                      <p className="truncate text-[9px] font-medium text-amber-800 dark:text-amber-300">
-                        Next: {opState.nextFutureBooking?.guest?.name?.split(' ')[0]} ({opState.availableUntilFormatted?.slice(0, 6)})
-                      </p>
-                    </div>
-                  ) : opState.displayStatus === 'DIRTY' ? (
-                    <p className="mt-1 text-[10px] font-semibold text-orange-700 dark:text-orange-400">To Clean</p>
-                  ) : (
-                    <p className="mt-1 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">{formatINR(room.rate)} · Vacant</p>
-                  )}
-                </button>
-              )
-            })}
+                      </div>
+                    ) : opState.displayStatus === 'DIRTY' ? (
+                      <p className="mt-1 text-[10px] font-semibold text-orange-700 dark:text-orange-400">To Clean</p>
+                    ) : (
+                      <p className="mt-1 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">{formatINR(room.rate)} · Vacant</p>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))
+      ) : (
+        /* 📅 14-Day Timeline / Schedule Calendar View */
+        <div className="space-y-3 rounded-xl border bg-card p-4 shadow-sm">
+          {/* Calendar Toolbar & Legend */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 px-2.5 text-xs"
+                onClick={() => setCalendarStartDate((prev) => addDays(-7, prev))}
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Prev 7 Days
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-2.5 text-xs font-semibold"
+                onClick={() => setCalendarStartDate(todayStr())}
+              >
+                Today
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 px-2.5 text-xs"
+                onClick={() => setCalendarStartDate((prev) => addDays(7, prev))}
+              >
+                Next 7 Days <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+              <span className="text-xs font-medium text-muted-foreground ml-2">
+                Showing 14 days: <b>{calendarDates[0]?.label}</b> – <b>{calendarDates[13]?.label}</b>
+              </span>
+            </div>
+
+            {/* Legend */}
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-sm bg-red-500/80 inline-block" />
+                <span className="text-muted-foreground">Occupied</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-sm bg-amber-400 inline-block" />
+                <span className="text-muted-foreground">Advance Booked</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-sm bg-emerald-400 inline-block" />
+                <span className="text-muted-foreground">Available</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-sm bg-sky-400 inline-block" />
+                <span className="text-muted-foreground">Checkout / Bookable</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Schedule Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="sticky left-0 z-20 min-w-[130px] bg-background/95 p-2 font-semibold text-foreground backdrop-blur shadow-sm">
+                    Room
+                  </th>
+                  {calendarDates.map((cd) => (
+                    <th
+                      key={cd.dateStr}
+                      className={`min-w-[84px] p-2 text-center border-l ${
+                        cd.isToday ? 'bg-emerald-100/70 dark:bg-emerald-950/60 font-bold text-emerald-950 dark:text-emerald-200' : 'text-muted-foreground'
+                      }`}
+                    >
+                      <div className="text-[10px] uppercase tracking-wider">{cd.dayName}</div>
+                      <div className={`text-xs font-bold ${cd.isToday ? 'text-emerald-700 dark:text-emerald-400' : 'text-foreground'}`}>
+                        {cd.label}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((room) => {
+                  return (
+                    <tr key={room.id} className="border-b hover:bg-muted/20 transition-colors">
+                      {/* Room Header Cell */}
+                      <td className="sticky left-0 z-10 bg-background/95 p-2 border-r backdrop-blur shadow-sm">
+                        <button
+                          type="button"
+                          onClick={() => setViewRoom(room)}
+                          className="text-left group flex flex-col"
+                        >
+                          <span className="font-bold text-sm text-foreground group-hover:text-emerald-600 transition-colors">
+                            Room {room.number}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {room.type} • {formatINR(room.rate)}
+                          </span>
+                        </button>
+                      </td>
+
+                      {/* Date Cells */}
+                      {calendarDates.map((cd) => {
+                        const dateStr = cd.dateStr
+
+                        // Check active booking on dateStr
+                        const activeOnDate = (room.bookings || []).find((b) => {
+                          if (b.status !== 'ACTIVE') return false
+                          const inStr = toDateStr(b.checkIn)
+                          const outStr = b.checkOut ? toDateStr(b.checkOut) : null
+                          return inStr <= dateStr && (!outStr || outStr > dateStr)
+                        })
+
+                        // Check advance reservation on dateStr
+                        const bookedOnDate = (room.bookings || []).find((b) => {
+                          if (b.status !== 'BOOKED') return false
+                          const inStr = toDateStr(b.checkIn)
+                          const outStr = b.checkOut ? toDateStr(b.checkOut) : null
+                          return inStr <= dateStr && (outStr ? outStr > dateStr : inStr === dateStr)
+                        })
+
+                        // Check checkout happening on dateStr
+                        const checkingOutOnDate = (room.bookings || []).find((b) => {
+                          if (b.status !== 'ACTIVE' && b.status !== 'BOOKED') return false
+                          return b.checkOut && toDateStr(b.checkOut) === dateStr
+                        })
+
+                        // Check new check-in starting on dateStr
+                        const checkingInOnDate = (room.bookings || []).find((b) => {
+                          if (b.status !== 'ACTIVE' && b.status !== 'BOOKED') return false
+                          return toDateStr(b.checkIn) === dateStr
+                        })
+
+                        if (activeOnDate) {
+                          return (
+                            <td key={dateStr} className="p-1 border-l text-center">
+                              <button
+                                type="button"
+                                onClick={() => setViewRoom(room)}
+                                className="w-full h-11 rounded bg-red-100 dark:bg-red-950/60 border border-red-300 dark:border-red-800 p-1 text-[10px] font-semibold text-red-800 dark:text-red-300 flex flex-col items-center justify-center hover:opacity-90 transition-opacity"
+                                title={`Occupied by ${activeOnDate.guest?.name || 'Guest'} (Checkout: ${formatDate(activeOnDate.checkOut)})`}
+                              >
+                                <span className="truncate w-full font-bold">{activeOnDate.guest?.name?.split(' ')[0] || 'Guest'}</span>
+                                <span className="text-[9px] opacity-80">Occupied</span>
+                              </button>
+                            </td>
+                          )
+                        }
+
+                        if (bookedOnDate) {
+                          return (
+                            <td key={dateStr} className="p-1 border-l text-center">
+                              <button
+                                type="button"
+                                onClick={() => setViewRoom(room)}
+                                className="w-full h-11 rounded bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 p-1 text-[10px] font-semibold text-amber-900 dark:text-amber-200 flex flex-col items-center justify-center hover:opacity-90 transition-opacity"
+                                title={`Reserved for ${bookedOnDate.guest?.name || 'Guest'} (Out: ${formatDate(bookedOnDate.checkOut)})`}
+                              >
+                                <span className="truncate w-full font-bold">{bookedOnDate.guest?.name?.split(' ')[0] || 'Guest'}</span>
+                                <span className="text-[9px] opacity-80">Reserved</span>
+                              </button>
+                            </td>
+                          )
+                        }
+
+                        if (checkingOutOnDate && !checkingInOnDate) {
+                          return (
+                            <td key={dateStr} className="p-1 border-l text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBookingDialogState({
+                                    open: true,
+                                    roomId: room.id,
+                                    initialCheckInDate: dateStr,
+                                  })
+                                }}
+                                className="w-full h-11 rounded bg-sky-50 dark:bg-sky-950/40 border border-sky-300 dark:border-sky-800 hover:border-sky-500 p-1 text-[10px] font-semibold text-sky-900 dark:text-sky-200 flex flex-col items-center justify-center hover:bg-sky-100 transition-all group"
+                                title={`Previous guest checks out today on ${formatDate(dateStr)}. Click to book from ${dateStr} onwards!`}
+                              >
+                                <span className="text-[9px] text-sky-700 dark:text-sky-300 truncate w-full">
+                                  Out: {checkingOutOnDate.guest?.name?.split(' ')[0] || 'Guest'}
+                                </span>
+                                <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 group-hover:underline">
+                                  + Book Now
+                                </span>
+                              </button>
+                            </td>
+                          )
+                        }
+
+                        if (room.status === 'MAINTENANCE') {
+                          return (
+                            <td key={dateStr} className="p-1 border-l text-center">
+                              <div className="w-full h-11 rounded bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 p-1 text-[9px] font-medium text-zinc-500 flex items-center justify-center">
+                                Maint
+                              </div>
+                            </td>
+                          )
+                        }
+
+                        // Available date cell
+                        return (
+                          <td key={dateStr} className="p-1 border-l text-center">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBookingDialogState({
+                                  open: true,
+                                  roomId: room.id,
+                                  initialCheckInDate: dateStr,
+                                })
+                              }}
+                              className="w-full h-11 rounded bg-emerald-50/40 hover:bg-emerald-100 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/50 border border-dashed border-emerald-200 hover:border-emerald-500 p-1 text-[10px] font-medium text-emerald-700 dark:text-emerald-400 flex flex-col items-center justify-center transition-all group"
+                              title={`Room ${room.number} is available on ${formatDate(dateStr)}. Click to book.`}
+                            >
+                              <span className="opacity-70 group-hover:opacity-100 font-semibold">+ Book</span>
+                            </button>
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
-      ))}
+      )}
 
       <CheckinDialog
         open={!!checkinRoom}
@@ -614,6 +912,39 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           </Button>
                         </div>
                       </div>
+
+                      {/* Post-checkout Availability & Booking Card */}
+                      {opState.futureAvailableFromFormatted && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50/70 p-3 text-xs space-y-2 dark:border-sky-800 dark:bg-sky-950/30">
+                          <div className="flex items-center justify-between font-semibold text-sky-900 dark:text-sky-200">
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="h-4 w-4 text-sky-600" />
+                              Available for Booking (Post-Checkout)
+                            </span>
+                            <span className="rounded bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-900 dark:bg-sky-900 dark:text-sky-200">
+                              From {opState.futureAvailableFromFormatted}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                            Previous guest checkout is on <b>{opState.futureAvailableFromFormatted}</b>. Another guest can book this room starting on or after {opState.futureAvailableFromFormatted}.
+                          </p>
+                          <Button
+                            size="sm"
+                            className="w-full bg-sky-600 hover:bg-sky-700 text-white font-semibold gap-1.5 shadow-sm"
+                            onClick={() => {
+                              setBookingDialogState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                initialCheckInDate: opState.futureAvailableFromDate || undefined,
+                              })
+                              setViewRoom(null)
+                            }}
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5" />
+                            Book Room (From {opState.futureAvailableFromFormatted})
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -623,7 +954,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                       <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
                         <div className="flex items-center justify-between border-b border-amber-200/60 pb-1.5 dark:border-amber-800/60">
                           <span className="font-bold text-amber-900 dark:text-amber-200">Advance Reservation (Due Today)</span>
-                          <span className="text-[11px] font-semibold rounded bg-amber-200/70 px-1.5 py-0.5 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
+                          <span className="text-[11px] font-semibold rounded bg-amber-200/70 px-1.5 py-0.5 text-amber-900 dark:bg-amber-950 dark:text-amber-200">
                             Booked
                           </span>
                         </div>
@@ -758,6 +1089,39 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                       >
                         <Printer className="mr-1.5 h-4 w-4" /> Print Booking Bill / Advance Receipt
                       </Button>
+
+                      {/* Post-checkout Availability & Booking Card for Today's Booking */}
+                      {opState.futureAvailableFromFormatted && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50/70 p-3 text-xs space-y-2 dark:border-sky-800 dark:bg-sky-950/30">
+                          <div className="flex items-center justify-between font-semibold text-sky-900 dark:text-sky-200">
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="h-4 w-4 text-sky-600" />
+                              Available for Next Booking
+                            </span>
+                            <span className="rounded bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-900 dark:bg-sky-900 dark:text-sky-200">
+                              From {opState.futureAvailableFromFormatted}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                            Expected checkout is on <b>{opState.futureAvailableFromFormatted}</b>. Next guest can reserve this room from {opState.futureAvailableFromFormatted} onwards.
+                          </p>
+                          <Button
+                            size="sm"
+                            className="w-full bg-sky-600 hover:bg-sky-700 text-white font-semibold gap-1.5 shadow-sm"
+                            onClick={() => {
+                              setBookingDialogState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                initialCheckInDate: opState.futureAvailableFromDate || undefined,
+                              })
+                              setViewRoom(null)
+                            }}
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5" />
+                            Book Next Stay (From {opState.futureAvailableFromFormatted})
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -828,6 +1192,37 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           <Wallet className="mr-1.5 h-4 w-4" /> Billing / Checkout
                         </Button>
                       </div>
+
+                      {/* Post-checkout Availability for Occupied Room */}
+                      {opState.futureAvailableFromFormatted && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50/70 p-2.5 text-xs space-y-1.5 dark:border-sky-800 dark:bg-sky-950/30">
+                          <div className="flex items-center justify-between font-semibold text-sky-900 dark:text-sky-200">
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="h-3.5 w-3.5 text-sky-600" />
+                              Available for Next Stay
+                            </span>
+                            <span className="rounded bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-900 dark:bg-sky-900 dark:text-sky-200">
+                              From {opState.futureAvailableFromFormatted}
+                            </span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full h-8 border-sky-300 text-sky-900 bg-sky-50 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-200 font-medium gap-1.5 shadow-sm"
+                            onClick={() => {
+                              setBookingDialogState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                initialCheckInDate: opState.futureAvailableFromDate || undefined,
+                              })
+                              setViewRoom(null)
+                            }}
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5" />
+                            Book Future Stay (From {opState.futureAvailableFromFormatted})
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1060,6 +1455,21 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
           onDataChanged()
         }}
       />
+
+      {/* Booking Dialog for direct schedule booking */}
+      {bookingDialogState?.open && (
+        <BookingDialog
+          open={bookingDialogState.open}
+          onOpenChange={(open) => !open && setBookingDialogState(null)}
+          roomId={bookingDialogState.roomId}
+          initialCheckInDate={bookingDialogState.initialCheckInDate}
+          onSuccess={() => {
+            setBookingDialogState(null)
+            load()
+            onDataChanged()
+          }}
+        />
+      )}
     </div>
   )
 }

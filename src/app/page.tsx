@@ -98,6 +98,8 @@ function Shell() {
       .then((r) => r.json())
       .then((d: { hotelName?: string }) => d.hotelName && setHotelName(d.hotelName))
       .catch(() => {})
+    // Pre-warm global search index
+    fetch('/api/search?index=1', { cache: 'no-store' }).catch(() => {})
   }, [refreshKey])
 
   function onNavigate(target: NavTarget) {
