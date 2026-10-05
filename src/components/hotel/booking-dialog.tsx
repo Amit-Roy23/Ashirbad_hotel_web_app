@@ -26,6 +26,14 @@ import { toast } from '@/hooks/use-toast'
 import { Loader2, UserSearch, LogIn, CalendarCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+interface BookingInfo {
+  id: string
+  checkIn: string
+  checkOut?: string | null
+  guest?: { name: string; phone?: string; company?: string | null } | null
+  status?: string
+}
+
 interface Room {
   id: string
   number: string
@@ -34,6 +42,7 @@ interface Room {
   capacity: number
   status: string
   housekeeping?: string
+  bookings?: BookingInfo[]
 }
 
 interface BookingDialogProps {
@@ -83,15 +92,6 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
     }
   }, [open, initialPhone, initialMode])
 
-  const availableRooms = useMemo(() => {
-    return rooms.filter((r) => r.status === 'VACANT' && r.housekeeping !== 'DIRTY')
-  }, [rooms])
-
-  useEffect(() => {
-    if (open) setSelectedRoom(roomId || availableRooms[0]?.id || '')
-  }, [open, roomId, availableRooms])
-
-  const room = rooms.find((r) => r.id === selectedRoom)
   const effectiveCheckIn = bookingMode === 'BOOKING' ? checkInDate : todayStr()
   const nights = useMemo(() => {
     const diff = Math.ceil(
@@ -100,6 +100,50 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
     )
     return Math.max(1, diff)
   }, [effectiveCheckIn, checkOut])
+
+  const availableRooms = useMemo(() => {
+    const startMs = new Date(effectiveCheckIn + 'T12:00:00').getTime()
+    const endMs = new Date(checkOut + 'T11:00:00').getTime()
+    return rooms.filter((r) => {
+      if (r.status === 'MAINTENANCE') return false
+      if (bookingMode === 'CHECKIN' && r.housekeeping === 'DIRTY') return false
+      // Check if room has an overlapping active or booked stay
+      const hasOverlap = (r.bookings || []).some((b) => {
+        if (b.status !== 'ACTIVE' && b.status !== 'BOOKED') return false
+        const bStart = new Date(b.checkIn).getTime()
+        const bEnd = b.checkOut ? new Date(b.checkOut).getTime() : bStart + 24 * 3600 * 1000
+        return bStart < endMs && bEnd > startMs
+      })
+      return !hasOverlap
+    })
+  }, [rooms, effectiveCheckIn, checkOut, bookingMode])
+
+  useEffect(() => {
+    if (open) {
+      if (roomId && rooms.some((r) => r.id === roomId)) {
+        setSelectedRoom(roomId)
+      } else if (!availableRooms.some((r) => r.id === selectedRoom)) {
+        setSelectedRoom(availableRooms[0]?.id || '')
+      }
+    }
+  }, [open, roomId, availableRooms, rooms, selectedRoom])
+
+  const room = rooms.find((r) => r.id === selectedRoom)
+
+  const upcomingBooking = useMemo(() => {
+    if (!room?.bookings) return null
+    const effStart = new Date(effectiveCheckIn + 'T00:00:00').getTime()
+    return (
+      room.bookings
+        .filter((b) => b.status === 'BOOKED' && new Date(b.checkIn).getTime() > effStart)
+        .sort((a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime())[0] || null
+    )
+  }, [room, effectiveCheckIn])
+
+  const maxCheckOutDate = useMemo(() => {
+    if (!upcomingBooking) return undefined
+    return new Date(upcomingBooking.checkIn).toISOString().slice(0, 10)
+  }, [upcomingBooking])
 
   // AUTO-FILL: when phone matches an old customer, fetch their details
   async function lookupGuest(value: string) {
@@ -150,8 +194,19 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
       setError('Expected Check-Out date is required')
       return
     }
-    if (!guestCount || parseInt(guestCount) < 1) {
+    if (maxCheckOutDate && checkOut > maxCheckOutDate) {
+      setError(
+        `Check-out cannot exceed ${formatDate(maxCheckOutDate)} because Room ${room?.number} is reserved for ${upcomingBooking?.guest?.name || 'advance guest'}.`
+      )
+      return
+    }
+    const count = parseInt(guestCount)
+    if (!guestCount || isNaN(count) || count < 1) {
       setError('Number of guests must be at least 1')
+      return
+    }
+    if (count > 4) {
+      setError('Maximum 4 guests allowed per room')
       return
     }
     setSaving(true)
@@ -251,17 +306,36 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
                 <SelectValue placeholder="Select room" />
               </SelectTrigger>
               <SelectContent>
-                {availableRooms.map((r) => (
-                  <SelectItem key={r.id} value={r.id} className="text-xs">
-                    Room {r.number} — {r.type} · {formatINR(r.rate)}/night
-                  </SelectItem>
-                ))}
+                {availableRooms.map((r) => {
+                  const nextRes = (r.bookings || [])
+                    .filter((b) => b.status === 'BOOKED' && new Date(b.checkIn).getTime() > new Date(effectiveCheckIn).getTime())
+                    .sort((a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime())[0]
+                  return (
+                    <SelectItem key={r.id} value={r.id} className="text-xs">
+                      Room {r.number} — {r.type} · {formatINR(r.rate)}/night
+                      {nextRes ? ` (Avail until ${formatDate(nextRes.checkIn)})` : ''}
+                    </SelectItem>
+                  )
+                })}
               </SelectContent>
             </Select>
             {availableRooms.length === 0 && (
-              <p className="text-xs text-destructive">No clean vacant rooms available right now.</p>
+              <p className="text-xs text-destructive">No rooms available for the selected stay dates.</p>
             )}
           </div>
+
+          {upcomingBooking && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50/90 p-2.5 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              <div className="flex items-center gap-1.5 font-semibold text-amber-900 dark:text-amber-200">
+                <CalendarCheck className="h-4 w-4 text-amber-600 shrink-0" />
+                <span>Upcoming Reservation on Room {room?.number}</span>
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed">
+                Reserved for <b>{upcomingBooking.guest?.name || 'Guest'}</b> starting <b>{formatDate(upcomingBooking.checkIn)}</b>.
+                Maximum stay check-out is <b>{formatDate(upcomingBooking.checkIn)}</b>.
+              </p>
+            </div>
+          )}
 
           {/* Date selection */}
           {bookingMode === 'BOOKING' ? (
@@ -289,6 +363,7 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
                   type="date"
                   value={checkOut}
                   min={checkInDate}
+                  max={maxCheckOutDate}
                   className="h-9 text-xs"
                   onChange={(e) => setCheckOut(e.target.value)}
                 />
@@ -309,6 +384,7 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
                   type="date"
                   value={checkOut}
                   min={todayStr()}
+                  max={maxCheckOutDate}
                   className="h-9 text-xs"
                   onChange={(e) => setCheckOut(e.target.value)}
                 />
@@ -388,8 +464,30 @@ export function BookingDialog({ open, onOpenChange, onSuccess, roomId, initialPh
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="bk-gcount" className="text-xs font-semibold text-foreground">Guests</Label>
-              <Input id="bk-gcount" type="number" min="1" value={guestCount} className="h-9 text-xs" onChange={(e) => setGuestCount(e.target.value)} />
+              <Label htmlFor="bk-gcount" className="text-xs font-semibold text-foreground">Guests (Max 4) *</Label>
+              <Input
+                id="bk-gcount"
+                type="number"
+                min="1"
+                max="4"
+                value={guestCount}
+                className="h-9 text-xs"
+                onChange={(e) => {
+                  const val = e.target.value
+                  if (val === '') {
+                    setGuestCount('')
+                  } else {
+                    const numVal = parseInt(val)
+                    if (!isNaN(numVal)) {
+                      if (numVal > 4) setGuestCount('4')
+                      else if (numVal < 1) setGuestCount('1')
+                      else setGuestCount(String(numVal))
+                    } else {
+                      setGuestCount(val)
+                    }
+                  }
+                }}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bk-advance" className="text-xs font-semibold text-foreground">Advance (₹)</Label>

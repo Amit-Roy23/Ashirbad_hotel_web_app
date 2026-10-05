@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { CheckinDialog } from './checkin-dialog'
 import { RoomStatusBadge } from './status-badge'
-import { api, apiAs, formatINR, formatDate } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, getRoomOperationalState } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import {
@@ -37,6 +37,7 @@ import {
   CalendarCheck,
   CalendarX2,
   Printer,
+  Trash2,
 } from 'lucide-react'
 
 interface Guest {
@@ -232,7 +233,10 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
           size="sm"
           className="justify-start gap-2 bg-emerald-600 hover:bg-emerald-700"
           onClick={() => {
-            const vacantRoom = rooms.find((r) => r.status === 'VACANT' && r.housekeeping !== 'DIRTY')
+            const vacantRoom = rooms.find((r) => {
+              const op = getRoomOperationalState(r)
+              return (op.displayStatus === 'VACANT' || op.displayStatus === 'VACANT_WITH_FUTURE') && r.housekeeping !== 'DIRTY'
+            })
             if (vacantRoom) setCheckinRoom(vacantRoom)
           }}
         >
@@ -251,7 +255,11 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
 
       {/* Stats */}
       {(() => {
-        const bookedCount = stats?.booked ?? rooms.filter((r) => r.status === 'BOOKED' || (!r.status.match(/OCCUPIED|MAINTENANCE/) && r.bookings?.[0]?.status === 'BOOKED')).length
+        const opStates = rooms.map((r) => getRoomOperationalState(r))
+        const bookedTodayCount = opStates.filter((s) => s.displayStatus === 'BOOKED').length
+        const futureReservedCount = opStates.filter((s) => s.displayStatus === 'VACANT_WITH_FUTURE' || (s.displayStatus === 'OCCUPIED' && s.hasFutureBooking)).length
+        const totalVacantCount = opStates.filter((s) => s.displayStatus === 'VACANT' || s.displayStatus === 'VACANT_WITH_FUTURE').length
+
         return (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -266,7 +274,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                   <div>
                     <p className="text-xs text-muted-foreground">Vacant / Total</p>
                     <p className="text-xl font-bold">
-                      {stats?.vacant}/{stats?.totalRooms}
+                      {totalVacantCount}/{stats?.totalRooms || rooms.length}
                     </p>
                   </div>
                 </CardContent>
@@ -281,9 +289,13 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                     <CalendarCheck className="h-5 w-5 text-amber-700 dark:text-amber-300" />
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Booked Rooms</p>
-                    <p className="text-xl font-bold text-amber-900 dark:text-amber-200">{bookedCount}</p>
-                    <p className="text-[10px] text-muted-foreground">advance reserved</p>
+                    <p className="text-xs text-muted-foreground">Reservations</p>
+                    <p className="text-xl font-bold text-amber-900 dark:text-amber-200">
+                      {bookedTodayCount + futureReservedCount}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {bookedTodayCount > 0 ? `${bookedTodayCount} today · ` : ''}{futureReservedCount} future
+                    </p>
                   </div>
                 </CardContent>
               </Card>
@@ -388,7 +400,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <CalendarCheck className="h-4 w-4 text-amber-600" />
                       <span>
-                        <b className="text-foreground">{bookedCount}</b> booked
+                        <b className="text-foreground">{bookedTodayCount}</b> booked
                       </span>
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -476,243 +488,351 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
           onDataChanged()
         }}
       />
-
-      {/* Occupied/Booked/Maintenance/Dirty room view */}
+      {/* Occupied/Booked/Maintenance/Dirty/Vacant room view */}
       <Dialog open={!!viewRoom} onOpenChange={(open) => !open && setViewRoom(null)}>
-        <DialogContent className="max-w-sm">
-          {(() => {
-            const isBooked = viewRoom?.status === 'BOOKED' || viewRoom?.status === 'RESERVED' || (!viewRoom?.status.match(/OCCUPIED|MAINTENANCE/) && viewRoom?.bookings?.[0]?.status === 'BOOKED')
+        <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+          {viewRoom && (() => {
+            const currentRoom = viewRoom
+            const opState = getRoomOperationalState(currentRoom)
             return (
               <>
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2">
-                    Room {viewRoom?.number}{' '}
-                    <RoomStatusBadge status={isBooked ? 'BOOKED' : viewRoom?.status || ''} housekeeping={viewRoom?.housekeeping} />
+                    Room {currentRoom.number}{' '}
+                    <RoomStatusBadge
+                      status={opState.displayStatus}
+                      housekeeping={currentRoom.housekeeping}
+                      upcomingText={opState.availableUntilFormatted}
+                    />
                   </DialogTitle>
                   <DialogDescription>
-                    {viewRoom?.type} • {formatINR(viewRoom?.rate)}/night
+                    {currentRoom.type} • {formatINR(currentRoom.rate)}/night
                   </DialogDescription>
                 </DialogHeader>
 
-                {/* Advance Reservation Room details */}
-                {isBooked && viewRoom?.bookings?.[0] && (
-                  <div className="space-y-3">
-                    <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
-                      <div className="flex items-center justify-between border-b border-amber-200/60 pb-1.5 dark:border-amber-800/60">
-                        <span className="font-bold text-amber-900 dark:text-amber-200">Advance Reservation</span>
-                        <span className="text-[11px] font-semibold rounded bg-amber-200/70 px-1.5 py-0.5 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
-                          Booked
-                        </span>
-                      </div>
-                      <div className="flex justify-between pt-1">
-                        <span className="text-muted-foreground">Guest</span>
-                        <span className="font-semibold text-foreground">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Phone</span>
-                        <a href={`tel:${viewRoom.bookings[0].guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
-                          {viewRoom.bookings[0].guest?.phone || '-'}
-                        </a>
-                      </div>
-                      {viewRoom.bookings[0].guest?.company && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Company</span>
-                          <span className="font-semibold">{viewRoom.bookings[0].guest.company}</span>
+                <div className="space-y-3">
+                  {/* VACANT WITH FUTURE RESERVATION */}
+                  {opState.displayStatus === 'VACANT_WITH_FUTURE' && (
+                    <div className="space-y-3">
+                      <div className="rounded-xl border border-emerald-300 bg-emerald-50/80 p-3.5 space-y-2.5 dark:border-emerald-800 dark:bg-emerald-950/40">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+                            <DoorOpen className="h-4 w-4 text-emerald-600" />
+                            Vacant &amp; Available for Stay
+                          </span>
+                          <span className="rounded bg-amber-200/80 px-2 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                            Until {opState.availableUntilFormatted}
+                          </span>
                         </div>
-                      )}
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Booked Check-In</span>
-                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Expected Out</span>
-                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Guests</span>
-                        <span className="font-semibold">{viewRoom.bookings[0].guestCount}</span>
-                      </div>
-                      {viewRoom.bookings[0].advance > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Advance Paid</span>
-                          <span className="font-bold text-emerald-700 dark:text-emerald-400">{formatINR(viewRoom.bookings[0].advance)}</span>
+                        <p className="text-xs text-slate-700 dark:text-slate-300">
+                          This room is ready right now for walk-in guests or reservations up to <b>{opState.maxNightsAvailable} night{opState.maxNightsAvailable! > 1 ? 's' : ''}</b> (until {opState.availableUntilFormatted}).
+                        </p>
+                        <div className="pt-2 border-t border-emerald-200/60 dark:border-emerald-800/60 text-xs flex justify-between items-center">
+                          <span className="text-muted-foreground">Upcoming Reservation:</span>
+                          <span className="font-semibold text-foreground">
+                            {opState.nextFutureBooking?.guest?.name} ({formatDate(opState.nextFutureBooking?.checkIn)})
+                          </span>
                         </div>
-                      )}
-                    </div>
+                      </div>
 
-                    <div className="grid grid-cols-2 gap-2">
+                      {/* Primary Action: Direct Check-In for interim guest */}
                       <Button
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
-                        disabled={busy}
-                        onClick={async () => {
-                          if (!viewRoom?.bookings?.[0]) return
-                          setBusy(true)
-                          try {
-                            const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
-                              method: 'PATCH',
-                              body: JSON.stringify({ id: viewRoom.bookings[0].id, action: 'checkin' }),
-                            })
-                            if (res && res.error) {
-                              toast({ variant: 'destructive', title: 'Check-In Failed', description: res.error })
-                              return
-                            }
-                            await load()
-                            onDataChanged()
-                            setViewRoom(null)
-                            toast({
-                              variant: 'success',
-                              title: 'Check-In Completed',
-                              description: `Guest ${viewRoom.bookings[0].guest?.name || ''} checked into Room ${viewRoom.number}.`,
-                            })
-                          } catch (e) {
-                            toast({
-                              variant: 'destructive',
-                              title: 'Error',
-                              description: e instanceof Error ? e.message : 'Check-in failed',
-                            })
-                          } finally {
-                            setBusy(false)
-                          }
-                        }}
-                      >
-                        {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <LogIn className="mr-1.5 h-4 w-4" />}
-                        Check-In Now
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                        disabled={busy}
-                        onClick={async () => {
-                          if (!viewRoom?.bookings?.[0]) return
-                          if (!confirm(`Are you sure you want to cancel the advance booking for ${viewRoom.bookings[0].guest?.name || 'Guest'} in Room ${viewRoom.number}?`)) return
-                          setBusy(true)
-                          try {
-                            const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
-                              method: 'PATCH',
-                              body: JSON.stringify({ id: viewRoom.bookings[0].id, action: 'cancel' }),
-                            })
-                            if (res && res.error) {
-                              toast({ variant: 'destructive', title: 'Cancellation Failed', description: res.error })
-                              return
-                            }
-                            await load()
-                            onDataChanged()
-                            setViewRoom(null)
-                            toast({
-                              variant: 'success',
-                              title: 'Booking Cancelled',
-                              description: `Advance reservation for Room ${viewRoom.number} has been cancelled.`,
-                            })
-                          } catch (e) {
-                            toast({
-                              variant: 'destructive',
-                              title: 'Error',
-                              description: e instanceof Error ? e.message : 'Cancellation failed',
-                            })
-                          } finally {
-                            setBusy(false)
-                          }
-                        }}
-                      >
-                        {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <CalendarX2 className="mr-1.5 h-4 w-4" />}
-                        Cancel Booking
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                {viewRoom?.status === 'OCCUPIED' && viewRoom.bookings?.[0] && (
-                  <div className="space-y-3">
-                    <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Guest</span>
-                        <span className="font-semibold">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Phone</span>
-                        <a href={`tel:${viewRoom.bookings[0].guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
-                          {viewRoom.bookings[0].guest?.phone || '-'}
-                        </a>
-                      </div>
-                      {viewRoom.bookings[0].guest?.company && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Company</span>
-                          <span className="font-semibold">{viewRoom.bookings[0].guest.company}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Check-In</span>
-                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Expected Out</span>
-                        <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Guests</span>
-                        <span className="font-semibold">{viewRoom.bookings[0].guestCount}</span>
-                      </div>
-                      {viewRoom.bookings[0].advance > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Advance</span>
-                          <span className="font-semibold">{formatINR(viewRoom.bookings[0].advance)}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                        className="w-full h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold gap-2 shadow-sm"
                         onClick={() => {
-                          onNavigate({ tab: 'billing', q: viewRoom.number })
+                          setCheckinRoom(currentRoom)
                           setViewRoom(null)
                         }}
                       >
-                        <Printer className="mr-1.5 h-4 w-4" /> Print Bill
+                        <LogIn className="h-4 w-4" />
+                        Check-In Walk-In Guest (Max checkout {opState.availableUntilFormatted})
                       </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          onNavigate({ tab: 'billing', q: viewRoom.number })
-                          setViewRoom(null)
-                        }}
-                      >
-                        <Wallet className="mr-1.5 h-4 w-4" /> Billing &amp; Checkout
-                      </Button>
+
+                      {/* Advance reservation details card */}
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-xs space-y-2 dark:border-amber-900 dark:bg-amber-950/30">
+                        <div className="flex items-center justify-between font-semibold text-amber-900 dark:text-amber-200">
+                          <span className="flex items-center gap-1.5">
+                            <CalendarCheck className="h-3.5 w-3.5 text-amber-600" />
+                            Advance Reservation Details
+                          </span>
+                          <span>{formatINR(opState.nextFutureBooking?.advance || 0)} Advance</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 text-[11px] pt-1 border-t border-amber-200/60 dark:border-amber-800/60">
+                          <div>
+                            <span className="text-muted-foreground">Guest: </span>
+                            <span className="font-semibold">{opState.nextFutureBooking?.guest?.name}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Phone: </span>
+                            <span className="font-semibold">{opState.nextFutureBooking?.guest?.phone}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Check-In: </span>
+                            <span className="font-semibold">{formatDate(opState.nextFutureBooking?.checkIn)}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Check-Out: </span>
+                            <span className="font-semibold">{formatDate(opState.nextFutureBooking?.checkOut)}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-[11px] h-7 text-red-600 border-red-200 hover:bg-red-50"
+                            onClick={async () => {
+                              if (!opState.nextFutureBooking) return
+                              if (!confirm(`Cancel advance reservation for ${opState.nextFutureBooking.guest?.name}?`)) return
+                              setBusy(true)
+                              try {
+                                await apiAs('/api/bookings', getCachedUser(), {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ id: opState.nextFutureBooking.id, action: 'cancel' }),
+                                })
+                                await load()
+                                onDataChanged()
+                                setViewRoom(null)
+                                toast({ variant: 'success', title: 'Booking Cancelled', description: 'Advance booking cancelled.' })
+                              } catch (e) {
+                                toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Failed' })
+                              } finally {
+                                setBusy(false)
+                              }
+                            }}
+                          >
+                            <Trash2 className="mr-1 h-3 w-3" /> Cancel
+                          </Button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                )}
-                {viewRoom?.status === 'MAINTENANCE' && (
-                  <p className="text-sm text-muted-foreground">This room is under maintenance.</p>
-                )}
-                {viewRoom && viewRoom.status === 'VACANT' && viewRoom.housekeeping === 'DIRTY' && !isBooked && (
-                  <Button
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
-                    onClick={() => markClean(viewRoom)}
-                    disabled={busy}
-                  >
-                    {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
-                    Mark Clean (Ready for check-in)
-                  </Button>
-                )}
-                {viewRoom && viewRoom.status !== 'OCCUPIED' && !isBooked && (
-                  <Button
-                    className="w-full"
-                    variant="outline"
-                    onClick={() => toggleMaintenance(viewRoom)}
-                    disabled={busy}
-                  >
-                    {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    {viewRoom.status === 'MAINTENANCE' ? (
-                      <>
-                        <ArrowLeftRight className="mr-2 h-4 w-4" /> Mark as Vacant
-                      </>
-                    ) : (
-                      <>
-                        <Wrench className="mr-2 h-4 w-4" /> Mark Under Maintenance
-                      </>
-                    )}
-                  </Button>
-                )}
+                  )}
+
+                  {/* Advance Reservation Room details (DUE TODAY) */}
+                  {opState.displayStatus === 'BOOKED' && opState.todayBooking && (
+                    <div className="space-y-3">
+                      <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
+                        <div className="flex items-center justify-between border-b border-amber-200/60 pb-1.5 dark:border-amber-800/60">
+                          <span className="font-bold text-amber-900 dark:text-amber-200">Advance Reservation (Due Today)</span>
+                          <span className="text-[11px] font-semibold rounded bg-amber-200/70 px-1.5 py-0.5 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
+                            Booked
+                          </span>
+                        </div>
+                        <div className="flex justify-between pt-1">
+                          <span className="text-muted-foreground">Guest</span>
+                          <span className="font-semibold text-foreground">{opState.todayBooking.guest?.name || 'Guest'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Phone</span>
+                          <a href={`tel:${opState.todayBooking.guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
+                            {opState.todayBooking.guest?.phone || '-'}
+                          </a>
+                        </div>
+                        {opState.todayBooking.guest?.company && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Company</span>
+                            <span className="font-semibold">{opState.todayBooking.guest.company}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Booked Check-In</span>
+                          <span className="font-semibold">{formatDate(opState.todayBooking.checkIn)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Expected Out</span>
+                          <span className="font-semibold">{formatDate(opState.todayBooking.checkOut)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Guests</span>
+                          <span className="font-semibold">{opState.todayBooking.guestCount}</span>
+                        </div>
+                        {Number(opState.todayBooking.advance || 0) > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Advance Paid</span>
+                            <span className="font-bold text-emerald-700 dark:text-emerald-400">{formatINR(opState.todayBooking.advance)}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!opState.todayBooking) return
+                            setBusy(true)
+                            try {
+                              const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
+                                method: 'PATCH',
+                                body: JSON.stringify({ id: opState.todayBooking.id, action: 'checkin' }),
+                              })
+                              if (res && res.error) {
+                                toast({ variant: 'destructive', title: 'Check-In Failed', description: res.error })
+                                return
+                              }
+                              await load()
+                              onDataChanged()
+                              setViewRoom(null)
+                              toast({
+                                variant: 'success',
+                                title: 'Check-In Completed',
+                                description: `Guest ${opState.todayBooking.guest?.name || ''} checked into Room ${currentRoom.number}.`,
+                              })
+                            } catch (e) {
+                              toast({
+                                variant: 'destructive',
+                                title: 'Error',
+                                description: e instanceof Error ? e.message : 'Check-in failed',
+                              })
+                            } finally {
+                              setBusy(false)
+                            }
+                          }}
+                        >
+                          {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <LogIn className="mr-1.5 h-4 w-4" />}
+                          Check-In Now
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!opState.todayBooking) return
+                            if (!confirm(`Are you sure you want to cancel the advance booking for ${opState.todayBooking.guest?.name || 'Guest'} in Room ${currentRoom.number}?`)) return
+                            setBusy(true)
+                            try {
+                              const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
+                                method: 'PATCH',
+                                body: JSON.stringify({ id: opState.todayBooking.id, action: 'cancel' }),
+                              })
+                              if (res && res.error) {
+                                toast({ variant: 'destructive', title: 'Cancellation Failed', description: res.error })
+                                return
+                              }
+                              await load()
+                              onDataChanged()
+                              setViewRoom(null)
+                              toast({
+                                variant: 'success',
+                                title: 'Booking Cancelled',
+                                description: `Advance reservation for Room ${currentRoom.number} has been cancelled.`,
+                              })
+                            } catch (e) {
+                              toast({
+                                variant: 'destructive',
+                                title: 'Error',
+                                description: e instanceof Error ? e.message : 'Cancellation failed',
+                              })
+                            } finally {
+                              setBusy(false)
+                            }
+                          }}
+                        >
+                          {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Trash2 className="mr-1.5 h-4 w-4" />}
+                          Cancel Booking
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Occupied Room details */}
+                  {opState.displayStatus === 'OCCUPIED' && opState.activeBooking && (
+                    <div className="space-y-3">
+                      {opState.hasFutureBooking && (
+                        <div className="rounded-lg border border-amber-300 bg-amber-50/90 p-2 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                          ⚠️ Next Booking: <b>{opState.nextFutureBooking?.guest?.name}</b> on {opState.availableUntilFormatted}
+                        </div>
+                      )}
+                      <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Guest</span>
+                          <span className="font-semibold">{opState.activeBooking.guest?.name || 'Guest'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Phone</span>
+                          <a href={`tel:${opState.activeBooking.guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
+                            {opState.activeBooking.guest?.phone || '-'}
+                          </a>
+                        </div>
+                        {opState.activeBooking.guest?.company && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Company</span>
+                            <span className="font-semibold">{opState.activeBooking.guest.company}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Check-In</span>
+                          <span className="font-semibold">{formatDate(opState.activeBooking.checkIn)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Expected Out</span>
+                          <span className="font-semibold">{formatDate(opState.activeBooking.checkOut)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Guests</span>
+                          <span className="font-semibold">{opState.activeBooking.guestCount}</span>
+                        </div>
+                        {Number(opState.activeBooking.advance || 0) > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Advance</span>
+                            <span className="font-semibold">{formatINR(opState.activeBooking.advance)}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                          onClick={() => {
+                            onNavigate({ tab: 'billing', q: currentRoom.number })
+                            setViewRoom(null)
+                          }}
+                        >
+                          <Printer className="mr-1.5 h-4 w-4" /> Print Bill
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            onNavigate({ tab: 'billing', q: currentRoom.number })
+                            setViewRoom(null)
+                          }}
+                        >
+                          <Wallet className="mr-1.5 h-4 w-4" /> Billing &amp; Checkout
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {currentRoom.status === 'MAINTENANCE' && (
+                    <p className="text-sm text-muted-foreground">This room is under maintenance.</p>
+                  )}
+                  {opState.displayStatus === 'DIRTY' && (
+                    <Button
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
+                      onClick={() => markClean(currentRoom)}
+                      disabled={busy}
+                    >
+                      {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
+                      Mark Clean (Ready for check-in)
+                    </Button>
+                  )}
+                  {opState.displayStatus !== 'OCCUPIED' && opState.displayStatus !== 'BOOKED' && (
+                    <Button
+                      className="w-full"
+                      variant="outline"
+                      onClick={() => toggleMaintenance(currentRoom)}
+                      disabled={busy}
+                    >
+                      {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      {currentRoom.status === 'MAINTENANCE' ? (
+                        <>
+                          <ArrowLeftRight className="mr-2 h-4 w-4" /> Mark as Vacant
+                        </>
+                      ) : (
+                        <>
+                          <Wrench className="mr-2 h-4 w-4" /> Mark Under Maintenance
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
               </>
             )
           })()}
@@ -721,3 +841,4 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
     </div>
   )
 }
+

@@ -137,6 +137,15 @@ export function EditAdvanceBookingDialog({
       setError('Check-in date is required')
       return
     }
+    const gCount = parseInt(guestCount)
+    if (!guestCount || isNaN(gCount) || gCount < 1) {
+      setError('Number of guests must be at least 1')
+      return
+    }
+    if (gCount > 4) {
+      setError('Maximum 4 guests allowed per room')
+      return
+    }
 
     setSaving(true)
     setError('')
@@ -297,12 +306,27 @@ export function EditAdvanceBookingDialog({
                 />
               </div>
               <div>
-                <Label className="text-xs font-semibold text-foreground">Guests Count</Label>
+                <Label className="text-xs font-semibold text-foreground">Guests Count (Max 4)</Label>
                 <Input
                   type="number"
                   min={1}
+                  max={4}
                   value={guestCount}
-                  onChange={(e) => setGuestCount(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (val === '') {
+                      setGuestCount('')
+                    } else {
+                      const numVal = parseInt(val)
+                      if (!isNaN(numVal)) {
+                        if (numVal > 4) setGuestCount('4')
+                        else if (numVal < 1) setGuestCount('1')
+                        else setGuestCount(String(numVal))
+                      } else {
+                        setGuestCount(val)
+                      }
+                    }
+                  }}
                   className="h-9 mt-1 text-xs"
                 />
               </div>

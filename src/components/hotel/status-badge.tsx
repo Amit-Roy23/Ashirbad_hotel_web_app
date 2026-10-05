@@ -7,10 +7,12 @@ import { cn } from '@/lib/utils'
 export function RoomStatusBadge({
   status,
   housekeeping,
+  upcomingText,
   className,
 }: {
   status: string
   housekeeping?: string
+  upcomingText?: string | null
   className?: string
 }) {
   const dirty = housekeeping === 'DIRTY'
@@ -36,7 +38,20 @@ export function RoomStatusBadge({
         )}
       >
         <CalendarCheck className="h-3 w-3 text-amber-700 dark:text-amber-300" aria-hidden />
-        Booked
+        Booked (Due Today)
+      </span>
+    )
+  }
+  if (status === 'VACANT_WITH_FUTURE') {
+    return (
+      <span
+        className={cn(
+          'inline-flex items-center gap-1 rounded-full bg-emerald-100 border border-amber-400 px-2 py-0.5 text-[11px] font-semibold text-emerald-900 dark:bg-emerald-950 dark:border-amber-600 dark:text-emerald-200',
+          className
+        )}
+      >
+        <DoorOpen className="h-3 w-3 text-emerald-700 dark:text-emerald-400" aria-hidden />
+        Vacant {upcomingText ? `(Avail till ${upcomingText})` : '(Reserved Soon)'}
       </span>
     )
   }

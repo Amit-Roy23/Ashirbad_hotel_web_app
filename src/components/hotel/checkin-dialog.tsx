@@ -26,12 +26,23 @@ import { toast } from '@/hooks/use-toast'
 import { Loader2, UserSearch, LogIn, CalendarCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+interface BookingInfo {
+  id: string
+  checkIn: string
+  checkOut?: string | null
+  guest?: { name: string; phone?: string; company?: string | null } | null
+  status?: string
+}
+
 interface Room {
   id: string
   number: string
   type: string
   rate: number
   capacity: number
+  status?: string
+  housekeeping?: string
+  bookings?: BookingInfo[]
 }
 
 interface CheckinDialogProps {
@@ -90,6 +101,21 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     return Math.max(1, diff)
   }, [effectiveCheckIn, checkOut])
 
+  const upcomingBooking = useMemo(() => {
+    if (!room?.bookings) return null
+    const effStart = new Date(effectiveCheckIn + 'T00:00:00').getTime()
+    return (
+      room.bookings
+        .filter((b) => b.status === 'BOOKED' && new Date(b.checkIn).getTime() > effStart)
+        .sort((a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime())[0] || null
+    )
+  }, [room, effectiveCheckIn])
+
+  const maxCheckOutDate = useMemo(() => {
+    if (!upcomingBooking) return undefined
+    return new Date(upcomingBooking.checkIn).toISOString().slice(0, 10)
+  }, [upcomingBooking])
+
   // AUTO-FILL: when phone matches an old customer, fetch their details
   async function lookupGuest(value: string) {
     const clean = sanitizePhone(value)
@@ -137,8 +163,19 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
       setError('Expected Check-Out date is required')
       return
     }
-    if (!guestCount || parseInt(guestCount) < 1) {
+    if (maxCheckOutDate && checkOut > maxCheckOutDate) {
+      setError(
+        `Check-out cannot exceed ${formatDate(maxCheckOutDate)} because Room ${room.number} is reserved for ${upcomingBooking?.guest?.name || 'advance guest'}.`
+      )
+      return
+    }
+    const count = parseInt(guestCount)
+    if (!guestCount || isNaN(count) || count < 1) {
       setError('Number of guests must be at least 1')
+      return
+    }
+    if (count > 4) {
+      setError('Maximum 4 guests allowed per room')
       return
     }
     setSaving(true)
@@ -229,6 +266,20 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           </button>
         </div>
 
+        {/* Upcoming booking alert if room is booked in future */}
+        {upcomingBooking && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50/90 p-2.5 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <div className="flex items-center gap-1.5 font-semibold text-amber-900 dark:text-amber-200">
+              <CalendarCheck className="h-4 w-4 text-amber-600 shrink-0" />
+              <span>Upcoming Advance Reservation</span>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed">
+              Room is reserved for <b>{upcomingBooking.guest?.name || 'Guest'}</b> starting <b>{formatDate(upcomingBooking.checkIn)}</b>.
+              Stay must check out on or before <b>{formatDate(upcomingBooking.checkIn)}</b>.
+            </p>
+          </div>
+        )}
+
         <div className="space-y-3.5 pt-1">
           {/* Date selection */}
           {bookingMode === 'BOOKING' ? (
@@ -256,6 +307,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                   type="date"
                   value={checkOut}
                   min={checkInDate}
+                  max={maxCheckOutDate}
                   className="h-9 text-xs"
                   onChange={(e) => setCheckOut(e.target.value)}
                 />
@@ -276,6 +328,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                   type="date"
                   value={checkOut}
                   min={todayStr()}
+                  max={maxCheckOutDate}
                   className="h-9 text-xs"
                   onChange={(e) => setCheckOut(e.target.value)}
                 />
@@ -371,14 +424,29 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="gcount" className="text-xs font-semibold text-foreground">Guests *</Label>
+              <Label htmlFor="gcount" className="text-xs font-semibold text-foreground">Guests (Max 4) *</Label>
               <Input
                 id="gcount"
                 type="number"
                 min="1"
+                max="4"
                 value={guestCount}
                 className="h-9 text-xs"
-                onChange={(e) => setGuestCount(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value
+                  if (val === '') {
+                    setGuestCount('')
+                  } else {
+                    const numVal = parseInt(val)
+                    if (!isNaN(numVal)) {
+                      if (numVal > 4) setGuestCount('4')
+                      else if (numVal < 1) setGuestCount('1')
+                      else setGuestCount(String(numVal))
+                    } else {
+                      setGuestCount(val)
+                    }
+                  }
+                }}
               />
             </div>
             <div className="space-y-1.5">

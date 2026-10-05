@@ -163,3 +163,185 @@ export function payableNow(bill: BillLike | null | undefined): number {
   return Math.max(0, Math.round(pay * 100) / 100)
 }
 
+export interface BookingSummary {
+  id: string
+  checkIn: string | Date
+  checkOut?: string | Date | null
+  guestCount?: number
+  days?: number
+  ratePerDay?: number
+  status?: string | null
+  advance?: number
+  guest?: { id?: string; name?: string; phone?: string; company?: string | null; gst?: string | null } | null
+}
+
+export interface RoomWithBookings {
+  id?: string
+  number?: string
+  floor?: string | null
+  type?: string
+  capacity?: number
+  rate?: number
+  status?: string
+  housekeeping?: string
+  notes?: string | null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  bookings?: any[]
+}
+
+export interface RoomOperationalState {
+  isOccupied: boolean
+  activeBooking: BookingSummary | null
+  isBookedToday: boolean
+  todayBooking: BookingSummary | null
+  hasFutureBooking: boolean
+  nextFutureBooking: BookingSummary | null
+  availableUntilDate: string | null
+  availableUntilFormatted: string | null
+  maxNightsAvailable: number | null
+  displayStatus: 'OCCUPIED' | 'BOOKED' | 'VACANT_WITH_FUTURE' | 'DIRTY' | 'MAINTENANCE' | 'VACANT'
+}
+
+/**
+ * Computes the real-time operational state of a room by analyzing its active and upcoming bookings.
+ * This ensures that rooms with future reservations remain available for stay before the reservation date.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getRoomOperationalState(room: RoomWithBookings | any): RoomOperationalState {
+  if (!room) {
+    return {
+      isOccupied: false,
+      activeBooking: null,
+      isBookedToday: false,
+      todayBooking: null,
+      hasFutureBooking: false,
+      nextFutureBooking: null,
+      availableUntilDate: null,
+      availableUntilFormatted: null,
+      maxNightsAvailable: null,
+      displayStatus: 'VACANT',
+    }
+  }
+
+  if (room.status === 'MAINTENANCE') {
+    return {
+      isOccupied: false,
+      activeBooking: null,
+      isBookedToday: false,
+      todayBooking: null,
+      hasFutureBooking: false,
+      nextFutureBooking: null,
+      availableUntilDate: null,
+      availableUntilFormatted: null,
+      maxNightsAvailable: null,
+      displayStatus: 'MAINTENANCE',
+    }
+  }
+
+  const today = new Date()
+  today.setHours(23, 59, 59, 999)
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+
+  const activeBooking = room.bookings?.find((b) => b.status === 'ACTIVE') || null
+
+  const bookedReservations = (room.bookings?.filter((b) => b.status === 'BOOKED') || []).sort(
+    (a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime()
+  )
+
+  // Today booking = checkIn date is today or past, not yet checked in
+  const todayBooking =
+    bookedReservations.find((b) => new Date(b.checkIn).getTime() <= today.getTime()) || null
+
+  // Future booking = checkIn date is strictly after today
+  const nextFutureBooking =
+    bookedReservations.find((b) => new Date(b.checkIn).getTime() > today.getTime()) || null
+
+  const hasFutureBooking = !!nextFutureBooking
+
+  let availableUntilDate: string | null = null
+  let availableUntilFormatted: string | null = null
+  let maxNightsAvailable: number | null = null
+
+  if (nextFutureBooking) {
+    const fDate = new Date(nextFutureBooking.checkIn)
+    availableUntilDate = fDate.toISOString().slice(0, 10)
+    availableUntilFormatted = formatDate(nextFutureBooking.checkIn)
+    const diffMs = fDate.getTime() - todayStart.getTime()
+    maxNightsAvailable = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24)))
+  }
+
+  if (activeBooking) {
+    return {
+      isOccupied: true,
+      activeBooking,
+      isBookedToday: !!todayBooking,
+      todayBooking,
+      hasFutureBooking,
+      nextFutureBooking,
+      availableUntilDate,
+      availableUntilFormatted,
+      maxNightsAvailable,
+      displayStatus: 'OCCUPIED',
+    }
+  }
+
+  if (todayBooking) {
+    return {
+      isOccupied: false,
+      activeBooking: null,
+      isBookedToday: true,
+      todayBooking,
+      hasFutureBooking,
+      nextFutureBooking,
+      availableUntilDate,
+      availableUntilFormatted,
+      maxNightsAvailable,
+      displayStatus: 'BOOKED',
+    }
+  }
+
+  if (room.housekeeping === 'DIRTY') {
+    return {
+      isOccupied: false,
+      activeBooking: null,
+      isBookedToday: false,
+      todayBooking: null,
+      hasFutureBooking,
+      nextFutureBooking,
+      availableUntilDate,
+      availableUntilFormatted,
+      maxNightsAvailable,
+      displayStatus: 'DIRTY',
+    }
+  }
+
+  if (hasFutureBooking) {
+    return {
+      isOccupied: false,
+      activeBooking: null,
+      isBookedToday: false,
+      todayBooking: null,
+      hasFutureBooking: true,
+      nextFutureBooking,
+      availableUntilDate,
+      availableUntilFormatted,
+      maxNightsAvailable,
+      displayStatus: 'VACANT_WITH_FUTURE',
+    }
+  }
+
+  return {
+    isOccupied: false,
+    activeBooking: null,
+    isBookedToday: false,
+    todayBooking: null,
+    hasFutureBooking: false,
+    nextFutureBooking: null,
+    availableUntilDate: null,
+    availableUntilFormatted: null,
+    maxNightsAvailable: null,
+    displayStatus: 'VACANT',
+  }
+}
+

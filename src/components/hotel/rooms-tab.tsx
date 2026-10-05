@@ -26,10 +26,10 @@ import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-inv
 import { RoomStatusBadge } from './status-badge'
 import { TableControls } from './table-controls'
 import { Separator } from '@/components/ui/separator'
-import { api, apiAs, formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
-import { Loader2, Plus, BrushCleaning, Wrench, BedDouble, Printer, Wallet, Trash2, Receipt, Building2, Edit3, LogIn, CalendarCheck } from 'lucide-react'
+import { Loader2, Plus, BrushCleaning, Wrench, BedDouble, Printer, Wallet, Trash2, Receipt, Building2, Edit3, LogIn, CalendarCheck, DoorOpen } from 'lucide-react'
 
 interface Guest {
   id: string
@@ -124,19 +124,23 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return rooms.filter((r) => {
-      const isBooked = r.status === 'BOOKED' || r.status === 'RESERVED' || (!r.status.match(/OCCUPIED|MAINTENANCE/) && r.bookings?.[0]?.status === 'BOOKED')
-      if (q && !`${r.number} ${r.type} ${r.bookings?.[0]?.guest?.name || ''}`.toLowerCase().includes(q)) return false
+      const opState = getRoomOperationalState(r)
+      if (q && !`${r.number} ${r.type} ${r.bookings?.[0]?.guest?.name || ''} ${opState.nextFutureBooking?.guest?.name || ''}`.toLowerCase().includes(q)) return false
       if (floor !== 'ALL' && (r.floor ? r.floor !== floor : !r.number.startsWith(floor))) return false
       if (type !== 'ALL' && r.type !== type) return false
       if (status !== 'ALL') {
         if (status === 'BOOKED') {
-          if (!isBooked) return false
+          if (opState.displayStatus !== 'BOOKED') return false
+        } else if (status === 'VACANT_WITH_FUTURE') {
+          if (opState.displayStatus !== 'VACANT_WITH_FUTURE') return false
         } else if (status === 'DIRTY') {
-          if (r.housekeeping !== 'DIRTY' || isBooked) return false
+          if (opState.displayStatus !== 'DIRTY') return false
         } else if (status === 'VACANT') {
-          if (r.status !== 'VACANT' || r.housekeeping === 'DIRTY' || isBooked) return false
-        } else if (r.status !== status) {
-          return false
+          if (opState.displayStatus !== 'VACANT' && opState.displayStatus !== 'VACANT_WITH_FUTURE') return false
+        } else if (status === 'OCCUPIED') {
+          if (opState.displayStatus !== 'OCCUPIED') return false
+        } else if (status === 'MAINTENANCE') {
+          if (opState.displayStatus !== 'MAINTENANCE') return false
         }
       }
       return true
@@ -268,6 +272,15 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   async function addRoom() {
     const cleanNum = newNumber.replace(/\D/g, '').trim()
     if (!cleanNum) return
+    const cap = parseInt(newCapacity) || 2
+    if (cap < 1 || cap > 4) {
+      toast({
+        variant: 'destructive',
+        title: 'Invalid Capacity',
+        description: 'Room capacity must be between 1 and 4 guests.',
+      })
+      return
+    }
     setBusy(true)
     try {
       const res = await apiAs<{ error?: string }>('/api/rooms', getCachedUser(), {
@@ -355,8 +368,9 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
             key: 'status',
             label: 'Status',
             options: [
-              { value: 'VACANT', label: 'Vacant (Clean)' },
-              { value: 'BOOKED', label: 'Booked (Advance)' },
+              { value: 'VACANT', label: 'Vacant (Clean / Available)' },
+              { value: 'BOOKED', label: 'Booked (Due Today)' },
+              { value: 'VACANT_WITH_FUTURE', label: 'Vacant (Upcoming Reservation)' },
               { value: 'DIRTY', label: 'Dirty (To Clean)' },
               { value: 'OCCUPIED', label: 'Occupied' },
               { value: 'MAINTENANCE', label: 'Maintenance' },
@@ -377,40 +391,71 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
           <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Floor {f}</h3>
           <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-10">
             {floorRooms.map((room) => {
-              const isBooked = room.status === 'BOOKED' || room.status === 'RESERVED' || (!room.status.match(/OCCUPIED|MAINTENANCE/) && room.bookings?.[0]?.status === 'BOOKED')
-              const dirty = room.status === 'VACANT' && room.housekeeping === 'DIRTY' && !isBooked
-              const borderCls = isBooked
-                ? 'border-amber-400 bg-amber-50/90 hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/60'
-                : dirty
-                  ? 'border-orange-300 bg-orange-50 hover:border-orange-400 dark:border-orange-800 dark:bg-orange-950/40'
-                  : room.status === 'OCCUPIED'
-                    ? 'border-red-300 bg-red-50 hover:border-red-400 dark:border-red-800 dark:bg-red-950/40'
-                    : room.status === 'MAINTENANCE'
-                      ? 'border-zinc-300 bg-zinc-50 hover:border-zinc-400 dark:border-zinc-600 dark:bg-zinc-800/60'
-                      : 'border-emerald-300 bg-emerald-50 hover:border-emerald-400 dark:border-emerald-800 dark:bg-emerald-950/40'
+              const opState = getRoomOperationalState(room)
+              const borderCls =
+                opState.displayStatus === 'OCCUPIED'
+                  ? 'border-red-300 bg-red-50 hover:border-red-400 dark:border-red-800 dark:bg-red-950/40'
+                  : opState.displayStatus === 'BOOKED'
+                    ? 'border-amber-400 bg-amber-50/90 hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/60'
+                    : opState.displayStatus === 'VACANT_WITH_FUTURE'
+                      ? 'border-emerald-400 bg-gradient-to-b from-emerald-50 to-amber-50/40 hover:border-emerald-500 hover:bg-emerald-100/90 dark:border-emerald-700 dark:from-emerald-950/60 dark:to-amber-950/30'
+                      : opState.displayStatus === 'DIRTY'
+                        ? 'border-orange-300 bg-orange-50 hover:border-orange-400 dark:border-orange-800 dark:bg-orange-950/40'
+                        : opState.displayStatus === 'MAINTENANCE'
+                          ? 'border-zinc-300 bg-zinc-50 hover:border-zinc-400 dark:border-zinc-600 dark:bg-zinc-800/60'
+                          : 'border-emerald-300 bg-emerald-50 hover:border-emerald-400 dark:border-emerald-800 dark:bg-emerald-950/40'
+
               return (
                 <button
                   key={room.id}
-                  onClick={() => (room.status === 'VACANT' && !dirty && !isBooked ? setCheckinRoom(room) : setViewRoom(room))}
+                  onClick={() => {
+                    if (opState.displayStatus === 'VACANT') {
+                      setCheckinRoom(room)
+                    } else {
+                      setViewRoom(room)
+                    }
+                  }}
                   className={`min-h-[92px] rounded-xl border-2 p-2.5 text-left transition-all active:scale-95 hover:shadow-md ${borderCls}`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-base font-bold">{room.number}</span>
-                    <BedDouble className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                    {opState.hasFutureBooking ? (
+                      <span className="rounded bg-amber-200/90 px-1 py-0.5 text-[9px] font-bold text-amber-950 dark:bg-amber-900 dark:text-amber-200">
+                        {opState.availableUntilFormatted ? `Till ${opState.availableUntilFormatted.slice(0, 6)}` : 'Reserved'}
+                      </span>
+                    ) : (
+                      <BedDouble className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                    )}
                   </div>
                   <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{room.type}</p>
-                  {room.status === 'OCCUPIED' && room.bookings?.[0] ? (
-                    <p className="mt-1 truncate text-[10px] font-semibold text-red-700 dark:text-red-400">
-                      {room.bookings[0].guest?.name || 'Guest'}
-                    </p>
-                  ) : isBooked ? (
+                  {opState.displayStatus === 'OCCUPIED' && opState.activeBooking ? (
+                    <div className="mt-1">
+                      <p className="truncate text-[10px] font-semibold text-red-700 dark:text-red-400">
+                        {opState.activeBooking.guest?.name || 'Guest'}
+                      </p>
+                      {opState.hasFutureBooking && (
+                        <p className="truncate text-[9px] font-medium text-amber-800 dark:text-amber-300">
+                          Next: {opState.nextFutureBooking?.guest?.name?.split(' ')[0]} ({opState.availableUntilFormatted?.slice(0, 6)})
+                        </p>
+                      )}
+                    </div>
+                  ) : opState.displayStatus === 'BOOKED' ? (
                     <p className="mt-1 truncate text-[10px] font-semibold text-amber-900 dark:text-amber-200">
-                      {room.bookings?.[0]?.guest?.name ? `Booked: ${room.bookings[0].guest.name}` : 'Booked'}
+                      Booked: {opState.todayBooking?.guest?.name || 'Guest'} (Today)
                     </p>
-                  ) : dirty ? (
+                  ) : opState.displayStatus === 'VACANT_WITH_FUTURE' ? (
+                    <div className="mt-1">
+                      <p className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
+                        {formatINR(room.rate)} · Vacant
+                      </p>
+                      <p className="truncate text-[9px] font-medium text-amber-800 dark:text-amber-300">
+                        Next: {opState.nextFutureBooking?.guest?.name?.split(' ')[0]} ({opState.availableUntilFormatted?.slice(0, 6)})
+                      </p>
+                    </div>
+                  ) : opState.displayStatus === 'DIRTY' ? (
                     <p className="mt-1 text-[10px] font-semibold text-orange-700 dark:text-orange-400">To Clean</p>
                   ) : (
-                    <p className="mt-1 text-[10px] font-medium">{formatINR(room.rate)}</p>
+                    <p className="mt-1 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">{formatINR(room.rate)} · Vacant</p>
                   )}
                 </button>
               )
@@ -437,64 +482,182 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         }}
       />
 
-      {/* Room detail */}
+      {/* Room detail modal */}
       <Dialog open={!!viewRoom} onOpenChange={(o) => !o && setViewRoom(null)}>
-        <DialogContent className="max-w-sm">
-          {(() => {
-            const isBooked = viewRoom?.status === 'BOOKED' || viewRoom?.status === 'RESERVED' || (!viewRoom?.status.match(/OCCUPIED|MAINTENANCE/) && viewRoom?.bookings?.[0]?.status === 'BOOKED')
+        <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+          {viewRoom && (() => {
+            const currentRoom = viewRoom
+            const opState = getRoomOperationalState(currentRoom)
             return (
               <>
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2">
-                    Room {viewRoom?.number}
-                    <RoomStatusBadge status={isBooked ? 'BOOKED' : viewRoom?.status || ''} housekeeping={viewRoom?.housekeeping} />
+                    Room {currentRoom.number}
+                    <RoomStatusBadge
+                      status={opState.displayStatus}
+                      housekeeping={currentRoom.housekeeping}
+                      upcomingText={opState.availableUntilFormatted}
+                    />
                   </DialogTitle>
                   <DialogDescription>
-                    {viewRoom?.type} • Max {viewRoom?.capacity} guests • {formatINR(viewRoom?.rate)}/night
+                    {currentRoom.type} • Max {currentRoom.capacity} guests • {formatINR(currentRoom.rate)}/night
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3">
-                  {/* Advance Booked Room details */}
-                  {isBooked && viewRoom?.bookings?.[0] && (
+                  {/* VACANT WITH FUTURE RESERVATION */}
+                  {opState.displayStatus === 'VACANT_WITH_FUTURE' && (
+                    <div className="space-y-3">
+                      <div className="rounded-xl border border-emerald-300 bg-emerald-50/80 p-3.5 space-y-2.5 dark:border-emerald-800 dark:bg-emerald-950/40">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+                            <DoorOpen className="h-4 w-4 text-emerald-600" />
+                            Vacant &amp; Available for Stay
+                          </span>
+                          <span className="rounded bg-amber-200/80 px-2 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                            Until {opState.availableUntilFormatted}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-700 dark:text-slate-300">
+                          This room is ready right now for walk-in guests or reservations up to <b>{opState.maxNightsAvailable} night{opState.maxNightsAvailable! > 1 ? 's' : ''}</b> (until {opState.availableUntilFormatted}).
+                        </p>
+                        <div className="pt-2 border-t border-emerald-200/60 dark:border-emerald-800/60 text-xs flex justify-between items-center">
+                          <span className="text-muted-foreground">Upcoming Reservation:</span>
+                          <span className="font-semibold text-foreground">
+                            {opState.nextFutureBooking?.guest?.name} ({formatDate(opState.nextFutureBooking?.checkIn)})
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Primary Action: Direct Check-In for interim guest */}
+                      <Button
+                        className="w-full h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold gap-2 shadow-sm"
+                        onClick={() => {
+                          setCheckinRoom(currentRoom)
+                          setViewRoom(null)
+                        }}
+                      >
+                        <LogIn className="h-4 w-4" />
+                        Check-In Walk-In Guest (Max checkout {opState.availableUntilFormatted})
+                      </Button>
+
+                      {/* Advance reservation details card */}
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-xs space-y-2 dark:border-amber-900 dark:bg-amber-950/30">
+                        <div className="flex items-center justify-between font-semibold text-amber-900 dark:text-amber-200">
+                          <span className="flex items-center gap-1.5">
+                            <CalendarCheck className="h-3.5 w-3.5 text-amber-600" />
+                            Advance Reservation Details
+                          </span>
+                          <span>{formatINR(opState.nextFutureBooking?.advance || 0)} Advance</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 text-[11px] pt-1 border-t border-amber-200/60 dark:border-amber-800/60">
+                          <div>
+                            <span className="text-muted-foreground">Guest: </span>
+                            <span className="font-semibold">{opState.nextFutureBooking?.guest?.name}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Phone: </span>
+                            <span className="font-semibold">{opState.nextFutureBooking?.guest?.phone}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Check-In: </span>
+                            <span className="font-semibold">{formatDate(opState.nextFutureBooking?.checkIn)}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Check-Out: </span>
+                            <span className="font-semibold">{formatDate(opState.nextFutureBooking?.checkOut)}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1 text-[11px] h-7 border-amber-300 text-amber-900 dark:border-amber-800 dark:text-amber-200"
+                            onClick={() => {
+                              if (opState.nextFutureBooking) {
+                                triggerPrintAdvanceReceipt(
+                                  {
+                                    ...opState.nextFutureBooking,
+                                    room: { number: currentRoom.number, type: currentRoom.type },
+                                  },
+                                  settings
+                                )
+                              }
+                            }}
+                          >
+                            <Printer className="mr-1 h-3 w-3" /> Print Receipt
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-[11px] h-7 text-red-600 border-red-200 hover:bg-red-50"
+                            onClick={async () => {
+                              if (!opState.nextFutureBooking) return
+                              if (!confirm(`Cancel advance reservation for ${opState.nextFutureBooking.guest?.name}?`)) return
+                              setBusy(true)
+                              try {
+                                await apiAs('/api/bookings', getCachedUser(), {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ id: opState.nextFutureBooking.id, action: 'cancel' }),
+                                })
+                                await load()
+                                onDataChanged()
+                                setViewRoom(null)
+                                toast({ variant: 'success', title: 'Booking Cancelled', description: 'Advance booking cancelled.' })
+                              } catch (e) {
+                                toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Failed' })
+                              } finally {
+                                setBusy(false)
+                              }
+                            }}
+                          >
+                            <Trash2 className="mr-1 h-3 w-3" /> Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Advance Booked Room details (DUE TODAY) */}
+                  {opState.displayStatus === 'BOOKED' && opState.todayBooking && (
                     <div className="space-y-3">
                       <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
                         <div className="flex items-center justify-between border-b border-amber-200/60 pb-1.5 dark:border-amber-800/60">
-                          <span className="font-bold text-amber-900 dark:text-amber-200">Advance Reservation</span>
+                          <span className="font-bold text-amber-900 dark:text-amber-200">Advance Reservation (Due Today)</span>
                           <span className="text-[11px] font-semibold rounded bg-amber-200/70 px-1.5 py-0.5 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
                             Booked
                           </span>
                         </div>
                         <div className="flex justify-between pt-1">
                           <span className="text-muted-foreground">Guest</span>
-                          <span className="font-semibold text-foreground">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
+                          <span className="font-semibold text-foreground">{opState.todayBooking.guest?.name || 'Guest'}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Phone</span>
-                          <a href={`tel:${viewRoom.bookings[0].guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
-                            {viewRoom.bookings[0].guest?.phone || '-'}
+                          <a href={`tel:${opState.todayBooking.guest?.phone || ''}`} className="font-semibold text-emerald-700 dark:text-emerald-400">
+                            {opState.todayBooking.guest?.phone || '-'}
                           </a>
                         </div>
-                        {viewRoom.bookings[0].guest?.company && (
+                        {opState.todayBooking.guest?.company && (
                           <div className="flex justify-between">
                             <span className="text-muted-foreground">Company</span>
-                            <span className="font-semibold">{viewRoom.bookings[0].guest.company}</span>
+                            <span className="font-semibold">{opState.todayBooking.guest.company}</span>
                           </div>
                         )}
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Booked Check-In</span>
-                          <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
+                          <span className="font-semibold">{formatDate(opState.todayBooking.checkIn)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Expected Out</span>
-                          <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
+                          <span className="font-semibold">{formatDate(opState.todayBooking.checkOut)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Guests</span>
-                          <span className="font-semibold">{viewRoom.bookings[0].guestCount}</span>
+                          <span className="font-semibold">{opState.todayBooking.guestCount}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Advance Paid</span>
-                          <span className="font-bold text-emerald-700 dark:text-emerald-400">{formatINR(viewRoom.bookings[0].advance)}</span>
+                          <span className="font-bold text-emerald-700 dark:text-emerald-400">{formatINR(opState.todayBooking.advance)}</span>
                         </div>
                       </div>
 
@@ -504,12 +667,12 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
                           disabled={busy}
                           onClick={async () => {
-                            if (!viewRoom?.bookings?.[0]) return
+                            if (!opState.todayBooking) return
                             setBusy(true)
                             try {
                               const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
                                 method: 'PATCH',
-                                body: JSON.stringify({ id: viewRoom.bookings[0].id, action: 'checkin' }),
+                                body: JSON.stringify({ id: opState.todayBooking.id, action: 'checkin' }),
                               })
                               if (res && res.error) {
                                 toast({ variant: 'destructive', title: 'Check-In Failed', description: res.error })
@@ -521,7 +684,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                               toast({
                                 variant: 'success',
                                 title: 'Check-In Completed',
-                                description: `Guest ${viewRoom.bookings[0].guest?.name || ''} checked into Room ${viewRoom.number}.`,
+                                description: `Guest ${opState.todayBooking.guest?.name || ''} checked into Room ${currentRoom.number}.`,
                               })
                             } catch (e) {
                               toast({
@@ -542,13 +705,13 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
                           disabled={busy}
                           onClick={async () => {
-                            if (!viewRoom?.bookings?.[0]) return
-                            if (!confirm(`Are you sure you want to cancel the advance booking for ${viewRoom.bookings[0].guest?.name || 'Guest'} in Room ${viewRoom.number}?`)) return
+                            if (!opState.todayBooking) return
+                            if (!confirm(`Are you sure you want to cancel the advance booking for ${opState.todayBooking.guest?.name || 'Guest'} in Room ${currentRoom.number}?`)) return
                             setBusy(true)
                             try {
                               const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
                                 method: 'PATCH',
-                                body: JSON.stringify({ id: viewRoom.bookings[0].id, action: 'cancel' }),
+                                body: JSON.stringify({ id: opState.todayBooking.id, action: 'cancel' }),
                               })
                               if (res && res.error) {
                                 toast({ variant: 'destructive', title: 'Cancellation Failed', description: res.error })
@@ -560,7 +723,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                               toast({
                                 variant: 'success',
                                 title: 'Booking Cancelled',
-                                description: `Advance reservation for Room ${viewRoom.number} has been cancelled.`,
+                                description: `Advance reservation for Room ${currentRoom.number} has been cancelled.`,
                               })
                             } catch (e) {
                               toast({
@@ -582,11 +745,11 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                         variant="outline"
                         className="w-full border-amber-300 text-amber-900 bg-amber-50/70 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
                         onClick={() => {
-                          if (viewRoom?.bookings?.[0]) {
+                          if (opState.todayBooking) {
                             triggerPrintAdvanceReceipt(
                               {
-                                ...viewRoom.bookings[0],
-                                room: { number: viewRoom.number, type: viewRoom.type },
+                                ...opState.todayBooking,
+                                room: { number: currentRoom.number, type: currentRoom.type },
                               },
                               settings
                             )
@@ -599,28 +762,35 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                   )}
 
                   {/* Occupied Room details */}
-                  {viewRoom?.status === 'OCCUPIED' && viewRoom.bookings?.[0] && (
+                  {opState.displayStatus === 'OCCUPIED' && opState.activeBooking && (
                     <div className="space-y-2">
+                      {opState.hasFutureBooking && (
+                        <div className="rounded-lg border border-amber-300 bg-amber-50/90 p-2 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 flex items-center justify-between">
+                          <span className="font-medium">
+                            ⚠️ Next Booking: <b>{opState.nextFutureBooking?.guest?.name}</b> on {opState.availableUntilFormatted}
+                          </span>
+                        </div>
+                      )}
                       <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Guest</span>
-                          <span className="font-semibold">{viewRoom.bookings[0].guest?.name || 'Guest'}</span>
+                          <span className="text-muted-foreground">In-House Guest</span>
+                          <span className="font-semibold">{opState.activeBooking.guest?.name || 'Guest'}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Phone</span>
-                          <span className="font-semibold">{viewRoom.bookings[0].guest?.phone}</span>
+                          <span className="font-semibold">{opState.activeBooking.guest?.phone}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Check-In</span>
-                          <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkIn)}</span>
+                          <span className="font-semibold">{formatDate(opState.activeBooking.checkIn)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Expected Out</span>
-                          <span className="font-semibold">{formatDate(viewRoom.bookings[0].checkOut)}</span>
+                          <span className="font-semibold">{formatDate(opState.activeBooking.checkOut)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Advance</span>
-                          <span className="font-semibold">{formatINR(viewRoom.bookings[0].advance)}</span>
+                          <span className="font-semibold">{formatINR(opState.activeBooking.advance)}</span>
                         </div>
                       </div>
 
@@ -628,12 +798,12 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                         <Button
                           className="bg-emerald-600 hover:bg-emerald-700 text-white"
                           onClick={() => {
-                            if (viewRoom?.bookings?.[0]) {
-                              const b = viewRoom.bookings[0]
+                            if (currentRoom?.bookings?.[0]) {
+                              const b = currentRoom.bookings[0]
                               setBillBooking({
                                 ...b,
-                                ratePerDay: viewRoom.rate,
-                                room: { id: viewRoom.id, number: viewRoom.number, type: viewRoom.type },
+                                ratePerDay: currentRoom.rate,
+                                room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
                               })
                               setViewRoom(null)
                             }
@@ -644,12 +814,12 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                         <Button
                           variant="outline"
                           onClick={() => {
-                            if (viewRoom?.bookings?.[0]) {
-                              const b = viewRoom.bookings[0]
+                            if (currentRoom?.bookings?.[0]) {
+                              const b = currentRoom.bookings[0]
                               setBillBooking({
                                 ...b,
-                                ratePerDay: viewRoom.rate,
-                                room: { id: viewRoom.id, number: viewRoom.number, type: viewRoom.type },
+                                ratePerDay: currentRoom.rate,
+                                room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
                               })
                               setViewRoom(null)
                             }
@@ -661,35 +831,35 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                     </div>
                   )}
 
-                  {viewRoom?.status === 'MAINTENANCE' && (
+                  {currentRoom.status === 'MAINTENANCE' && (
                     <p className="text-sm text-muted-foreground">Room is under maintenance — book after marking vacant.</p>
                   )}
 
-                  {viewRoom && viewRoom.status === 'VACANT' && viewRoom.housekeeping === 'DIRTY' && !isBooked && (
+                  {currentRoom.status === 'VACANT' && currentRoom.housekeeping === 'DIRTY' && opState.displayStatus !== 'BOOKED' && (
                     <Button
                       className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm transition-all"
                       disabled={busy}
-                      onClick={() => patchRoom(viewRoom, { housekeeping: 'CLEAN' })}
+                      onClick={() => patchRoom(currentRoom, { housekeeping: 'CLEAN' })}
                     >
                       {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrushCleaning className="mr-2 h-4 w-4" />}
                       Mark Clean (Ready for check-in)
                     </Button>
                   )}
 
-                  {viewRoom && viewRoom.status !== 'OCCUPIED' && (
+                  {currentRoom.status !== 'OCCUPIED' && (
                     <Button
                       className="w-full"
                       variant="outline"
                       disabled={busy}
                       onClick={() =>
-                        patchRoom(viewRoom, {
-                          status: viewRoom.status === 'MAINTENANCE' ? 'VACANT' : 'MAINTENANCE',
+                        patchRoom(currentRoom, {
+                          status: currentRoom.status === 'MAINTENANCE' ? 'VACANT' : 'MAINTENANCE',
                           housekeeping: 'CLEAN',
                         })
                       }
                     >
                       <Wrench className="mr-2 h-4 w-4" />
-                      {viewRoom.status === 'MAINTENANCE' ? 'Mark as Vacant' : 'Mark Under Maintenance'}
+                      {currentRoom.status === 'MAINTENANCE' ? 'Mark as Vacant' : 'Mark Under Maintenance'}
                     </Button>
                   )}
 
@@ -795,8 +965,8 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="add-cap">Capacity</Label>
-              <Input id="add-cap" type="number" min="1" value={newCapacity} onChange={(e) => setNewCapacity(e.target.value)} />
+              <Label htmlFor="add-cap">Capacity (Max 4)</Label>
+              <Input id="add-cap" type="number" min="1" max="4" value={newCapacity} onChange={(e) => setNewCapacity(e.target.value)} />
             </div>
             <Button className="w-full" disabled={busy || !newNumber.trim()} onClick={addRoom}>
               Add Room

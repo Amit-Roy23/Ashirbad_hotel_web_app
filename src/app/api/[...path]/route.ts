@@ -79,6 +79,12 @@ function num(v: unknown): number {
   return isNaN(f) ? 0 : f
 }
 
+function formatDate(d: string | Date | null | undefined): string {
+  if (!d) return '-'
+  const date = new Date(d)
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
 function parseDateInput(value: unknown, fallbackTime = 'T12:00:00'): Date | null {
   if (value === undefined || value === null || value === '') return null
   const s = String(value).trim()
@@ -361,6 +367,13 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
       { status: 400 }
     )
   }
+  const parsedGuestCount = parseInt(String(guestCount)) || 1
+  if (parsedGuestCount < 1 || parsedGuestCount > 4) {
+    return NextResponse.json(
+      { error: 'Maximum 4 guests allowed per room (must be between 1 and 4)' },
+      { status: 400 }
+    )
+  }
   const room = await prisma.room.findUnique({ where: { id: String(roomId) } })
   if (!room) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
 
@@ -380,8 +393,8 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
 
   const isAdvanceBooking = bookingType === 'BOOKING' || reqStatus === 'BOOKED' || isFuture
 
-  if (room.status === 'OCCUPIED') {
-    return NextResponse.json({ error: `Room ${room.number} is already occupied` }, { status: 400 })
+  if (!isAdvanceBooking && room.status === 'OCCUPIED') {
+    return NextResponse.json({ error: `Room ${room.number} is currently occupied` }, { status: 400 })
   }
   if (room.status === 'MAINTENANCE') {
     return NextResponse.json({ error: `Room ${room.number} is under maintenance` }, { status: 400 })
@@ -410,10 +423,15 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         { checkIn: { lt: overlapFrom }, OR: [{ checkOut: { gt: checkInDate } }, { checkOut: null }] },
       ],
     },
+    include: { guest: true },
   })
   if (overlapping) {
+    const fromStr = formatDate(overlapping.checkIn)
+    const toStr = overlapping.checkOut ? formatDate(overlapping.checkOut) : 'open'
     return NextResponse.json(
-      { error: `Room ${room.number} already has an active booking for this period` },
+      {
+        error: `Room ${room.number} is already reserved for ${overlapping.guest.name} from ${fromStr} to ${toStr}. Please choose a stay period before or after this reservation.`,
+      },
       { status: 400 }
     )
   }
@@ -446,7 +464,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         checkIn: checkInDate,
         checkOut: checkOutDate,
         days,
-        guestCount: parseInt(String(guestCount)) || 1,
+        guestCount: parsedGuestCount,
         ratePerDay: room.rate,
         status: isAdvanceBooking ? 'BOOKED' : 'ACTIVE',
         paymentStatus: 'PAID',
@@ -458,7 +476,9 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     })
 
     if (isAdvanceBooking) {
-      await tx.room.update({ where: { id: String(roomId) }, data: { status: 'BOOKED' } })
+      if (!isFuture) {
+        await tx.room.update({ where: { id: String(roomId) }, data: { status: 'BOOKED' } })
+      }
     } else {
       await tx.room.update({ where: { id: String(roomId) }, data: { status: 'OCCUPIED' } })
     }
@@ -546,6 +566,27 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
   if (action === 'extend') {
     const newCheckOut = checkOut ? parseDateInput(checkOut, 'T11:00:00') : null
     if (!newCheckOut) return NextResponse.json({ error: 'Valid new checkout date required' }, { status: 400 })
+
+    // Double-booking check when extending stay
+    const overlapFuture = await prisma.booking.findFirst({
+      where: {
+        roomId: booking.roomId,
+        id: { not: booking.id },
+        status: { in: ['ACTIVE', 'BOOKED'] },
+        checkIn: { lt: newCheckOut },
+        OR: [{ checkOut: { gt: new Date(booking.checkIn) } }, { checkOut: null }],
+      },
+      include: { guest: true },
+    })
+    if (overlapFuture) {
+      return NextResponse.json(
+        {
+          error: `Cannot extend stay: Room ${booking.room.number} is reserved for ${overlapFuture.guest.name} starting ${formatDate(overlapFuture.checkIn)}. Max checkout allowed is ${formatDate(overlapFuture.checkIn)}.`,
+        },
+        { status: 400 }
+      )
+    }
+
     const diff = Math.ceil(
       (newCheckOut.getTime() - new Date(booking.checkIn).getTime()) / (1000 * 60 * 60 * 24)
     )
@@ -647,7 +688,16 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     const updateData: Record<string, unknown> = {}
     if (ratePerDay !== undefined) updateData.ratePerDay = num(ratePerDay)
     if (advance !== undefined) updateData.advance = num(advance)
-    if (guestCount !== undefined) updateData.guestCount = parseInt(String(guestCount)) || 1
+    if (guestCount !== undefined) {
+      const parsedGuestCount = parseInt(String(guestCount)) || 1
+      if (parsedGuestCount < 1 || parsedGuestCount > 4) {
+        return NextResponse.json(
+          { error: 'Maximum 4 guests allowed per room (must be between 1 and 4)' },
+          { status: 400 }
+        )
+      }
+      updateData.guestCount = parsedGuestCount
+    }
     if (notes !== undefined) updateData.notes = String(notes)
     if (isCorporate !== undefined) updateData.isCorporate = !!isCorporate
 
@@ -1820,7 +1870,7 @@ async function getStats() {
   const [rooms, activeBookings, bookedFuture, todayBills, todayLedger, pendingFood, allBills] = await Promise.all([
     prisma.room.findMany({ select: { status: true, housekeeping: true, rate: true } }),
     prisma.booking.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: { in: ['ACTIVE', 'BOOKED'] } },
       include: { guest: true, room: true },
       orderBy: { checkIn: 'asc' },
     }),
