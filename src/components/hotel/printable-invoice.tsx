@@ -101,7 +101,13 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
             Room: <span className="font-semibold text-slate-900 dark:text-white">{roomNo}</span> {roomDesc ? `(${roomDesc})` : ''}
           </p>
           <p className="text-slate-600 dark:text-slate-400">
-            Stay: {bill.days} night(s) • {formatDate(bill.booking?.checkIn)} → {formatDate(bill.booking?.actualCheckOut || bill.booking?.checkOut)}
+            Check-In: <span className="font-semibold text-slate-900 dark:text-white">{formatDateTime(bill.booking?.checkIn)}</span>
+          </p>
+          <p className="text-slate-600 dark:text-slate-400">
+            Check-Out: <span className="font-semibold text-slate-900 dark:text-white">{formatDateTime(bill.booking?.actualCheckOut || bill.booking?.checkOut)}</span>
+          </p>
+          <p className="text-slate-600 dark:text-slate-400">
+            Nights Billed: <span className="font-semibold text-slate-900 dark:text-white">{bill.days} night(s)</span>
           </p>
         </div>
 

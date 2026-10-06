@@ -31,9 +31,10 @@ import { Separator } from '@/components/ui/separator'
 import { BookingDialog } from './booking-dialog'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, exportCSV, totalReceived, balanceDue } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, todayStr, addDays } from '@/lib/hotel-utils'
+import { calcNights, nextAutoExtensionAt, istDateStr } from '@/lib/stay'
 import { getCachedUser } from './user-context'
-import { Loader2, UserPlus, LogIn, CalendarClock, XCircle, ArrowLeftRight, Wallet, Pencil, Save, Trash2 } from 'lucide-react'
+import { Loader2, UserPlus, LogIn, CalendarClock, XCircle, ArrowLeftRight, Wallet, Pencil, Save, Trash2, AlertTriangle, Clock, ShieldAlert, History } from 'lucide-react'
 
 interface Guest {
   id: string
@@ -63,10 +64,26 @@ interface Bill {
   internalTotal?: number
 }
 
+export interface BookingExtension {
+  id: string
+  bookingId: string
+  type: string // 'AUTO' | 'MANUAL'
+  fromCheckOut: string
+  toCheckOut: string
+  fromDays: number
+  toDays: number
+  reason?: string | null
+  createdBy?: string | null
+  approvedBy?: string | null
+  createdAt: string
+}
+
 interface Booking {
   id: string
   checkIn: string
   checkOut?: string | null
+  originalCheckOut?: string | null
+  autoExtendedDays?: number
   days: number
   guestCount: number
   ratePerDay: number
@@ -78,6 +95,7 @@ interface Booking {
   room: Room
   bills: Bill[]
   foodOrders: { total: number }[]
+  extensions?: BookingExtension[]
 }
 
 interface TabProps {
@@ -96,6 +114,7 @@ const STATUS_OPTIONS = [
 export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabProps) {
   const [bookings, setBookings] = useState<Booking[]>([])
   const [rooms, setRooms] = useState<Room[]>([])
+  const [hotelSettings, setHotelSettings] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -110,6 +129,13 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
   const [newOpen, setNewOpen] = useState(false)
   const [extendBooking, setExtendBooking] = useState<Booking | null>(null)
   const [newDate, setNewDate] = useState('')
+  const [newTime, setNewTime] = useState('08:00')
+  const [newDays, setNewDays] = useState<string | number>('')
+  const [extendReason, setExtendReason] = useState('')
+  const [adminPin, setAdminPin] = useState('')
+  const [extendError, setExtendError] = useState('')
+  const [extendSaving, setExtendSaving] = useState(false)
+
   const [changeBooking, setChangeBooking] = useState<Booking | null>(null)
   const [newRoomId, setNewRoomId] = useState('')
 
@@ -119,9 +145,14 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
 
   const load = useCallback(async () => {
     try {
-      const [b, r] = await Promise.all([api<Booking[]>('/api/bookings'), api<Room[]>('/api/rooms')])
+      const [b, r, s] = await Promise.all([
+        api<Booking[]>('/api/bookings'),
+        api<Room[]>('/api/rooms'),
+        api<Record<string, string>>('/api/settings').catch(() => ({})),
+      ])
       setBookings(b)
       setRooms(r)
+      if (s) setHotelSettings(s)
     } catch {
       // silent
     } finally {
@@ -132,6 +163,62 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
   useEffect(() => {
     load()
   }, [load, refreshKey])
+
+  function openExtendModal(b: Booking) {
+    setExtendBooking(b)
+    const currOutStr = b.checkOut ? istDateStr(new Date(b.checkOut)) : todayStr()
+    const nextDay = addDays(1, currOutStr)
+    setNewDate(nextDay)
+    setNewTime(hotelSettings.checkoutTime || '08:00')
+    setNewDays(calcNights(b.checkIn, nextDay))
+    setExtendReason('')
+    setAdminPin('')
+    setExtendError('')
+  }
+
+  async function handleExtendSubmit() {
+    if (!extendBooking) return
+    if (!newDate) {
+      setExtendError('New check-out date is required')
+      return
+    }
+    if (!extendReason.trim()) {
+      setExtendError('Reason is required for stay extension')
+      return
+    }
+    if (!adminPin.trim()) {
+      setExtendError('Admin PIN is required')
+      return
+    }
+    const daysNum = typeof newDays === 'string' ? parseInt(newDays, 10) : newDays
+    if (isNaN(daysNum) || daysNum < 1) {
+      setExtendError('Billable days must be at least 1')
+      return
+    }
+    setExtendSaving(true)
+    setExtendError('')
+    try {
+      await apiAs('/api/bookings', getCachedUser(), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          id: extendBooking.id,
+          action: 'extend',
+          checkOut: newDate,
+          checkOutTime: newTime || '08:00',
+          days: daysNum,
+          reason: extendReason.trim(),
+          adminPin: adminPin.trim(),
+        }),
+      })
+      setExtendBooking(null)
+      await load()
+      onDataChanged()
+    } catch (e) {
+      setExtendError(e instanceof Error ? e.message : 'Extension failed')
+    } finally {
+      setExtendSaving(false)
+    }
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -368,8 +455,32 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                   </TableCell>
                   <TableCell className="font-medium">Room {b.room?.number}</TableCell>
                   <TableCell>
-                    <div className="text-sm">{formatDate(b.checkIn)}</div>
-                    <div className="text-xs text-muted-foreground">out: {formatDate(b.checkOut)}</div>
+                    <div className="text-sm font-medium">{formatDate(b.checkIn)}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      out: {formatDateTime(b.checkOut)}
+                    </div>
+                    {(b.autoExtendedDays || 0) > 0 && (
+                      <div className="mt-1 space-y-0.5">
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200 inline-flex items-center gap-1 font-semibold text-[10px] px-1.5 py-0.5"
+                        >
+                          <AlertTriangle className="h-3 w-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                          OVERSTAY +{b.autoExtendedDays} day{b.autoExtendedDays! > 1 ? 's' : ''} (auto)
+                        </Badge>
+                        {b.originalCheckOut && (
+                          <div className="text-[10px] text-muted-foreground">
+                            Orig: {formatDateTime(b.originalCheckOut)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {b.status === 'ACTIVE' && (
+                      <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                        <Clock className="h-2.5 w-2.5 shrink-0" />
+                        Next auto: {formatDateTime(nextAutoExtensionAt(b, parseInt(hotelSettings.overstayGraceMinutes || '0', 10)))}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>{b.days}</TableCell>
                   <TableCell>{formatINR(b.ratePerDay)}</TableCell>
@@ -418,10 +529,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                           variant="outline"
                           className="h-7 gap-1 px-2 text-xs w-full justify-center"
                           disabled={busy}
-                          onClick={() => {
-                            setExtendBooking(b)
-                            setNewDate(b.checkOut ? new Date(b.checkOut).toISOString().slice(0, 10) : '')
-                          }}
+                          onClick={() => openExtendModal(b)}
                         >
                           <CalendarClock className="h-3 w-3" /> Extend
                         </Button>
@@ -460,6 +568,15 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                         </Button>
                         <Button
                           size="sm"
+                          variant="outline"
+                          className="h-7 gap-1 px-2 text-xs w-full justify-center"
+                          disabled={busy}
+                          onClick={() => openExtendModal(b)}
+                        >
+                          <CalendarClock className="h-3 w-3" /> Extend
+                        </Button>
+                        <Button
+                          size="sm"
                           variant="ghost"
                           className="h-7 gap-1 px-2 text-xs w-full justify-center text-destructive hover:bg-destructive/10"
                           disabled={busy}
@@ -480,39 +597,119 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
 
       <BookingDialog open={newOpen} onOpenChange={setNewOpen} onSuccess={() => { load(); onDataChanged() }} />
 
-      {/* Extend stay dialog */}
-      <Dialog open={!!extendBooking} onOpenChange={(o) => !o && setExtendBooking(null)}>
-        <DialogContent className="max-w-xs">
+      {/* Extend stay dialog (Admin PIN authorized) */}
+      <Dialog open={!!extendBooking} onOpenChange={(o) => { if (!o) setExtendBooking(null) }}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Extend Stay</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarClock className="h-5 w-5 text-emerald-600" />
+              Manual Stay Extension
+            </DialogTitle>
             <DialogDescription>
-              {extendBooking?.guest?.name} · Room {extendBooking?.room?.number} · current out:{' '}
-              {formatDate(extendBooking?.checkOut)}
+              {extendBooking?.guest?.name} · Room {extendBooking?.room?.number} · Current Check-Out:{' '}
+              {formatDateTime(extendBooking?.checkOut)}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="ext-date">New Check-Out Date</Label>
+          <div className="space-y-3.5 pt-1">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <Label htmlFor="ext-date" className="text-xs font-semibold">New Check-Out Date *</Label>
+                <Input
+                  id="ext-date"
+                  type="date"
+                  value={newDate}
+                  min={extendBooking ? istDateStr(new Date(extendBooking.checkIn)) : ''}
+                  onChange={(e) => {
+                    const d = e.target.value
+                    setNewDate(d)
+                    if (extendBooking && d) {
+                      setNewDays(calcNights(extendBooking.checkIn, d))
+                    }
+                  }}
+                  className="h-9 text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="ext-time" className="text-xs font-semibold">New Check-Out Time *</Label>
+                <Input
+                  id="ext-time"
+                  type="time"
+                  value={newTime}
+                  onChange={(e) => setNewTime(e.target.value)}
+                  className="h-9 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="ext-days" className="text-xs font-semibold">Billable Days *</Label>
               <Input
-                id="ext-date"
-                type="date"
-                value={newDate}
-                min={extendBooking ? new Date(extendBooking.checkIn).toISOString().slice(0, 10) : ''}
-                onChange={(e) => setNewDate(e.target.value)}
+                id="ext-days"
+                type="number"
+                min="1"
+                value={newDays}
+                onChange={(e) => setNewDays(e.target.value)}
+                className="h-9 text-xs"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Prefilled by calendar nights calculation. Can be adjusted if needed.
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="ext-reason" className="text-xs font-semibold">Reason for Extension *</Label>
+              <Input
+                id="ext-reason"
+                placeholder="e.g. Guest requested 1 more night, flight delayed..."
+                value={extendReason}
+                onChange={(e) => setExtendReason(e.target.value)}
+                className="h-9 text-xs"
               />
             </div>
-            <Button
-              className="w-full"
-              disabled={!newDate || busyId !== null}
-              onClick={() => {
-                if (extendBooking) {
-                  action(extendBooking, 'extend', { checkOut: newDate })
-                  setExtendBooking(null)
-                }
-              }}
-            >
-              Save
-            </Button>
+
+            <div className="space-y-1">
+              <Label htmlFor="ext-pin" className="text-xs font-semibold flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                <ShieldAlert className="h-3.5 w-3.5" /> Admin PIN (Required) *
+              </Label>
+              <Input
+                id="ext-pin"
+                type="password"
+                inputMode="numeric"
+                placeholder="Enter Admin PIN"
+                value={adminPin}
+                onChange={(e) => setAdminPin(e.target.value)}
+                className="h-9 text-xs font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Manual stay extensions require authorization from an administrator.
+              </p>
+            </div>
+
+            {extendError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive flex items-start gap-1.5">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{extendError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-2 border-t">
+              <Button
+                variant="outline"
+                className="flex-1 h-9 text-xs"
+                onClick={() => setExtendBooking(null)}
+                disabled={extendSaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 h-9 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
+                disabled={extendSaving}
+                onClick={handleExtendSubmit}
+              >
+                {extendSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Save className="mr-1.5 h-3.5 w-3.5" />}
+                Confirm Extension
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -559,7 +756,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
 
       {/* Manage / Cancel & Edit Booking Modal */}
       <Dialog open={!!cancelModalBooking} onOpenChange={(o) => !o && setCancelModalBooking(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center justify-between pr-4">
               <span>Booking Options — Room {cancelModalBooking?.room?.number}</span>
@@ -572,6 +769,49 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
 
           {cancelModalBooking && (
             <div className="space-y-4">
+              {/* Extension History Section */}
+              {cancelModalBooking.extensions && cancelModalBooking.extensions.length > 0 && (
+                <div className="space-y-2 rounded-lg border bg-card p-3">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold">
+                    <History className="h-3.5 w-3.5 text-blue-600" /> Extension History
+                  </p>
+                  <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                    {cancelModalBooking.extensions.map((ext) => (
+                      <div key={ext.id} className="rounded border bg-muted/30 p-2 text-xs space-y-1">
+                        <div className="flex items-center justify-between">
+                          <Badge
+                            variant="outline"
+                            className={
+                              ext.type === 'AUTO'
+                                ? 'border-purple-300 bg-purple-50 text-purple-800 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-300 text-[10px]'
+                                : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300 text-[10px]'
+                            }
+                          >
+                            {ext.type === 'AUTO' ? '⚡ Automatic Overstay' : '🛡️ Manual Admin Extension'}
+                          </Badge>
+                          <span className="text-[10px] text-muted-foreground">{formatDateTime(ext.createdAt)}</span>
+                        </div>
+                        <div className="text-[11px] text-foreground">
+                          Check-Out: <span className="text-muted-foreground line-through">{formatDateTime(ext.fromCheckOut)}</span> → <span className="font-semibold">{formatDateTime(ext.toCheckOut)}</span>
+                          <span className="text-muted-foreground ml-1">({ext.fromDays}d → {ext.toDays}d)</span>
+                        </div>
+                        {ext.reason && (
+                          <div className="text-[11px] text-muted-foreground italic">
+                            &quot;{ext.reason}&quot;
+                          </div>
+                        )}
+                        <div className="text-[10px] text-muted-foreground">
+                          By: <span className="font-medium text-foreground">{ext.createdBy || 'SYSTEM'}</span>
+                          {ext.approvedBy && ext.approvedBy !== ext.createdBy && (
+                            <span> (Approved by {ext.approvedBy})</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Edit section */}
               <div className="space-y-3 rounded-lg border bg-card p-3">
                 <div className="flex items-center justify-between">

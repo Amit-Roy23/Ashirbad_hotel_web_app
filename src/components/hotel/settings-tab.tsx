@@ -21,10 +21,12 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
 import { api, apiAs, formatDateTime, exportCSV } from '@/lib/hotel-utils'
-import { useUser } from './user-context'
+import { useUser, getCachedUser } from './user-context'
 import { LoginDialog } from './login-dialog'
+import { toast } from '@/hooks/use-toast'
 import {
   Loader2,
   Hotel,
@@ -39,6 +41,7 @@ import {
   UtensilsCrossed,
   Trash2,
   Key,
+  Clock,
 } from 'lucide-react'
 
 interface AppUserRow {
@@ -68,7 +71,7 @@ interface TabProps {
   initialFilter?: string
 }
 
-export function SettingsTab({ refreshKey }: TabProps) {
+export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
   const { theme, setTheme } = useTheme()
   const { user, login, isAdmin } = useUser()
   const [settings, setSettings] = useState<Record<string, string>>({})
@@ -106,15 +109,28 @@ export function SettingsTab({ refreshKey }: TabProps) {
   async function saveSettings() {
     setSaving(true)
     try {
-      const updated = await apiAs<Record<string, string>>('/api/settings', user, {
+      const currentUser = user || getCachedUser()
+      const updated = await apiAs<Record<string, string>>('/api/settings', currentUser, {
         method: 'PATCH',
         body: JSON.stringify(settings),
       })
-      setSettings(updated)
+      if (updated && typeof updated === 'object') {
+        setSettings(updated)
+      }
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      toast({
+        title: 'Settings saved',
+        description: 'Hotel profile, billing rules, and stay settings have been updated.',
+      })
+      setTimeout(() => setSaved(false), 2500)
+      if (onDataChanged) onDataChanged()
+      await load()
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Save failed')
+      toast({
+        title: 'Save failed',
+        description: e instanceof Error ? e.message : 'Could not save settings',
+        variant: 'destructive',
+      })
     } finally {
       setSaving(false)
     }
@@ -123,18 +139,20 @@ export function SettingsTab({ refreshKey }: TabProps) {
   async function saveUser() {
     if (!userDlg) return
     try {
+      const currentUser = user || getCachedUser()
       if (userDlg.mode === 'add') {
-        await apiAs('/api/users', user, {
+        await apiAs('/api/users', currentUser, {
           method: 'POST',
           body: JSON.stringify({ name: uName, role: uRole, pin: uPin }),
         })
       } else {
-        await apiAs('/api/users', user, {
+        await apiAs('/api/users', currentUser, {
           method: 'PATCH',
           body: JSON.stringify({ id: userDlg.row!.id, name: uName, role: uRole, ...(uPin ? { pin: uPin } : {}) }),
         })
       }
       setUserDlg(null)
+      if (onDataChanged) onDataChanged()
       await load()
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Save failed')
@@ -276,18 +294,55 @@ export function SettingsTab({ refreshKey }: TabProps) {
               </div>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 border-t pt-3">
+              <Clock className="h-4 w-4 text-emerald-600" />
+              <p className="text-sm font-semibold">Stay &amp; Checkout Rules</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="s-checkout-time">Check-Out Time (IST)</Label>
+                <Input
+                  id="s-checkout-time"
+                  type="time"
+                  value={settings.checkoutTime || '08:00'}
+                  onChange={(e) => setSettings({ ...settings, checkoutTime: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="s-grace">Grace Period (minutes)</Label>
+                <Input
+                  id="s-grace"
+                  type="number"
+                  min="0"
+                  value={settings.overstayGraceMinutes || '0'}
+                  onChange={(e) => setSettings({ ...settings, overstayGraceMinutes: e.target.value })}
+                />
+              </div>
+              <div className="col-span-2 flex items-center justify-between rounded-lg border p-3 bg-muted/20">
+                <div className="space-y-0.5">
+                  <Label className="text-xs font-semibold">Auto-Extend Overstays</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Automatically add +1 day every 24h when active guests stay past check-out + grace.
+                  </p>
+                </div>
+                <Switch
+                  checked={settings.autoExtendEnabled !== 'false'}
+                  onCheckedChange={(checked) =>
+                    setSettings({ ...settings, autoExtendEnabled: checked ? 'true' : 'false' })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
               <p className="text-xs text-muted-foreground">
-                Custom corporate billing requires ADMIN / MANAGER approval and is always audited.
+                Settings update across all bills, dashboard, and stay calculations.
               </p>
-              <Button onClick={saveSettings} disabled={saving || !user} className="bg-emerald-600 hover:bg-emerald-700">
+              <Button onClick={saveSettings} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {saved ? 'Saved ✓' : 'Save Settings'}
               </Button>
             </div>
-            {!user && (
-              <p className="text-xs text-destructive">Sign in first to save settings.</p>
-            )}
           </CardContent>
         </Card>
 

@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import {
+  calcNights,
+  makeIST,
+  istDateStr,
+  computeOverstay,
+  nextAutoExtensionAt,
+} from '@/lib/stay'
+import {
   getBanquetHalls,
   createBanquetHall,
   updateBanquetHall,
@@ -80,6 +87,9 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   gstPercent: '12',
   invoicePrefix: 'INV',
   invoiceCounter: '1',
+  checkoutTime: '08:00',
+  overstayGraceMinutes: '0',
+  autoExtendEnabled: 'true',
 }
 
 async function getSettingsMap(): Promise<Record<string, string>> {
@@ -101,13 +111,7 @@ function formatDate(d: string | Date | null | undefined): string {
 }
 
 function toDateStr(d: string | Date | null | undefined): string {
-  if (!d) return ''
-  const date = typeof d === 'string' ? new Date(d) : d
-  if (isNaN(date.getTime())) return ''
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  return istDateStr(d)
 }
 
 function doDateRangesOverlap(
@@ -127,12 +131,90 @@ function doDateRangesOverlap(
   return startA < endB && endA > startB
 }
 
-function parseDateInput(value: unknown, fallbackTime = 'T12:00:00'): Date | null {
+function parseDateInput(value: unknown, fallbackTime = '08:00'): Date | null {
   if (value === undefined || value === null || value === '') return null
   const s = String(value).trim()
   if (!s) return null
-  const d = /\d{2}:\d{2}/.test(s) ? new Date(s.replace(' ', 'T')) : new Date(s + fallbackTime)
-  return isNaN(d.getTime()) ? null : d
+  if (s.includes('T')) {
+    const [d, t] = s.split('T')
+    return makeIST(d, t.replace('Z', '').slice(0, 8))
+  }
+  if (s.includes(' ')) {
+    const [d, t] = s.split(' ')
+    return makeIST(d, t.slice(0, 8))
+  }
+  return makeIST(s, fallbackTime)
+}
+
+/**
+ * Automatically extends ACTIVE bookings that passed their checkout time + grace period.
+ * Idempotent with optimistic update and audit logging. Catches up in one step if app was closed for multiple days.
+ */
+async function applyAutoExtensions(now = new Date()) {
+  try {
+    const settings = await getSettingsMap()
+    if (settings.autoExtendEnabled !== 'true') return
+
+    const graceMinutes = parseInt(settings.overstayGraceMinutes || '0', 10) || 0
+    const activeBookings = await prisma.booking.findMany({
+      where: {
+        status: 'ACTIVE',
+        checkOut: { not: null },
+      },
+      include: { room: true, guest: true },
+    })
+
+    for (const booking of activeBookings) {
+      const overstay = computeOverstay(booking, now, graceMinutes)
+      if (!overstay.overdue || !overstay.newCheckOut || overstay.extraDays <= 0) continue
+
+      const oldCheckOut = booking.checkOut!
+      const newCheckOut = overstay.newCheckOut
+      const oldDays = booking.days
+      const newDays = calcNights(booking.checkIn, newCheckOut)
+      const k = overstay.extraDays
+
+      const updateRes = await prisma.booking.updateMany({
+        where: {
+          id: booking.id,
+          checkOut: oldCheckOut,
+          status: 'ACTIVE',
+        },
+        data: {
+          checkOut: newCheckOut,
+          days: newDays,
+          autoExtendedDays: { increment: k },
+        },
+      })
+
+      if (updateRes.count === 1) {
+        await prisma.bookingExtension.create({
+          data: {
+            bookingId: booking.id,
+            type: 'AUTO',
+            fromCheckOut: oldCheckOut,
+            toCheckOut: newCheckOut,
+            fromDays: oldDays,
+            toDays: newDays,
+            reason: `Auto overstay extension (+${k} day${k > 1 ? 's' : ''})`,
+            createdBy: 'SYSTEM',
+          },
+        })
+        await prisma.auditLog.create({
+          data: {
+            action: 'AUTO_EXTEND',
+            entity: 'Booking',
+            entityId: booking.id,
+            details: `Auto-extended overstay for ${booking.guest.name} (Room ${booking.room.number}): checkout ${oldCheckOut.toISOString()} → ${newCheckOut.toISOString()}, days ${oldDays} → ${newDays} (+${k} day${k > 1 ? 's' : ''})`,
+            userName: 'SYSTEM',
+            userRole: 'SYSTEM',
+          },
+        })
+      }
+    }
+  } catch (err) {
+    console.error('Error in applyAutoExtensions:', err)
+  }
 }
 
 /** Recompute PARTIAL | PAID for a booking from its latest bill */
@@ -162,6 +244,7 @@ async function refreshBookingPaymentStatus(bookingId: string) {
 
 // ============ ROOMS ============
 async function listRooms(req: NextRequest) {
+  await applyAutoExtensions()
   const { searchParams } = new URL(req.url)
   const status = searchParams.get('status')
   const floor = searchParams.get('floor')
@@ -175,7 +258,11 @@ async function listRooms(req: NextRequest) {
     include: {
       bookings: {
         where: { status: { in: ['ACTIVE', 'BOOKED'] } },
-        include: { guest: true },
+        include: {
+          guest: true,
+          extensions: { orderBy: { createdAt: 'desc' } },
+          foodOrders: { where: { status: 'PENDING' }, include: { items: true } },
+        },
         orderBy: { checkIn: 'asc' },
       },
     },
@@ -348,6 +435,7 @@ async function deleteGuest(req: NextRequest, user: RequestUser) {
 
 // ============ BOOKINGS ============
 async function listBookings(req: NextRequest) {
+  await applyAutoExtensions()
   const { searchParams } = new URL(req.url)
   const status = searchParams.get('status')
   const paymentStatus = searchParams.get('paymentStatus')
@@ -387,8 +475,9 @@ async function listBookings(req: NextRequest) {
     include: {
       room: true,
       guest: true,
-      foodOrders: { where: { status: 'PENDING' } },
+      foodOrders: { where: { status: 'PENDING' }, include: { items: true } },
       bills: { orderBy: { createdAt: 'desc' }, take: 1 },
+      extensions: { orderBy: { createdAt: 'desc' } },
     },
   })
   return NextResponse.json(bookings)
@@ -396,7 +485,7 @@ async function listBookings(req: NextRequest) {
 
 async function createBooking(body: Record<string, unknown>, user: RequestUser) {
   const {
-    roomId, phone, name, company, gst, address, checkIn, checkOut,
+    roomId, phone, name, company, gst, address, checkIn, checkOut, checkOutTime,
     guestCount, advance, advanceMethod, isCorporate, notes, bookingType, status: reqStatus,
   } = body
   if (!roomId || !phone || !name) {
@@ -419,20 +508,32 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
   const room = await prisma.room.findUnique({ where: { id: String(roomId) } })
   if (!room) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
 
-  const checkInDate = checkIn
-    ? parseDateInput(checkIn, 'T12:00:00')
-    : new Date(new Date().setHours(12, 0, 0, 0))
-  if (!checkInDate) {
+  const settings = await getSettingsMap()
+  const defCheckoutTime = settings.checkoutTime || '08:00'
+
+  let checkInDate: Date | null = null
+  if (checkIn) {
+    const s = String(checkIn).trim()
+    if (s.includes('T')) {
+      const [d, t] = s.split('T')
+      checkInDate = makeIST(d, t.replace('Z', '').slice(0, 8))
+    } else {
+      checkInDate = makeIST(s, '12:00')
+    }
+  } else {
+    checkInDate = makeIST(istDateStr(new Date()), '12:00')
+  }
+
+  if (!checkInDate || isNaN(checkInDate.getTime())) {
     return NextResponse.json(
       { error: 'Invalid check-in date. Please pick the date again and retry.' },
       { status: 400 }
     )
   }
-  const today = new Date()
-  const isFuture =
-    checkInDate.getFullYear() > today.getFullYear() ||
-    (checkInDate.getFullYear() === today.getFullYear() && checkInDate.getMonth() === today.getMonth() && checkInDate.getDate() > today.getDate())
 
+  const todayStrIST = istDateStr(new Date())
+  const checkInDateStrIST = istDateStr(checkInDate)
+  const isFuture = checkInDateStrIST > todayStrIST
   const isAdvanceBooking = bookingType === 'BOOKING' || reqStatus === 'BOOKED' || isFuture
 
   if (!isAdvanceBooking && room.status === 'OCCUPIED') {
@@ -442,20 +543,31 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     return NextResponse.json({ error: `Room ${room.number} is under maintenance` }, { status: 400 })
   }
 
-  const checkOutDate = checkOut ? parseDateInput(checkOut, 'T11:00:00') : null
-  if (checkOut && !checkOutDate) {
+  let checkOutDate: Date | null = null
+  if (checkOut) {
+    const s = String(checkOut).trim()
+    const targetTime = checkOutTime ? String(checkOutTime) : defCheckoutTime
+    if (s.includes('T')) {
+      const [d, t] = s.split('T')
+      checkOutDate = makeIST(d, checkOutTime ? targetTime : t.replace('Z', '').slice(0, 8))
+    } else {
+      checkOutDate = makeIST(s, targetTime)
+    }
+  }
+
+  if (checkOut && (!checkOutDate || isNaN(checkOutDate.getTime()))) {
     return NextResponse.json(
       { error: 'Invalid check-out date. Please pick the date again and retry.' },
       { status: 400 }
     )
   }
+
   let days = 1
   if (checkOutDate) {
-    const diff = Math.ceil((checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60 * 24))
-    days = Math.max(1, diff)
+    days = calcNights(checkInDate, checkOutDate)
   }
 
-  // Double-booking prevention using date-only boundary logic
+  // Double-booking prevention using date-only boundary logic for all bookings
   const existingBookings = await prisma.booking.findMany({
     where: {
       roomId: String(roomId),
@@ -502,8 +614,10 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
       data: {
         roomId: String(roomId),
         guestId: guest.id,
-        checkIn: checkInDate,
+        checkIn: checkInDate!,
         checkOut: checkOutDate,
+        originalCheckOut: checkOutDate,
+        autoExtendedDays: 0,
         days,
         guestCount: parsedGuestCount,
         ratePerDay: room.rate,
@@ -553,6 +667,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
 }
 
 async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
+  await applyAutoExtensions()
   const { id, action, checkOut, newRoomId } = body
   const booking = await prisma.booking.findUnique({ where: { id: String(id) }, include: { room: true, guest: true } })
   if (!booking) return NextResponse.json({ error: 'Booking not found' }, { status: 404 })
@@ -605,8 +720,42 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
   }
 
   if (action === 'extend') {
-    const newCheckOut = checkOut ? parseDateInput(checkOut, 'T11:00:00') : null
-    if (!newCheckOut) return NextResponse.json({ error: 'Valid new checkout date required' }, { status: 400 })
+    const { adminPin, reason, checkOut: newCheckOutDateStr, checkOutTime, days: customDays } = body
+    if (!adminPin) {
+      return NextResponse.json({ error: 'Admin PIN is required to extend stay' }, { status: 403 })
+    }
+    if (!reason || !String(reason).trim()) {
+      return NextResponse.json({ error: 'Reason for extension is required' }, { status: 400 })
+    }
+    const adminUser = await prisma.user.findFirst({
+      where: {
+        pin: String(adminPin),
+        active: true,
+        role: 'ADMIN',
+      },
+    })
+    if (!adminUser) {
+      return NextResponse.json({ error: 'Extension blocked: Invalid Admin PIN (ADMIN role required)' }, { status: 403 })
+    }
+
+    if (booking.status !== 'ACTIVE' && booking.status !== 'BOOKED') {
+      return NextResponse.json({ error: 'Only ACTIVE or BOOKED stays can be extended' }, { status: 400 })
+    }
+
+    if (!newCheckOutDateStr) {
+      return NextResponse.json({ error: 'Valid new checkout date required' }, { status: 400 })
+    }
+
+    const settings = await getSettingsMap()
+    const targetTime = checkOutTime ? String(checkOutTime) : (settings.checkoutTime || '08:00')
+    const newCheckOut = makeIST(String(newCheckOutDateStr), targetTime)
+    if (isNaN(newCheckOut.getTime())) {
+      return NextResponse.json({ error: 'Invalid check-out date or time' }, { status: 400 })
+    }
+
+    if (booking.checkOut && newCheckOut.getTime() <= new Date(booking.checkOut).getTime()) {
+      return NextResponse.json({ error: 'New check-out date and time must be later than the current check-out' }, { status: 400 })
+    }
 
     // Double-booking check when extending stay
     const existingBookings = await prisma.booking.findMany({
@@ -617,27 +766,56 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       },
       include: { guest: true },
     })
-    const overlapFuture = existingBookings.find((b) =>
-      doDateRangesOverlap(booking.checkIn, newCheckOut, b.checkIn, b.checkOut)
-    )
-    if (overlapFuture) {
+
+    const currCheckOut = booking.checkOut ? new Date(booking.checkOut) : new Date(booking.checkIn)
+    const conflict = existingBookings.find((b) => {
+      const otherCheckIn = new Date(b.checkIn)
+      const otherCheckOut = b.checkOut ? new Date(b.checkOut) : null
+      return otherCheckIn < newCheckOut && (!otherCheckOut || otherCheckOut > currCheckOut)
+    })
+
+    if (conflict) {
       return NextResponse.json(
         {
-          error: `Cannot extend stay: Room ${booking.room.number} is reserved for ${overlapFuture.guest.name} starting ${formatDate(overlapFuture.checkIn)}. Max checkout allowed is ${formatDate(overlapFuture.checkIn)}.`,
+          error: `Room conflict: Room ${booking.room.number} is already reserved for ${conflict.guest.name} (${formatDate(conflict.checkIn)} to ${formatDate(conflict.checkOut)}).`,
         },
-        { status: 400 }
+        { status: 409 }
       )
     }
 
-    const diff = Math.ceil(
-      (newCheckOut.getTime() - new Date(booking.checkIn).getTime()) / (1000 * 60 * 60 * 24)
-    )
-    const days = Math.max(1, diff)
-    const updated = await prisma.booking.update({
-      where: { id: String(id) },
-      data: { checkOut: newCheckOut, days },
+    const oldCheckOut = booking.checkOut || booking.checkIn
+    const oldDays = booking.days
+    const targetDays = customDays !== undefined && Number(customDays) >= 1 ? Number(customDays) : calcNights(booking.checkIn, newCheckOut)
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const b = await tx.booking.update({
+        where: { id: String(id) },
+        data: { checkOut: newCheckOut, days: targetDays },
+        include: { room: true, guest: true },
+      })
+      await tx.bookingExtension.create({
+        data: {
+          bookingId: b.id,
+          type: 'MANUAL',
+          fromCheckOut: oldCheckOut,
+          toCheckOut: newCheckOut,
+          fromDays: oldDays,
+          toDays: targetDays,
+          reason: String(reason).trim(),
+          createdBy: user.name || 'Staff',
+          approvedBy: adminUser.name,
+        },
+      })
+      return b
     })
-    await logAudit('EXTEND', 'Booking', booking.id, `Stay extended: ${booking.guest.name} (Room ${booking.room.number}) → new checkout ${newCheckOut.toDateString()}`, user)
+
+    await logAudit(
+      'EXTEND',
+      'Booking',
+      booking.id,
+      `Stay manually extended for ${booking.guest.name} (Room ${booking.room.number}): checkout ${new Date(oldCheckOut).toISOString()} → ${newCheckOut.toISOString()}, days ${oldDays} → ${targetDays}. Reason: ${String(reason).trim()}`,
+      { id: adminUser.id, name: adminUser.name, role: 'ADMIN' }
+    )
     return NextResponse.json(updated)
   }
 
@@ -744,21 +922,22 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     if (isCorporate !== undefined) updateData.isCorporate = !!isCorporate
 
     if (checkIn !== undefined) {
-      const parsedCheckIn = parseDateInput(checkIn, 'T12:00:00')
+      const parsedCheckIn = parseDateInput(checkIn, '12:00')
       if (parsedCheckIn) updateData.checkIn = parsedCheckIn
     }
     if (checkOut !== undefined) {
-      const parsedCheckOut = parseDateInput(checkOut, 'T11:00:00')
+      const settings = await getSettingsMap()
+      const parsedCheckOut = parseDateInput(checkOut, settings.checkoutTime || '08:00')
       if (parsedCheckOut) updateData.checkOut = parsedCheckOut
     }
     if (days !== undefined) {
       updateData.days = Math.max(1, parseInt(String(days)) || 1)
-    } else if (updateData.checkIn && updateData.checkOut) {
-      const diff = Math.ceil(
-        ((updateData.checkOut as Date).getTime() - (updateData.checkIn as Date).getTime()) /
-          (1000 * 60 * 60 * 24)
-      )
-      updateData.days = Math.max(1, diff)
+    } else if (updateData.checkIn || updateData.checkOut) {
+      const finalIn = (updateData.checkIn as Date) || booking.checkIn
+      const finalOut = (updateData.checkOut as Date) || booking.checkOut
+      if (finalIn && finalOut) {
+        updateData.days = calcNights(finalIn, finalOut)
+      }
     }
 
     if (updateData.checkIn || updateData.checkOut) {
@@ -867,6 +1046,7 @@ async function listBills(req: NextRequest) {
 }
 
 async function createBill(body: Record<string, unknown>, user: RequestUser) {
+  await applyAutoExtensions()
   const {
     bookingId, days, billedRoomTotal, roomDescription, roomNumber, gstPercent, extraCharges, discount,
     payCash, payUpi, payCard, includeFood, corporateName, gstNumber, notes, checkout,
@@ -889,16 +1069,20 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const cleanRoomDesc = roomDescription !== undefined && roomDescription !== null ? String(roomDescription).trim() : null
   const cleanRoomNumber = roomNumber !== undefined && roomNumber !== null && String(roomNumber).trim() !== '' ? String(roomNumber).trim() : null
 
+  // Check if auto-extended overstay days are being reduced/waived
+  const isWaivingOverstay = (booking.autoExtendedDays || 0) > 0 && billDays < booking.days
+
   // Permission control for custom corporate billing
   const isCustomRoomAmount = Math.abs(billedRoom - actualRoomTotal) > 0.01 || (billedRoomTotal !== undefined && parseFloat(String(billedRoomTotal)) > 0 && Math.abs(parseFloat(String(billedRoomTotal)) - actualRoomTotal) > 0.01)
   const isCustomDescription = cleanRoomDesc !== null && cleanRoomDesc !== '' && cleanRoomDesc !== realRoomType
   const isCustomRoomNumber = cleanRoomNumber !== null && cleanRoomNumber !== booking.room.number
   const isCustom = isCustomRoomAmount || isCustomDescription || isCustomRoomNumber
 
-  if (isCustom) {
+  let approverUser: RequestUser | null = null
+  if (isCustom || isWaivingOverstay) {
     if (!managerPin) {
       return NextResponse.json(
-        { error: 'Custom corporate billing requires Manager or Admin PIN approval' },
+        { error: isWaivingOverstay ? 'Waiving auto-extended overstay days requires Manager or Admin PIN approval' : 'Custom corporate billing requires Manager or Admin PIN approval' },
         { status: 403 }
       )
     }
@@ -911,11 +1095,12 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
     })
     if (!approver) {
       return NextResponse.json(
-        { error: 'Custom billing blocked: Invalid Manager or Admin PIN' },
+        { error: isWaivingOverstay ? 'Overstay waiver blocked: Invalid Manager or Admin PIN' : 'Custom billing blocked: Invalid Manager or Admin PIN' },
         { status: 403 }
       )
     }
-    user = { id: approver.id, name: approver.name, role: approver.role }
+    approverUser = { id: approver.id, name: approver.name, role: approver.role }
+    user = approverUser
   }
 
   let foodTotal = 0
@@ -1002,7 +1187,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         corporateName: corporateName ? String(corporateName) : booking.guest.company || null,
         gstNumber: gstNumber ? String(gstNumber) : booking.guest.gst || null,
         createdBy: user.name || null,
-        approvedBy: isCustom ? user.name || null : null,
+        approvedBy: (isCustom || isWaivingOverstay) ? user.name || null : null,
         status: body.status === 'DRAFT' ? 'DRAFT' : 'FINAL',
         notes: notes ? String(notes) : null,
       },
@@ -1018,6 +1203,19 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         userRole: user.role || 'RECEPTION',
       },
     })
+
+    if (isWaivingOverstay) {
+      await tx.auditLog.create({
+        data: {
+          action: 'OVERSTAY_WAIVED',
+          entity: 'Booking',
+          entityId: booking.id,
+          details: `Waived ${booking.days - billDays} auto-extended overstay day(s) for ${booking.guest.name} (Room ${booking.room.number}). Billed ${billDays} of ${booking.days} days. Approved by ${user.name || 'Manager'}.`,
+          userName: user.name || 'Manager',
+          userRole: user.role || 'MANAGER',
+        },
+      })
+    }
 
     if (pendingOrders.length > 0) {
       await tx.foodOrder.updateMany({
@@ -1115,6 +1313,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
 }
 
 async function addBillPayment(body: Record<string, unknown>, user: RequestUser) {
+  await applyAutoExtensions()
   const { id, payCash, payUpi, payCard } = body
   const bill = await prisma.bill.findUnique({
     where: { id: String(id) },
@@ -1929,9 +2128,12 @@ async function deleteLedgerEntry(req: NextRequest, user: RequestUser) {
 
 // ============ STATS ============
 async function getStats() {
+  await applyAutoExtensions()
+  const settings = await getSettingsMap()
+  const graceMinutes = parseInt(settings.overstayGraceMinutes || '0', 10) || 0
   const now = new Date()
-  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59.999)
+  const startToday = makeIST(istDateStr(now), '00:00')
+  const endToday = makeIST(istDateStr(now), '23:59:59')
 
   const [rooms, activeBookings, bookedFuture, todayBills, todayLedger, pendingFood, allBills] = await Promise.all([
     prisma.room.findMany({ select: { status: true, housekeeping: true, rate: true } }),
@@ -1994,6 +2196,25 @@ async function getStats() {
     return co >= startToday && co <= endToday
   })
 
+  const bookedReservations = activeBookings.filter((b) => b.status === 'BOOKED')
+  const overstays = activeBookings
+    .filter((b) => b.status === 'ACTIVE' && (b.autoExtendedDays || 0) > 0)
+    .map((b) => {
+      const conflict = bookedReservations.find(
+        (r) => r.roomId === b.roomId && b.checkOut && new Date(r.checkIn) < new Date(b.checkOut)
+      )
+      return {
+        id: b.id,
+        guestName: b.guest.name,
+        roomNumber: b.room.number,
+        originalCheckOut: b.originalCheckOut || b.checkOut,
+        checkOut: b.checkOut,
+        autoExtendedDays: b.autoExtendedDays,
+        nextAutoExtensionAt: nextAutoExtensionAt(b, graceMinutes),
+        conflictWith: conflict ? `${conflict.guest.name} (${formatDate(conflict.checkIn)})` : null,
+      }
+    })
+
   const outstanding = allBills.reduce((s, b) => {
     const totalRec = b.advanceApplied + b.payCash + b.payUpi + b.payCard
     const balance = b.grandTotal - totalRec
@@ -2008,8 +2229,9 @@ async function getStats() {
     maintenance,
     dirtyRooms,
     occupancyPercent: rooms.length ? Math.round((occupied / rooms.length) * 100) : 0,
-    activeGuests: activeBookings.length,
+    activeGuests: activeBookings.filter((b) => b.status === 'ACTIVE').length,
     bookedFuture,
+    overstays,
     activeBookings: activeBookings.map((b) => ({
       id: b.id,
       guestName: b.guest.name,
@@ -2017,6 +2239,8 @@ async function getStats() {
       roomNumber: b.room.number,
       checkIn: b.checkIn,
       checkOut: b.checkOut,
+      originalCheckOut: b.originalCheckOut,
+      autoExtendedDays: b.autoExtendedDays,
       days: b.days,
       ratePerDay: b.ratePerDay,
       paymentStatus: b.paymentStatus,
@@ -2061,18 +2285,20 @@ async function getSettings() {
 }
 
 async function updateSettings(body: Record<string, unknown>, user: RequestUser) {
-  const updates = body as Record<string, string>
-  const allowed = Object.keys(DEFAULT_SETTINGS)
-  for (const key of allowed) {
-    if (updates[key] !== undefined) {
+  const updates = (body || {}) as Record<string, unknown>
+  const updatedKeys: string[] = []
+  for (const [key, value] of Object.entries(updates)) {
+    if (typeof key === 'string' && key.trim() !== '' && value !== undefined && value !== null) {
+      const cleanKey = key.trim()
       await prisma.setting.upsert({
-        where: { key },
-        update: { value: String(updates[key]) },
-        create: { key, value: String(updates[key]) },
+        where: { key: cleanKey },
+        update: { value: String(value) },
+        create: { key: cleanKey, value: String(value) },
       })
+      updatedKeys.push(cleanKey)
     }
   }
-  await logAudit('SETTINGS', 'Setting', null, `Settings updated: ${Object.keys(updates).filter((k) => allowed.includes(k)).join(', ')}`, user)
+  await logAudit('SETTINGS', 'Setting', null, `Settings updated: ${updatedKeys.join(', ')}`, user)
   return NextResponse.json(await getSettingsMap())
 }
 
@@ -2213,6 +2439,7 @@ async function deleteExpenseCategory(req: NextRequest) {
 const searchCache = new Map<string, { data: unknown; expires: number }>()
 
 async function globalSearch(req: NextRequest) {
+  await applyAutoExtensions()
   const { searchParams } = new URL(req.url)
   const isIndex = searchParams.get('index') === '1'
 
@@ -2672,7 +2899,7 @@ async function dispatch(
       break
     case 'settings':
       if (method === 'GET') return await getSettings()
-      if (method === 'PATCH') return await updateSettings(body, user)
+      if (method === 'PATCH' || method === 'POST') return await updateSettings(body, user)
       break
     case 'users':
       if (method === 'GET') return await listUsers()

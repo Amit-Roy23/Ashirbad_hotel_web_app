@@ -27,6 +27,9 @@ async function req(method: string, path: string, body?: unknown, headers: Record
 }
 
 async function main() {
+  const { PrismaClient } = await import('@prisma/client')
+  const prisma = new PrismaClient()
+
   console.log('=== 1. AUTH & PERMISSIONS ===')
   const users = (await req('GET', '/api/users')).data as { id: string; name: string; role: string }[]
   const admin = users.find((u) => u.role === 'ADMIN')!
@@ -41,14 +44,19 @@ async function main() {
 
   // Get or setup rooms with known rates
   const rooms = (await req('GET', '/api/rooms')).data as { id: string; number: string; rate: number; type: string; status: string }[]
-  const vacantRooms = rooms.filter((r) => r.status === 'VACANT')
-  check('at least 2 vacant rooms available for test', vacantRooms.length >= 2, `found ${vacantRooms.length}`)
-  const room1 = vacantRooms[0]
-  const room2 = vacantRooms[1]
+  check('at least 2 rooms available for test', rooms.length >= 2, `found ${rooms.length}`)
+  const room1 = rooms[0]
+  const room2 = rooms[1]
 
-  // Ensure room1 and room2 have rate 1000 for exact test matches
-  await req('PATCH', '/api/rooms', { id: room1.id, rate: 1000, type: 'Standard Non-AC' }, H)
-  await req('PATCH', '/api/rooms', { id: room2.id, rate: 1000, type: 'Standard Non-AC' }, H)
+  // Clean up any lingering bookings from previous test runs on room1 and room2
+  await prisma.booking.updateMany({
+    where: { roomId: { in: [room1.id, room2.id] }, status: { in: ['ACTIVE', 'BOOKED'] } },
+    data: { status: 'CANCELLED' },
+  })
+
+  // Ensure room1 and room2 have rate 1000 and status VACANT for exact test matches
+  await req('PATCH', '/api/rooms', { id: room1.id, rate: 1000, type: 'Standard Non-AC', status: 'VACANT', housekeeping: 'CLEAN' }, H)
+  await req('PATCH', '/api/rooms', { id: room2.id, rate: 1000, type: 'Standard Non-AC', status: 'VACANT', housekeeping: 'CLEAN' }, H)
 
   console.log('\n=== 2. EXAMPLE 1: NORMAL BILL (Rate 1000, 1 night, advance 500, GST 12%) ===')
   // Check in guest 1
@@ -304,11 +312,234 @@ async function main() {
   check('updated grandTotal = 1232', updatedBill1.grandTotal === 1232, `got ${updatedBill1.grandTotal}`)
   check('updated internalTotal = 1232', updatedBill1.internalTotal === 1232, `got ${updatedBill1.internalTotal}`)
 
-  // Housekeeping cleanup
-  await req('PATCH', '/api/rooms', { id: room1.id, housekeeping: 'CLEAN' }, H)
-  await req('PATCH', '/api/rooms', { id: room2.id, housekeeping: 'CLEAN' }, H)
+  console.log('\n=== 8. OVERSTAY AUTO-EXTENSION & ADMIN MANUAL EXTENSION TESTS ===')
 
-  console.log(failures === 0 ? '\n✅ ALL TESTS PASSED (Example 1 & Example 2 validated successfully)' : `\n❌ ${failures} TEST(S) FAILED`)
+  try {
+    // 8a. Check-in an active booking in room 1, and set checkOut to yesterday 08:00 IST
+    const checkinOverstay = await req(
+      'POST',
+      '/api/bookings',
+      {
+        roomId: room1.id,
+        phone: '9876543299',
+        name: 'Overstay Guest',
+        checkIn: new Date(Date.now() - 3 * 86400000).toISOString(),
+        checkOut: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+        advance: '0',
+        guestCount: 1,
+      },
+      HR
+    )
+    check('check-in overstay test booking succeeds', checkinOverstay.status === 200)
+    const overstayBookingId = (checkinOverstay.data as { id: string }).id
+
+    // Set checkOut in DB to 26 hours ago so computeOverstay will find extraDays >= 1
+    const pastCheckOut = new Date(Date.now() - 26 * 3600 * 1000)
+    await prisma.booking.update({
+      where: { id: overstayBookingId },
+      data: {
+        checkOut: pastCheckOut,
+        originalCheckOut: pastCheckOut,
+        autoExtendedDays: 0,
+        status: 'ACTIVE',
+      },
+    })
+
+    // Call listBookings twice to test auto-extension and idempotency
+    const listRes1 = await req('GET', '/api/bookings')
+    check('listBookings trigger 1 succeeds', listRes1.status === 200)
+    const listRes2 = await req('GET', '/api/bookings')
+    check('listBookings trigger 2 succeeds', listRes2.status === 200)
+
+    // Verify booking in DB has autoExtendedDays >= 1
+    const autoUpdatedBooking = await prisma.booking.findUnique({
+      where: { id: overstayBookingId },
+      include: { extensions: true },
+    })
+    check('Booking autoExtendedDays > 0', !!autoUpdatedBooking && autoUpdatedBooking.autoExtendedDays >= 1, `got ${autoUpdatedBooking?.autoExtendedDays}`)
+    check('Auto-extend idempotency: exactly 1 AUTO BookingExtension created', autoUpdatedBooking?.extensions?.filter((e) => e.type === 'AUTO').length === 1, `got ${autoUpdatedBooking?.extensions?.length}`)
+
+    // 8b. Bill with reduced days needs PIN
+    const waiveWithoutPin = await req(
+      'POST',
+      '/api/bills',
+      {
+        bookingId: overstayBookingId,
+        days: 1, // lower than autoUpdatedBooking.days
+        payCash: 1000,
+        checkout: true,
+      },
+      HR
+    )
+    check('Reducing auto-extended days without managerPin fails (403)', waiveWithoutPin.status === 403)
+
+    const waiveWithPin = await req(
+      'POST',
+      '/api/bills',
+      {
+        bookingId: overstayBookingId,
+        days: 1,
+        payCash: 1000,
+        managerPin: '1111',
+        checkout: true,
+      },
+      H
+    )
+    check('Reducing auto-extended days with managerPin succeeds (200)', waiveWithPin.status === 200)
+
+    const auditLogs = await prisma.auditLog.findMany({
+      where: { entityId: overstayBookingId },
+    })
+    check('AuditLog OVERSTAY_WAIVED recorded', auditLogs.some((a) => a.action === 'OVERSTAY_WAIVED'))
+
+    // 8c. Early checkout with autoExtendedDays === 0 lets days be reduced freely without PIN
+    const checkinEarly = await req(
+      'POST',
+      '/api/bookings',
+      {
+        roomId: room1.id,
+        phone: '9876543288',
+        name: 'Early Checkout Guest',
+        checkIn: new Date().toISOString(),
+        checkOut: new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10), // 3 days
+        advance: '0',
+        guestCount: 1,
+      },
+      HR
+    )
+    const earlyBookingId = (checkinEarly.data as { id: string }).id
+    const earlyBill = await req(
+      'POST',
+      '/api/bills',
+      {
+        bookingId: earlyBookingId,
+        days: 1, // reduced from 3 to 1
+        payCash: 1000,
+        checkout: true,
+      },
+      HR
+    )
+    check('Early checkout (autoExtendedDays=0) allows reducing days without PIN', earlyBill.status === 200)
+
+    // 8d. Admin manual extend tests
+    const checkinExtend = await req(
+      'POST',
+      '/api/bookings',
+      {
+        roomId: room2.id,
+        phone: '9876543277',
+        name: 'Manual Extend Guest',
+        checkIn: new Date().toISOString(),
+        checkOut: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+        advance: '0',
+        guestCount: 1,
+      },
+      HR
+    )
+    const extendTestBookingId = (checkinExtend.data as { id: string }).id
+
+    // Test wrong PIN -> 403
+    const extendWrongPin = await req(
+      'PATCH',
+      '/api/bookings',
+      {
+        id: extendTestBookingId,
+        action: 'extend',
+        checkOut: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+        reason: 'Guest requested 1 more day',
+        adminPin: '9999',
+      },
+      H
+    )
+    check('Admin extend with wrong PIN returns 403', extendWrongPin.status === 403)
+
+    // Test reception user PIN (not ADMIN role) -> 403
+    const extendReceptionPin = await req(
+      'PATCH',
+      '/api/bookings',
+      {
+        id: extendTestBookingId,
+        action: 'extend',
+        checkOut: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+        reason: 'Guest requested 1 more day',
+        adminPin: '2222', // Reception PIN
+      },
+      H
+    )
+    check('Admin extend with Reception PIN returns 403 (Admin role required)', extendReceptionPin.status === 403)
+
+    // Create a future booked reservation in room 2 to test conflict detection (409)
+    const futureInDate = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
+    const futureOutDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10)
+    const conflictBooking = await req(
+      'POST',
+      '/api/bookings',
+      {
+        roomId: room2.id,
+        phone: '9876543266',
+        name: 'Future Reserved Guest',
+        checkIn: futureInDate,
+        checkOut: futureOutDate,
+        advance: '0',
+        bookingType: 'BOOKING',
+        status: 'BOOKED',
+        guestCount: 1,
+      },
+      HR
+    )
+    check('Create future booked reservation in room 2 succeeds', conflictBooking.status === 200)
+
+    // Try extending active booking past the future booking checkIn (e.g. to futureOutDate) -> 409 Conflict
+    const extendConflict = await req(
+      'PATCH',
+      '/api/bookings',
+      {
+        id: extendTestBookingId,
+        action: 'extend',
+        checkOut: futureOutDate,
+        reason: 'Overlapping extension',
+        adminPin: '1111',
+      },
+      H
+    )
+    check('Admin extend with room conflict returns 409', extendConflict.status === 409, JSON.stringify(extendConflict.data))
+
+    // Successful manual extension (within available range before future reservation)
+    const validExtOutDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10)
+    const extendSuccess = await req(
+      'PATCH',
+      '/api/bookings',
+      {
+        id: extendTestBookingId,
+        action: 'extend',
+        checkOut: validExtOutDate,
+        checkOutTime: '08:00',
+        days: 2,
+        reason: 'Guest extended flight by 1 day',
+        adminPin: '1111',
+      },
+      H
+    )
+    check('Admin extend with Admin PIN succeeds (200)', extendSuccess.status === 200, JSON.stringify(extendSuccess.data))
+
+    const manualExtDb = await prisma.bookingExtension.findFirst({
+      where: { bookingId: extendTestBookingId, type: 'MANUAL' },
+    })
+    check('MANUAL BookingExtension created with reason and approvedBy', !!manualExtDb && manualExtDb.approvedBy === 'Admin')
+
+    const extendAudit = await prisma.auditLog.findFirst({
+      where: { entityId: extendTestBookingId, action: 'EXTEND' },
+    })
+    check('AuditLog EXTEND created for manual extension', !!extendAudit)
+  } finally {
+    await prisma.$disconnect()
+  }
+
+  // Final Housekeeping cleanup
+  await req('PATCH', '/api/rooms', { id: room1.id, housekeeping: 'CLEAN', status: 'VACANT' }, H)
+  await req('PATCH', '/api/rooms', { id: room2.id, housekeeping: 'CLEAN', status: 'VACANT' }, H)
+
+  console.log(failures === 0 ? '\n✅ ALL TESTS PASSED (Billing, Overstay & Admin Extension validated successfully)' : `\n❌ ${failures} TEST(S) FAILED`)
   process.exit(failures === 0 ? 0 : 1)
 }
 

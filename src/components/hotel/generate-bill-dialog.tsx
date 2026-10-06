@@ -35,6 +35,8 @@ interface Booking {
   id: string
   checkIn: string
   days: number
+  autoExtendedDays?: number
+  originalCheckOut?: string | null
   ratePerDay: number
   advance: number
   isCorporate?: boolean
@@ -202,6 +204,12 @@ export function GenerateBillDialog({
     const realType = booking.room?.type || 'Non-AC'
     const descChanged = roomDescription.trim() !== '' && roomDescription.trim() !== realType
     const roomNoChanged = roomNumber.trim() !== '' && roomNumber.trim() !== realRoomNo
+    const autoDays = booking.autoExtendedDays || 0
+    const isWaivingOverstay = autoDays > 0 && num(days) < booking.days
+    if (isWaivingOverstay && (!managerPin || managerPin.trim().length < 3)) {
+      setError('Manager or Admin PIN is required to reduce/waive auto-extended overstay days')
+      return
+    }
     if (customMode) {
       if (num(customTotal) <= 0 && !descChanged && !roomNoChanged) {
         setError('Billed Amount (Custom), a custom Room No., or a custom Room Description is required for custom billing')
@@ -241,7 +249,7 @@ export function GenerateBillDialog({
           includeFood,
           corporateName: corporateName || undefined,
           gstNumber: gstNumber || undefined,
-          managerPin: customMode ? managerPin : undefined,
+          managerPin: (customMode || isWaivingOverstay) ? managerPin.trim() : undefined,
           checkout: true,
         }),
       })
@@ -258,7 +266,7 @@ export function GenerateBillDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] max-w-lg overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Generate Bill — Room {booking?.room?.number}</DialogTitle>
+          <DialogTitle>Lodging Bill &amp; Checkout — Room {booking?.room?.number}</DialogTitle>
           <DialogDescription>
             {booking?.guest?.name} • {booking?.guest?.phone} • In: {formatDate(booking?.checkIn)}
           </DialogDescription>
@@ -353,9 +361,18 @@ export function GenerateBillDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-foreground">Food {calc.foodTotal > 0 && `(${formatINR(calc.foodTotal)})`}</Label>
-                <div className="flex h-9 items-center justify-between rounded-md border px-2.5">
-                  <span className="text-xs text-muted-foreground">Add to bill</span>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold text-foreground">
+                    Fooding Bill {calc.foodTotal > 0 && `(${formatINR(calc.foodTotal)})`}
+                  </Label>
+                  {calc.foodTotal > 0 && (
+                    <span className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">Room Service</span>
+                  )}
+                </div>
+                <div className="flex h-9 items-center justify-between rounded-md border px-2.5 bg-card">
+                  <span className="text-xs text-muted-foreground">
+                    {includeFood ? 'Include in Bill' : 'Separate'}
+                  </span>
                   <Switch checked={includeFood} onCheckedChange={setIncludeFood} className="scale-75" />
                 </div>
               </div>
@@ -364,6 +381,21 @@ export function GenerateBillDialog({
                 <Input type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} className="h-9 text-xs" />
               </div>
             </div>
+
+            {/* Stay breakdown: planned nights + auto-extended days */}
+            {(() => {
+              const autoDays = booking.autoExtendedDays || 0
+              const plannedNights = Math.max(1, booking.days - autoDays)
+              return autoDays > 0 ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50/80 p-2.5 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                  <span className="font-semibold">Stay Breakdown:</span> Planned {plannedNights} night{plannedNights > 1 ? 's' : ''} + {autoDays} auto-extended day{autoDays > 1 ? 's' : ''} = {booking.days} days total.
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  Planned Stay: <b>{booking.days} night{booking.days > 1 ? 's' : ''}</b>
+                </div>
+              )
+            })()}
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -393,6 +425,32 @@ export function GenerateBillDialog({
                 <Input type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)} className="h-9 text-xs" />
               </div>
             </div>
+
+            {/* Overstay waiver Manager/Admin PIN requirement */}
+            {(() => {
+              const autoDays = booking.autoExtendedDays || 0
+              const isWaiving = autoDays > 0 && num(days) < booking.days
+              if (!isWaiving || customMode) return null
+              return (
+                <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50/80 p-3 dark:border-amber-800 dark:bg-amber-950/40">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-900 dark:text-amber-200">
+                    <ShieldCheck className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+                    <span>Manager / Admin PIN (Waive Overstay) *</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Reducing billable days from {booking.days} to {num(days)} waives auto-extended stay charges and requires Manager/Admin authorization.
+                  </p>
+                  <Input
+                    type="password"
+                    inputMode="numeric"
+                    placeholder="Enter Manager/Admin PIN"
+                    value={managerPin}
+                    onChange={(e) => setManagerPin(e.target.value)}
+                    className="h-9 text-xs bg-white dark:bg-slate-900"
+                  />
+                </div>
+              )
+            })()}
 
             {(corporateName || gstNumber || num(gstPercent) > 0 || booking.isCorporate) && (
               <div className="grid grid-cols-2 gap-3">

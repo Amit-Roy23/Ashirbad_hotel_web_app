@@ -67,7 +67,9 @@ interface Booking {
   id: string
   checkIn: string
   checkOut?: string | null
+  originalCheckOut?: string | null
   actualCheckOut?: string | null
+  autoExtendedDays?: number
   days: number
   ratePerDay: number
   advance: number
@@ -427,7 +429,15 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                         </div>
 
                         <p className="text-xs text-muted-foreground">
-                          {b.days} night{b.days > 1 ? 's' : ''} × {formatINR(b.ratePerDay)} = <b>{formatINR(estStay)}</b>
+                          {(() => {
+                            const autoDays = b.autoExtendedDays || 0
+                            const plannedNights = Math.max(1, b.days - autoDays)
+                            return autoDays > 0 ? (
+                              <span>Planned {plannedNights}n + {autoDays} auto-extended day(s) = {b.days}d</span>
+                            ) : (
+                              <span>{b.days} night{b.days > 1 ? 's' : ''}</span>
+                            )
+                          })()} × {formatINR(b.ratePerDay)} = <b>{formatINR(estStay)}</b>
                           {foodTotal > 0 && ` • Food: ${formatINR(foodTotal)}`}
                         </p>
                       </div>

@@ -21,10 +21,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap } from '@/lib/hotel-utils'
+import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
-import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight, Clock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface BookingInfo {
@@ -63,6 +64,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
   const [address, setAddress] = useState('')
   const [checkInDate, setCheckInDate] = useState(todayStr())
   const [checkOut, setCheckOut] = useState(addDays(1))
+  const [checkOutTime, setCheckOutTime] = useState('08:00')
   const [guestCount, setGuestCount] = useState('1')
   const [advance, setAdvance] = useState('')
   const [advanceMethod, setAdvanceMethod] = useState('CASH')
@@ -90,16 +92,18 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
       setNotes('')
       setAutoFilled(false)
       setError('')
+
+      api<Record<string, string>>('/api/settings')
+        .then((s) => {
+          if (s?.checkoutTime) setCheckOutTime(s.checkoutTime)
+        })
+        .catch(() => {})
     }
   }, [open, room, initialMode])
 
   const effectiveCheckIn = bookingMode === 'BOOKING' ? checkInDate : todayStr()
   const nights = useMemo(() => {
-    const diff = Math.ceil(
-      (new Date(checkOut + 'T11:00:00').getTime() - new Date(effectiveCheckIn + 'T12:00:00').getTime()) /
-        (1000 * 60 * 60 * 24)
-    )
-    return Math.max(1, diff)
+    return calcNights(effectiveCheckIn, checkOut)
   }, [effectiveCheckIn, checkOut])
 
   // Check if current selected date range conflicts with an existing booking
@@ -221,6 +225,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           address: address.trim() || undefined,
           checkIn: isAdvance ? checkInDate : new Date().toISOString(),
           checkOut,
+          checkOutTime: checkOutTime || '08:00',
           guestCount,
           advance: advance || '0',
           advanceMethod,
@@ -336,65 +341,100 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
         )}
 
         <div className="space-y-3.5 pt-1">
-          {/* Date selection with RoomDatePicker */}
+          {/* Date selection with RoomDatePicker and Checkout Time */}
           {bookingMode === 'BOOKING' ? (
-            <div className="grid grid-cols-2 gap-3">
-              <RoomDatePicker
-                id="ci-in"
-                label="Check-In Date *"
-                value={checkInDate}
-                mode="checkIn"
-                minDate={todayStr()}
-                roomBookings={room?.bookings}
-                roomNumber={room?.number}
-                onChange={(newIn) => {
-                  setCheckInDate(newIn)
-                  if (newIn >= checkOut) {
-                    setCheckOut(addDays(1, newIn))
-                  }
-                }}
-              />
-              <RoomDatePicker
-                id="ci-out"
-                label="Check-Out Date *"
-                value={checkOut}
-                mode="checkOut"
-                checkInValue={checkInDate}
-                roomBookings={room?.bookings}
-                roomNumber={room?.number}
-                onChange={(newOut) => {
-                  setCheckOut(newOut)
-                }}
-              />
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-2 gap-2.5">
+                <RoomDatePicker
+                  id="ci-in"
+                  label="Check-In Date *"
+                  value={checkInDate}
+                  mode="checkIn"
+                  minDate={todayStr()}
+                  roomBookings={room?.bookings}
+                  roomNumber={room?.number}
+                  onChange={(newIn) => {
+                    setCheckInDate(newIn)
+                    if (newIn >= checkOut) {
+                      setCheckOut(addDays(1, newIn))
+                    }
+                  }}
+                />
+                <RoomDatePicker
+                  id="ci-out"
+                  label="Check-Out Date *"
+                  value={checkOut}
+                  mode="checkOut"
+                  checkInValue={checkInDate}
+                  roomBookings={room?.bookings}
+                  roomNumber={room?.number}
+                  onChange={(newOut) => {
+                    setCheckOut(newOut)
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="checkout-time-booking" className="text-xs font-semibold shrink-0 text-foreground flex items-center gap-1">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground" /> Check-Out Time
+                </Label>
+                <Input
+                  id="checkout-time-booking"
+                  type="time"
+                  value={checkOutTime}
+                  onChange={(e) => setCheckOutTime(e.target.value)}
+                  className="h-8 text-xs w-32"
+                />
+              </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-foreground">Check-In</Label>
-                <div className="h-9 px-3 bg-muted/60 rounded-md border text-xs flex items-center font-medium text-emerald-700 dark:text-emerald-400">
-                  Today ({formatDate(todayStr())})
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold text-foreground">Check-In</Label>
+                  <div className="h-9 px-3 bg-muted/60 rounded-md border text-xs flex items-center font-medium text-emerald-700 dark:text-emerald-400">
+                    Today ({formatDate(todayStr())})
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <RoomDatePicker
+                    id="checkout"
+                    label="Expected Check-Out *"
+                    value={checkOut}
+                    mode="checkOut"
+                    checkInValue={todayStr()}
+                    roomBookings={room?.bookings}
+                    roomNumber={room?.number}
+                    onChange={(newOut) => {
+                      setCheckOut(newOut)
+                    }}
+                  />
                 </div>
               </div>
-              <RoomDatePicker
-                id="checkout"
-                label="Expected Check-Out *"
-                value={checkOut}
-                mode="checkOut"
-                checkInValue={todayStr()}
-                roomBookings={room?.bookings}
-                roomNumber={room?.number}
-                onChange={(newOut) => {
-                  setCheckOut(newOut)
-                }}
-              />
+              <div className="flex items-center gap-2">
+                <Label htmlFor="checkout-time-checkin" className="text-xs font-semibold shrink-0 text-foreground flex items-center gap-1">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground" /> Check-Out Time
+                </Label>
+                <Input
+                  id="checkout-time-checkin"
+                  type="time"
+                  value={checkOutTime}
+                  onChange={(e) => setCheckOutTime(e.target.value)}
+                  className="h-8 text-xs w-32"
+                />
+              </div>
             </div>
           )}
 
-          <p className="-mt-1 text-xs text-muted-foreground">
-            {nights} night{nights > 1 ? 's' : ''}
-            {room ? ` · ${formatINR(room.rate)} × ${nights} = ${formatINR(room.rate * nights)}` : ''}
-            {bookingMode === 'BOOKING' ? ' · room reserved with yellow status until arrival' : ''}
-          </p>
+          {/* Live stay & automatic extension rule line */}
+          <div className="rounded-md border border-slate-200 bg-slate-50/80 p-2 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300">
+            <span className="font-semibold text-foreground">
+              Check-out {formatDate(checkOut)}, {checkOutTime || '08:00'} · {nights} night{nights > 1 ? 's' : ''}
+              {room ? ` (${formatINR(room.rate * nights)})` : ''}.
+            </span>{' '}
+            <span className="text-[11px] text-muted-foreground block mt-0.5">
+              If the guest has not checked out by then, 1 extra day is added automatically every 24 hours.
+            </span>
+          </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="phone" className="text-xs font-semibold text-foreground">

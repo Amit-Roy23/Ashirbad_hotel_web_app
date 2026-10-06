@@ -13,8 +13,13 @@ import {
 } from '@/components/ui/dialog'
 import { CheckinDialog } from './checkin-dialog'
 import { BookingDialog } from './booking-dialog'
+import { GenerateBillDialog, type Bill } from './generate-bill-dialog'
+import { RoomFoodBillDialog } from './room-food-bill-dialog'
+import { PrintableInvoice } from './printable-invoice'
+import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { RoomStatusBadge } from './status-badge'
-import { api, apiAs, formatINR, formatDate, getRoomOperationalState } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState } from '@/lib/hotel-utils'
+import { nextAutoExtensionAt } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import {
@@ -43,6 +48,10 @@ import {
   CalendarPlus,
   Sparkles,
   PartyPopper,
+  AlertTriangle,
+  Clock,
+  Utensils,
+  Receipt,
 } from 'lucide-react'
 
 interface Guest {
@@ -56,6 +65,8 @@ interface Booking {
   id: string
   checkIn: string
   checkOut?: string
+  originalCheckOut?: string | null
+  autoExtendedDays?: number
   days: number
   guestCount: number
   ratePerDay: number
@@ -85,6 +96,17 @@ interface ArrivalDepartureRow {
   billOutstanding?: number
 }
 
+interface OverstayRow {
+  id: string
+  guestName: string
+  roomNumber: string
+  originalCheckOut: string | null
+  checkOut: string
+  autoExtendedDays: number
+  nextAutoExtensionAt: string
+  conflictWith?: { guestName: string; checkIn: string } | null
+}
+
 interface Stats {
   totalRooms: number
   vacant: number
@@ -97,6 +119,7 @@ interface Stats {
   activeGuests: number
   arrivals: ArrivalDepartureRow[]
   departures: ArrivalDepartureRow[]
+  overstays?: OverstayRow[]
   todayRevenue: number
   todayCash: number
   todayUpi: number
@@ -124,6 +147,7 @@ interface DashboardProps {
 export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardProps) {
   const [rooms, setRooms] = useState<Room[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
+  const [hotelSettings, setHotelSettings] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [checkinRoom, setCheckinRoom] = useState<Room | null>(null)
   const [viewRoom, setViewRoom] = useState<Room | null>(null)
@@ -132,13 +156,27 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
     roomId?: string
     initialCheckInDate?: string
   } | null>(null)
+  const [billBooking, setBillBooking] = useState<any | null>(null)
+  const [lastBill, setLastBill] = useState<Bill | null>(null)
+  const [foodBillState, setFoodBillState] = useState<{
+    open: boolean
+    roomId?: string
+    roomNumber?: string
+    bookingId?: string
+    guestName?: string
+  } | null>(null)
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
-      const [roomsData, statsData] = await Promise.all([api<Room[]>('/api/rooms'), api<Stats>('/api/stats')])
+      const [roomsData, statsData, settingsData] = await Promise.all([
+        api<Room[]>('/api/rooms'),
+        api<Stats>('/api/stats'),
+        api<Record<string, string>>('/api/settings').catch(() => ({})),
+      ])
       setRooms(roomsData)
       setStats(statsData)
+      if (settingsData) setHotelSettings(settingsData)
     } catch {
       // silent
     } finally {
@@ -493,6 +531,50 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
           </CardContent>
         </Card>
       </div>
+
+      {/* Overstay Alerts (from stats.overstays) */}
+      {stats?.overstays && stats.overstays.length > 0 && (
+        <Card className="border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20">
+          <CardContent className="p-4">
+            <div className="mb-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2 font-semibold text-amber-900 dark:text-amber-200">
+                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                <span>Active Overstays ({stats.overstays.length})</span>
+              </div>
+              <Badge variant="outline" className="border-amber-400 text-amber-800 dark:border-amber-700 dark:text-amber-300 text-[10px]">
+                Auto-Extended
+              </Badge>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {stats.overstays.map((o) => (
+                <div
+                  key={o.id}
+                  className="rounded-lg border border-amber-200 bg-background/90 p-2.5 text-xs space-y-1 dark:border-amber-800/80"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-foreground">Room {o.roomNumber} — {o.guestName}</span>
+                    <Badge variant="outline" className="border-amber-500 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200 text-[10px]">
+                      +{o.autoExtendedDays} day{o.autoExtendedDays > 1 ? 's' : ''} (auto)
+                    </Badge>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground flex justify-between">
+                    <span>Expected Out: <b className="text-foreground">{formatDateTime(o.checkOut)}</b></span>
+                    {o.originalCheckOut && <span>Orig: {formatDate(o.originalCheckOut)}</span>}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    Next auto-extension: {formatDateTime(o.nextAutoExtensionAt)}
+                  </div>
+                  {o.conflictWith && (
+                    <div className="rounded bg-red-100/90 dark:bg-red-950/60 border border-red-300 dark:border-red-800 p-1 text-[11px] text-red-900 dark:text-red-200 font-medium">
+                      ⚠️ Overlaps reservation for <b>{o.conflictWith.guestName}</b> starting <b>{formatDate(o.conflictWith.checkIn)}</b>!
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Banquet Events Quick Card */}
       <Card className="border-emerald-200 bg-gradient-to-r from-emerald-50/70 via-teal-50/40 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
@@ -874,8 +956,27 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Expected Out</span>
-                          <span className="font-semibold">{formatDate(opState.activeBooking.checkOut)}</span>
+                          <span className="font-semibold">{formatDateTime(opState.activeBooking.checkOut)}</span>
                         </div>
+                        {(opState.activeBooking.autoExtendedDays || 0) > 0 && (
+                          <div className="rounded border border-amber-300 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold flex items-center gap-1">
+                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                                OVERSTAY +{opState.activeBooking.autoExtendedDays} day{opState.activeBooking.autoExtendedDays! > 1 ? 's' : ''} (auto)
+                              </span>
+                            </div>
+                            {opState.activeBooking.originalCheckOut && (
+                              <div className="text-[11px] text-muted-foreground">
+                                Original check-out: {formatDateTime(opState.activeBooking.originalCheckOut)}
+                              </div>
+                            )}
+                            <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              Next auto-extension: {formatDateTime(nextAutoExtensionAt(opState.activeBooking, parseInt(hotelSettings.overstayGraceMinutes || '0', 10)))}
+                            </div>
+                          </div>
+                        )}
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Guests</span>
                           <span className="font-semibold">{opState.activeBooking.guestCount}</span>
@@ -887,24 +988,62 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                           </div>
                         )}
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Button
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                          onClick={() => {
-                            onNavigate({ tab: 'billing', q: currentRoom.number })
-                            setViewRoom(null)
-                          }}
-                        >
-                          <Printer className="mr-1.5 h-4 w-4" /> Print Bill
-                        </Button>
+                      {/* Billing & Action Options: Print Bill, Lodging Checkout & Fooding Bill */}
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                            onClick={() => {
+                              const b = opState.activeBooking || currentRoom?.bookings?.[0]
+                              if (b) {
+                                setBillBooking({
+                                  ...b,
+                                  ratePerDay: currentRoom.rate,
+                                  room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
+                                })
+                                setViewRoom(null)
+                              }
+                            }}
+                          >
+                            <Printer className="mr-1.5 h-4 w-4" /> Print Bill
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="font-semibold"
+                            onClick={() => {
+                              const b = opState.activeBooking || currentRoom?.bookings?.[0]
+                              if (b) {
+                                setBillBooking({
+                                  ...b,
+                                  ratePerDay: currentRoom.rate,
+                                  room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
+                                })
+                                setViewRoom(null)
+                              }
+                            }}
+                          >
+                            <Receipt className="mr-1.5 h-4 w-4" /> Lodging Checkout
+                          </Button>
+                        </div>
+
                         <Button
                           variant="outline"
+                          className="w-full border-amber-500/40 text-amber-900 hover:bg-amber-50 hover:text-amber-950 dark:border-amber-600/50 dark:text-amber-200 dark:hover:bg-amber-950/40 font-semibold"
                           onClick={() => {
-                            onNavigate({ tab: 'billing', q: currentRoom.number })
-                            setViewRoom(null)
+                            const b = opState.activeBooking || currentRoom?.bookings?.[0]
+                            if (b) {
+                              setFoodBillState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                roomNumber: currentRoom.number,
+                                bookingId: b.id,
+                                guestName: b.guest?.name,
+                              })
+                              setViewRoom(null)
+                            }
                           }}
                         >
-                          <Wallet className="mr-1.5 h-4 w-4" /> Billing &amp; Checkout
+                          <Utensils className="mr-1.5 h-4 w-4 text-amber-600 dark:text-amber-400" /> Fooding Bill (Room Service)
                         </Button>
                       </div>
 
@@ -994,6 +1133,72 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
           }}
         />
       )}
+
+      {/* Generate Bill Modal */}
+      <GenerateBillDialog
+        open={!!billBooking}
+        onOpenChange={(o) => !o && setBillBooking(null)}
+        booking={billBooking}
+        onSuccess={(bill) => {
+          setLastBill(bill)
+          load()
+          onDataChanged()
+        }}
+      />
+
+      {/* Room Fooding Bill Dialog */}
+      {foodBillState?.open && (
+        <RoomFoodBillDialog
+          open={foodBillState.open}
+          onOpenChange={(open) => !open && setFoodBillState(null)}
+          roomId={foodBillState.roomId}
+          roomNumber={foodBillState.roomNumber}
+          bookingId={foodBillState.bookingId}
+          guestName={foodBillState.guestName}
+          onOpenLodgingBill={() => {
+            const targetRoom = rooms.find((r) => r.id === foodBillState.roomId || r.number === foodBillState.roomNumber)
+            if (targetRoom && targetRoom.bookings?.[0]) {
+              const b = targetRoom.bookings[0]
+              setBillBooking({
+                ...b,
+                ratePerDay: targetRoom.rate,
+                room: { id: targetRoom.id, number: targetRoom.number, type: targetRoom.type },
+              })
+            }
+          }}
+          onOpenNewOrder={() => {
+            if (onNavigate) {
+              onNavigate({ tab: 'restaurant', q: foodBillState.roomNumber })
+            }
+          }}
+          onDataChanged={() => {
+            load()
+            onDataChanged()
+          }}
+        />
+      )}
+
+      {/* Printable Invoice Modal */}
+      <Dialog open={!!lastBill} onOpenChange={(o) => !o && setLastBill(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader className="print:hidden">
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5 text-emerald-600 dark:text-emerald-400" /> Bill {lastBill?.billNumber}
+            </DialogTitle>
+            <DialogDescription>{formatDateTime(lastBill?.createdAt)}</DialogDescription>
+          </DialogHeader>
+          {lastBill && (
+            <div className="space-y-3">
+              <PrintableInvoice bill={lastBill as any} settings={hotelSettings} />
+              <div className="flex gap-2 print:hidden">
+                <Button className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => triggerPrintInvoice(lastBill, hotelSettings)}>
+                  <Printer className="mr-2 h-4 w-4" /> Print / Save PDF
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

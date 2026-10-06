@@ -142,7 +142,9 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
         <div class="meta-row">Invoice No: <span class="val">${escapeHtml(bill.billNumber)}</span></div>
         <div class="meta-row">Date: <span class="val">${formatDateTime(bill.createdAt)}</span></div>
         <div class="meta-row">Room: <span class="val">${escapeHtml(roomNo)} ${roomDesc ? `(${escapeHtml(roomDesc)})` : ''}</span></div>
-        <div class="meta-row">Stay: <span class="val">${bill.days} night(s) • ${formatDate(bill.booking?.checkIn)} → ${formatDate(bill.booking?.actualCheckOut || bill.booking?.checkOut)}</span></div>
+        <div class="meta-row">Check-In: <span class="val">${formatDateTime(bill.booking?.checkIn)}</span></div>
+        <div class="meta-row">Check-Out: <span class="val">${formatDateTime(bill.booking?.actualCheckOut || bill.booking?.checkOut)}</span></div>
+        <div class="meta-row">Nights Billed: <span class="val">${bill.days} night(s)</span></div>
       </div>
       <div class="meta-col text-right">
         <div class="meta-row">Guest: <span class="val">${escapeHtml(guest?.name || 'Guest')}</span></div>

@@ -207,6 +207,8 @@ export interface BookingSummary {
   id: string
   checkIn: string | Date
   checkOut?: string | Date | null
+  originalCheckOut?: string | Date | null
+  autoExtendedDays?: number
   guestCount?: number
   days?: number
   ratePerDay?: number

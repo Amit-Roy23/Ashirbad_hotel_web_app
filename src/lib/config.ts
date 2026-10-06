@@ -28,4 +28,8 @@ export const DEFAULT_HOTEL_SETTINGS: Record<string, string> = {
   gstPercent: '12',
   invoicePrefix: 'INV',
   invoiceCounter: '1',
+  checkoutTime: '08:00',
+  overstayGraceMinutes: '0',
+  autoExtendEnabled: 'true',
 }
+

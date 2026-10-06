@@ -46,26 +46,29 @@ model Guest {
 }
 
 model Booking {
-  id             String      @id @default(cuid())
-  roomId         String
-  guestId        String
-  checkIn        DateTime    @default(now())
-  checkOut       DateTime?   // expected checkout
-  actualCheckOut DateTime?
-  days           Int         @default(1)
-  guestCount     Int         @default(1)
-  ratePerDay     Float       // actual rate for this booking
-  status         String      @default("ACTIVE") // ACTIVE | BOOKED | COMPLETED | CANCELLED
-  paymentStatus  String      @default("UNPAID") // UNPAID | PARTIAL | PAID
-  advance        Float       @default(0)
-  isCorporate    Boolean     @default(false)
-  notes          String?
-  room           Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  guest          Guest       @relation(fields: [guestId], references: [id], onDelete: Restrict)
-  bills          Bill[]
-  foodOrders     FoodOrder[]
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @default(now()) @updatedAt
+  id                String             @id @default(cuid())
+  roomId            String
+  guestId           String
+  checkIn           DateTime           @default(now())
+  checkOut          DateTime?          // expected checkout
+  originalCheckOut  DateTime?          // original planned checkout at booking creation
+  actualCheckOut    DateTime?
+  days              Int                @default(1)
+  autoExtendedDays  Int                @default(0)
+  guestCount        Int                @default(1)
+  ratePerDay        Float              // actual rate for this booking
+  status            String             @default("ACTIVE") // ACTIVE | BOOKED | COMPLETED | CANCELLED
+  paymentStatus     String             @default("UNPAID") // UNPAID | PARTIAL | PAID
+  advance           Float              @default(0)
+  isCorporate       Boolean            @default(false)
+  notes             String?
+  room              Room               @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  guest             Guest              @relation(fields: [guestId], references: [id], onDelete: Restrict)
+  bills             Bill[]
+  foodOrders        FoodOrder[]
+  extensions        BookingExtension[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @default(now()) @updatedAt
 
   @@index([roomId])
   @@index([guestId])
@@ -74,6 +77,23 @@ model Booking {
   @@index([checkIn])
   @@index([checkOut])
   @@index([createdAt])
+}
+
+model BookingExtension {
+  id           String   @id @default(cuid())
+  bookingId    String
+  type         String   // AUTO | MANUAL
+  fromCheckOut DateTime
+  toCheckOut   DateTime
+  fromDays     Int
+  toDays       Int
+  reason       String?
+  createdBy    String?  // 'SYSTEM' for AUTO
+  approvedBy   String?
+  createdAt    DateTime @default(now())
+  booking      Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
 }
 
 model Bill {

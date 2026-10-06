@@ -18,9 +18,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
 import { CheckinDialog } from './checkin-dialog'
 import { GenerateBillDialog, type Bill } from './generate-bill-dialog'
 import { EditBillDialog } from './edit-bill-dialog'
+import { RoomFoodBillDialog } from './room-food-bill-dialog'
 import { PrintableInvoice } from './printable-invoice'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { BookingDialog } from './booking-dialog'
@@ -28,6 +30,7 @@ import { RoomStatusBadge } from './status-badge'
 import { TableControls } from './table-controls'
 import { Separator } from '@/components/ui/separator'
 import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState, todayStr, addDays, toDateStr } from '@/lib/hotel-utils'
+import { nextAutoExtensionAt } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import {
@@ -51,6 +54,9 @@ import {
   ChevronRight,
   CalendarPlus,
   Sparkles,
+  AlertTriangle,
+  Clock,
+  Utensils,
 } from 'lucide-react'
 
 interface Guest {
@@ -64,6 +70,8 @@ interface Booking {
   id: string
   checkIn: string
   checkOut?: string | null
+  originalCheckOut?: string | null
+  autoExtendedDays?: number
   days: number
   guest: Guest
   advance: number
@@ -123,6 +131,13 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     open: boolean
     roomId?: string
     initialCheckInDate?: string
+  } | null>(null)
+  const [foodBillState, setFoodBillState] = useState<{
+    open: boolean
+    roomId?: string
+    roomNumber?: string
+    bookingId?: string
+    guestName?: string
   } | null>(null)
 
   useEffect(() => {
@@ -1150,46 +1165,89 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Expected Out</span>
-                          <span className="font-semibold">{formatDate(opState.activeBooking.checkOut)}</span>
+                          <span className="font-semibold">{formatDateTime(opState.activeBooking.checkOut)}</span>
                         </div>
+                        {(opState.activeBooking.autoExtendedDays || 0) > 0 && (
+                          <div className="rounded border border-amber-300 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold flex items-center gap-1">
+                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                                OVERSTAY +{opState.activeBooking.autoExtendedDays} day{opState.activeBooking.autoExtendedDays! > 1 ? 's' : ''} (auto)
+                              </span>
+                            </div>
+                            {opState.activeBooking.originalCheckOut && (
+                              <div className="text-[11px] text-muted-foreground">
+                                Original check-out: {formatDateTime(opState.activeBooking.originalCheckOut)}
+                              </div>
+                            )}
+                            <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              Next auto-extension: {formatDateTime(nextAutoExtensionAt(opState.activeBooking, parseInt(settings.overstayGraceMinutes || '0', 10)))}
+                            </div>
+                          </div>
+                        )}
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Advance</span>
                           <span className="font-semibold">{formatINR(opState.activeBooking.advance)}</span>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2">
-                        <Button
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                          onClick={() => {
-                            if (currentRoom?.bookings?.[0]) {
-                              const b = currentRoom.bookings[0]
-                              setBillBooking({
-                                ...b,
-                                ratePerDay: currentRoom.rate,
-                                room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
-                              })
-                              setViewRoom(null)
-                            }
-                          }}
-                        >
-                          <Printer className="mr-1.5 h-4 w-4" /> Print Bill
-                        </Button>
+                      {/* Billing & Action Options: Print Bill, Lodging Checkout & Fooding Bill */}
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                            onClick={() => {
+                              const b = opState.activeBooking || currentRoom?.bookings?.[0]
+                              if (b) {
+                                setBillBooking({
+                                  ...b,
+                                  ratePerDay: currentRoom.rate,
+                                  room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
+                                })
+                                setViewRoom(null)
+                              }
+                            }}
+                          >
+                            <Printer className="mr-1.5 h-4 w-4" /> Print Bill
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="font-semibold"
+                            onClick={() => {
+                              const b = opState.activeBooking || currentRoom?.bookings?.[0]
+                              if (b) {
+                                setBillBooking({
+                                  ...b,
+                                  ratePerDay: currentRoom.rate,
+                                  room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
+                                })
+                                setViewRoom(null)
+                              }
+                            }}
+                          >
+                            <Receipt className="mr-1.5 h-4 w-4" /> Lodging Checkout
+                          </Button>
+                        </div>
+
                         <Button
                           variant="outline"
+                          className="w-full border-amber-500/40 text-amber-900 hover:bg-amber-50 hover:text-amber-950 dark:border-amber-600/50 dark:text-amber-200 dark:hover:bg-amber-950/40 font-semibold"
                           onClick={() => {
-                            if (currentRoom?.bookings?.[0]) {
-                              const b = currentRoom.bookings[0]
-                              setBillBooking({
-                                ...b,
-                                ratePerDay: currentRoom.rate,
-                                room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
+                            const b = opState.activeBooking || currentRoom?.bookings?.[0]
+                            if (b) {
+                              setFoodBillState({
+                                open: true,
+                                roomId: currentRoom.id,
+                                roomNumber: currentRoom.number,
+                                bookingId: b.id,
+                                guestName: b.guest?.name,
                               })
                               setViewRoom(null)
                             }
                           }}
                         >
-                          <Wallet className="mr-1.5 h-4 w-4" /> Billing / Checkout
+                          <Utensils className="mr-1.5 h-4 w-4 text-amber-600 dark:text-amber-400" /> Fooding Bill (Room Service)
                         </Button>
                       </div>
 
@@ -1465,6 +1523,38 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
           initialCheckInDate={bookingDialogState.initialCheckInDate}
           onSuccess={() => {
             setBookingDialogState(null)
+            load()
+            onDataChanged()
+          }}
+        />
+      )}
+
+      {/* Room Fooding Bill Dialog */}
+      {foodBillState?.open && (
+        <RoomFoodBillDialog
+          open={foodBillState.open}
+          onOpenChange={(open) => !open && setFoodBillState(null)}
+          roomId={foodBillState.roomId}
+          roomNumber={foodBillState.roomNumber}
+          bookingId={foodBillState.bookingId}
+          guestName={foodBillState.guestName}
+          onOpenLodgingBill={() => {
+            const targetRoom = rooms.find((r) => r.id === foodBillState.roomId || r.number === foodBillState.roomNumber)
+            if (targetRoom && targetRoom.bookings?.[0]) {
+              const b = targetRoom.bookings[0]
+              setBillBooking({
+                ...b,
+                ratePerDay: targetRoom.rate,
+                room: { id: targetRoom.id, number: targetRoom.number, type: targetRoom.type },
+              })
+            }
+          }}
+          onOpenNewOrder={() => {
+            if (onNavigate) {
+              onNavigate({ tab: 'restaurant', q: foodBillState.roomNumber })
+            }
+          }}
+          onDataChanged={() => {
             load()
             onDataChanged()
           }}
