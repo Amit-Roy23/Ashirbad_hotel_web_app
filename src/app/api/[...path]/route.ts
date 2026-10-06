@@ -1,5 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import {
+  getBanquetHalls,
+  createBanquetHall,
+  updateBanquetHall,
+  deleteBanquetHall,
+  getBanquetBookings,
+  createBanquetBooking,
+  updateBanquetBooking,
+  deleteBanquetBooking,
+  getBanquetBills,
+  createBanquetBill,
+  addBanquetBillPayment,
+  deleteBanquetBill,
+  getBanquetStats,
+} from '@/lib/banquet-service'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -2671,6 +2686,112 @@ async function dispatch(
       if (method === 'GET') return await listAudit(req)
       if (method === 'DELETE') return await deleteAudit(req, user)
       break
+    case 'banquet-halls':
+      if (method === 'GET') return NextResponse.json(await getBanquetHalls())
+      if (method === 'POST') {
+        const h = await createBanquetHall(body as any)
+        await logAudit('BANQUET_CREATE', 'BanquetHall', h.id, `Created banquet hall ${h.name}`, user)
+        return NextResponse.json(h)
+      }
+      if (method === 'PATCH') {
+        const id = String(body.id || url.searchParams.get('id') || '')
+        if (!id) return NextResponse.json({ error: 'Hall ID is required' }, { status: 400 })
+        const h = await updateBanquetHall(id, body as any)
+        await logAudit('BANQUET_UPDATE', 'BanquetHall', id, `Updated banquet hall ${h.name}`, user)
+        return NextResponse.json(h)
+      }
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return NextResponse.json({ error: 'Hall ID is required' }, { status: 400 })
+        await deleteBanquetHall(id)
+        await logAudit('BANQUET_UPDATE', 'BanquetHall', id, `Deleted banquet hall`, user)
+        return NextResponse.json({ success: true })
+      }
+      break
+    case 'banquet-bookings':
+      if (method === 'GET') {
+        return NextResponse.json(
+          await getBanquetBookings({
+            from: url.searchParams.get('from') || undefined,
+            to: url.searchParams.get('to') || undefined,
+            status: url.searchParams.get('status') || undefined,
+            search: url.searchParams.get('search') || undefined,
+            hallId: url.searchParams.get('hallId') || undefined,
+          })
+        )
+      }
+      if (method === 'POST') {
+        const b = await createBanquetBooking(body as any, user.name)
+        await logAudit('BANQUET_CREATE', 'BanquetBooking', b.id, `Created banquet booking ${b.bookingNumber} for ${b.customerName}`, user)
+        return NextResponse.json(b)
+      }
+      if (method === 'PATCH') {
+        const id = String(body.id || url.searchParams.get('id') || '')
+        if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+        const b = await updateBanquetBooking(id, body as any, user.name)
+        await logAudit('BANQUET_UPDATE', 'BanquetBooking', id, `Updated banquet booking ${b.bookingNumber}`, user)
+        return NextResponse.json(b)
+      }
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+        await deleteBanquetBooking(id)
+        await logAudit('BANQUET_UPDATE', 'BanquetBooking', id, `Deleted banquet booking`, user)
+        return NextResponse.json({ success: true })
+      }
+      break
+    case 'banquet-bills':
+      if (method === 'GET') {
+        return NextResponse.json(
+          await getBanquetBills({
+            from: url.searchParams.get('from') || undefined,
+            to: url.searchParams.get('to') || undefined,
+            search: url.searchParams.get('search') || undefined,
+          })
+        )
+      }
+      if (method === 'POST') {
+        if (body.action === 'payment' || body.paymentOnly) {
+          const id = String(body.id || body.billId || '')
+          if (!id) return NextResponse.json({ error: 'Bill ID is required' }, { status: 400 })
+          const updated = await addBanquetBillPayment(id, body as any, user.name)
+          await logAudit('BANQUET_BILL', 'BanquetBill', id, `Recorded payment on banquet bill ${updated.billNumber}`, user)
+          return NextResponse.json(updated)
+        }
+        const b = await createBanquetBill(body as any, user.name, String(body.managerName || user.name))
+        await logAudit('BANQUET_BILL', 'BanquetBill', b.id, `Generated banquet invoice ${b.billNumber} for ${b.customerName}`, user)
+        return NextResponse.json(b)
+      }
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return NextResponse.json({ error: 'Bill ID is required' }, { status: 400 })
+        await deleteBanquetBill(id)
+        await logAudit('BANQUET_BILL', 'BanquetBill', id, `Deleted banquet bill`, user)
+        return NextResponse.json({ success: true })
+      }
+      break
+    case 'banquet-stats':
+      if (method === 'GET') return NextResponse.json(await getBanquetStats())
+      break
+    case 'banquet': {
+      const sub = segments[1] || ''
+      if (sub === 'halls') {
+        if (method === 'GET') return NextResponse.json(await getBanquetHalls())
+        if (method === 'POST') return NextResponse.json(await createBanquetHall(body as any))
+      }
+      if (sub === 'bookings') {
+        if (method === 'GET') return NextResponse.json(await getBanquetBookings())
+        if (method === 'POST') return NextResponse.json(await createBanquetBooking(body as any, user.name))
+      }
+      if (sub === 'bills') {
+        if (method === 'GET') return NextResponse.json(await getBanquetBills())
+        if (method === 'POST') return NextResponse.json(await createBanquetBill(body as any, user.name))
+      }
+      if (sub === 'stats') {
+        if (method === 'GET') return NextResponse.json(await getBanquetStats())
+      }
+      break
+    }
     case 'expense-categories':
       if (method === 'GET') return await listExpenseCategories()
       if (method === 'POST') return await createExpenseCategory(body)

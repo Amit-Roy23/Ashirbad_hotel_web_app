@@ -307,6 +307,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       <TableHead>Room</TableHead>
                       <TableHead>Actual</TableHead>
                       <TableHead>Billed</TableHead>
+                      <TableHead>Food</TableHead>
                       <TableHead>GST</TableHead>
                       <TableHead>Invoice Total</TableHead>
                       <TableHead>Internal Total</TableHead>
@@ -316,7 +317,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                   <TableBody>
                     {data.invoices.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={10} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={11} className="py-6 text-center text-sm text-muted-foreground">
                           No invoices in this range.
                         </TableCell>
                       </TableRow>
@@ -338,6 +339,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                         <TableCell className={`text-xs ${r.isCustom ? 'font-bold text-violet-700 dark:text-violet-300' : ''}`}>
                           {formatINR(r.billedRoomTotal)}
                         </TableCell>
+                        <TableCell className="text-xs">{formatINR(r.foodTotal)}</TableCell>
                         <TableCell className="text-xs">{formatINR(r.gst)}</TableCell>
                         <TableCell className="text-xs font-bold">{formatINR(r.grandTotal)}</TableCell>
                         <TableCell className="text-xs font-medium text-muted-foreground">{formatINR(r.internalTotal)}</TableCell>

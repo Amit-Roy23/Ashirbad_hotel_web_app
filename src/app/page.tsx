@@ -13,6 +13,7 @@ import { StaffTab } from '@/components/hotel/staff-tab'
 import { ExpensesTab } from '@/components/hotel/expenses-tab'
 import { ReportsTab } from '@/components/hotel/reports-tab'
 import { SettingsTab } from '@/components/hotel/settings-tab'
+import { BanquetTab } from '@/components/hotel/banquet-tab'
 import { GlobalSearch } from '@/components/hotel/global-search'
 import { LoginDialog } from '@/components/hotel/login-dialog'
 import { UserProvider, useUser } from '@/components/hotel/user-context'
@@ -31,6 +32,7 @@ import {
   TrendingDown,
   FileBarChart,
   Settings as SettingsIcon,
+  PartyPopper,
   Sun,
   Moon,
   Search,
@@ -46,6 +48,7 @@ const TABS = [
   { id: 'dashboard', label: 'Dashboard', component: Dashboard, icon: LayoutGrid },
   { id: 'rooms', label: 'Rooms', component: RoomsTab, icon: BedDouble },
   { id: 'bookings', label: 'Bookings', component: BookingsTab, icon: ClipboardList },
+  { id: 'banquet', label: 'Banquet', component: BanquetTab, icon: PartyPopper },
   { id: 'guests', label: 'Guests', component: GuestsTab, icon: Contact },
   { id: 'billing', label: 'Billing', component: BillingTab, icon: Receipt },
   { id: 'restaurant', label: 'Restaurant', component: RestaurantTab, icon: UtensilsCrossed },
@@ -64,7 +67,7 @@ interface Stats {
   todayRevenue: number
 }
 
-const MOBILE_PRIMARY: TabId[] = ['dashboard', 'bookings', 'billing', 'restaurant']
+const MOBILE_PRIMARY: TabId[] = ['dashboard', 'bookings', 'banquet', 'billing', 'restaurant']
 const MOBILE_MORE: TabId[] = ['rooms', 'guests', 'payments', 'staff', 'expenses', 'reports', 'settings']
 
 interface NavTarget {
@@ -125,6 +128,8 @@ function Shell() {
         return <RoomsTab {...props} onNavigate={onNavigate} />
       case 'bookings':
         return <BookingsTab {...props} />
+      case 'banquet':
+        return <BanquetTab {...props} />
       case 'guests':
         return <GuestsTab {...props} />
       case 'billing':
@@ -241,7 +246,7 @@ function Shell() {
 
         {/* Desktop tabs */}
         <nav className="hidden border-t sm:block" aria-label="Main navigation">
-          <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4">
+          <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 no-scrollbar">
             {TABS.map((t) => {
               const Icon = t.icon
               return (

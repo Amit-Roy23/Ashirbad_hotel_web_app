@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -41,6 +42,7 @@ import {
   Trash2,
   CalendarPlus,
   Sparkles,
+  PartyPopper,
 } from 'lucide-react'
 
 interface Guest {
@@ -252,6 +254,14 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
         </Button>
         <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => onNavigate({ tab: 'bookings' })}>
           <UserPlus className="h-4 w-4" /> New Booking
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="justify-start gap-2 border-emerald-300 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+          onClick={() => onNavigate({ tab: 'banquet' })}
+        >
+          <PartyPopper className="h-4 w-4 text-emerald-600" /> Banquet &amp; Events
         </Button>
         <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => onNavigate({ tab: 'guests' })}>
           <Search className="h-4 w-4" /> Guest Search
@@ -484,9 +494,35 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
         </Card>
       </div>
 
+      {/* Banquet Events Quick Card */}
+      <Card className="border-emerald-200 bg-gradient-to-r from-emerald-50/70 via-teal-50/40 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-full bg-emerald-600 p-2.5 text-white shadow-sm">
+              <PartyPopper className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="font-bold text-sm text-foreground">Banquet &amp; Event Halls</h4>
+                <Badge className="bg-emerald-600 text-[10px]">Active Venue</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Weddings, receptions, parties, corporate conferences &amp; dedicated banquet billing
+              </p>
+            </div>
+          </div>
 
-
-      {/* Check-in dialog */}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-sm gap-1.5"
+              onClick={() => onNavigate({ tab: 'banquet' })}
+            >
+              <PartyPopper className="h-3.5 w-3.5" /> Manage Banquet &amp; Bills
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       <CheckinDialog
         open={!!checkinRoom}
         onOpenChange={(open) => !open && setCheckinRoom(null)}

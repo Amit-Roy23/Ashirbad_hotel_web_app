@@ -245,8 +245,8 @@ model ExpenseCategory {
 
 model AuditLog {
   id        String   @id @default(cuid())
-  action    String   // CUSTOM_BILL | BILL_CREATE | BOOKING_CREATE | BOOKING_CANCEL | CHECKIN | CHECKOUT | EXTEND | CHANGE_ROOM | PAYMENT | ORDER | ORDER_PAID | USER_CREATE | USER_UPDATE | SETTINGS | STAFF_PAYMENT | LEDGER_INCOME | EXPENSE
-  entity    String   // Booking | Bill | Room | FoodOrder | Setting | User | StaffPayment | LedgerEntry
+  action    String   // CUSTOM_BILL | BILL_CREATE | BOOKING_CREATE | BOOKING_CANCEL | CHECKIN | CHECKOUT | EXTEND | CHANGE_ROOM | PAYMENT | ORDER | ORDER_PAID | USER_CREATE | USER_UPDATE | SETTINGS | STAFF_PAYMENT | LEDGER_INCOME | EXPENSE | BANQUET_CREATE | BANQUET_BILL | BANQUET_UPDATE
+  entity    String   // Booking | Bill | Room | FoodOrder | Setting | User | StaffPayment | LedgerEntry | BanquetBooking | BanquetBill | BanquetHall
   entityId  String?
   details   String?  // human-readable summary
   userName  String?
@@ -256,4 +256,106 @@ model AuditLog {
   @@index([action])
   @@index([entity])
   @@index([createdAt])
+}
+
+model BanquetHall {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  capacity    Int              @default(100)
+  baseRate    Float            @default(15000)
+  rateType    String           @default("PER_EVENT") // PER_EVENT | PER_DAY | PER_HOUR
+  status      String           @default("AVAILABLE") // AVAILABLE | OCCUPIED | MAINTENANCE
+  amenities   String?          // e.g. "AC, Stage, Projector, Sound & Mic, DJ Lighting"
+  description String?
+  bookings    BanquetBooking[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @default(now()) @updatedAt
+
+  @@index([status])
+}
+
+model BanquetBooking {
+  id              String        @id @default(cuid())
+  bookingNumber   String        @unique
+  hallId          String
+  customerName    String
+  customerPhone   String
+  customerEmail   String?
+  customerAddress String?
+  companyName     String?
+  gstNumber       String?
+  eventName       String        // Wedding, Reception, Birthday, Conference, Seminar, etc.
+  eventDate       DateTime
+  endDate         DateTime?
+  slot            String        @default("EVENING") // MORNING | EVENING | FULL_DAY | CUSTOM
+  guestCount      Int           @default(100)
+  hallRent        Float         @default(0)
+  foodRatePerPlate Float        @default(0)
+  foodPackageName String?
+  foodTotal       Float         @default(0)
+  decorCharges    Float         @default(0)
+  extraCharges    Float         @default(0)
+  discount        Float         @default(0)
+  totalEstimated  Float         @default(0)
+  advancePaid     Float         @default(0)
+  status          String        @default("CONFIRMED") // ENQUIRY | CONFIRMED | IN_PROGRESS | COMPLETED | CANCELLED
+  paymentStatus   String        @default("UNPAID") // UNPAID | PARTIAL | PAID
+  notes           String?
+  createdBy       String?
+  hall            BanquetHall   @relation(fields: [hallId], references: [id], onDelete: Restrict)
+  bills           BanquetBill[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @default(now()) @updatedAt
+
+  @@index([hallId])
+  @@index([eventDate])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([customerPhone])
+  @@index([bookingNumber])
+}
+
+model BanquetBill {
+  id               String         @id @default(cuid())
+  billNumber       String         @unique
+  banquetBookingId String
+  eventDate        DateTime       @default(now())
+  customerName     String
+  customerPhone    String
+  customerAddress  String?
+  companyName      String?
+  gstNumber        String?
+  eventName        String
+  hallName         String
+  slot             String         @default("EVENING")
+  guestCount       Int            @default(100)
+  hallRent         Float          @default(0)
+  foodCharges      Float          @default(0)
+  decorCharges     Float          @default(0)
+  soundAvCharges   Float          @default(0)
+  extraCharges     Float          @default(0)
+  discount         Float          @default(0)
+  taxableAmount    Float          @default(0)
+  gstPercent       Float          @default(18)
+  gstAmount        Float          @default(0)
+  grandTotal       Float          @default(0)
+  advanceApplied   Float          @default(0)
+  payCash          Float          @default(0)
+  payUpi           Float          @default(0)
+  payCard          Float          @default(0)
+  payBank          Float          @default(0)
+  paymentStatus    String         @default("PAID") // PAID | PARTIAL | UNPAID
+  status           String         @default("FINAL") // DRAFT | FINAL
+  notes            String?
+  terms            String?
+  createdBy        String?
+  approvedBy       String?
+  booking          BanquetBooking @relation(fields: [banquetBookingId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @default(now()) @updatedAt
+
+  @@index([banquetBookingId])
+  @@index([billNumber])
+  @@index([createdAt])
+  @@index([status])
 }
