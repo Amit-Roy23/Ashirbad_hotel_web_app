@@ -51,6 +51,8 @@ interface Bill {
 interface Order {
   id: string
   createdAt: string
+  updatedAt?: string
+  status: string
   total: number
   bookingId?: string | null
   tableNo?: string | null
@@ -75,7 +77,10 @@ interface TabProps {
   settings?: Record<string, string>
 }
 
-export function PaymentsTab({ refreshKey, onDataChanged, settings = {} }: TabProps) {
+export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp }: TabProps) {
+  const [loadedSettings, setLoadedSettings] = useState<Record<string, string>>({})
+  // Printed invoices need the hotel's name / GSTIN from Settings
+  const settings = settingsProp || loadedSettings
   const [bills, setBills] = useState<Bill[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [ledger, setLedger] = useState<LedgerEntry[]>([])
@@ -90,11 +95,13 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings = {} }: TabPro
 
   const load = useCallback(async () => {
     try {
-      const [b, o, l] = await Promise.all([
+      const [b, o, l, s] = await Promise.all([
         apiList<Bill>('/api/bills'),
         apiList<Order>('/api/orders'),
         apiList<LedgerEntry>('/api/ledger?type=INCOME'),
+        api<Record<string, string>>('/api/settings').catch(() => ({})),
       ])
+      setLoadedSettings(s)
       setBills(b)
       setOrders(o)
       setLedger(l)
@@ -128,20 +135,24 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings = {} }: TabPro
         })
       }
     }
+    // Payment method of a directly-settled order is recorded on its ledger row
+    const orderMethod = new Map<string, string>()
+    for (const l of ledger) if (l.category === 'FOOD' && l.refId) orderMethod.set(l.refId, l.method)
     for (const o of orders) {
-      // direct restaurant payments only (orders not merged into a room bill)
-      if (o.bookingId) continue
+      // Only money actually received at the restaurant: PENDING is unpaid, ADDED_TO_BILL is collected via the room bill
+      if (o.status !== 'PAID') continue
+      const method = orderMethod.get(o.id) || 'CASH'
       out.push({
         id: `order-${o.id}`,
         source: 'ORDER',
-        ref: o.tableNo ? `Table ${o.tableNo}` : 'Restaurant',
-        date: o.createdAt,
+        ref: o.tableNo ? `Table ${o.tableNo}` : o.room ? `Room ${o.room.number}` : 'Restaurant',
+        date: o.updatedAt || o.createdAt,
         guest: '—',
         detail: o.items.map((i) => `${i.name} ×${i.quantity}`).join(', '),
         amount: o.total,
-        cash: o.total,
-        upi: 0,
-        card: 0,
+        cash: method === 'CASH' ? o.total : 0,
+        upi: method === 'UPI' ? o.total : 0,
+        card: method === 'CARD' ? o.total : 0,
       })
     }
     for (const l of ledger.filter((e) => e.category === 'ADVANCE')) {

@@ -112,8 +112,10 @@ export function GenerateBillDialog({
     if (open && booking) {
       const initDays = booking.days || 1
       const initRoom = booking.ratePerDay * initDays
+      const initFood = (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
+      const initTaxable = initRoom + initFood
       const gst = parseFloat(defaultGstPercent) || 0
-      const initGrand = Math.round((initRoom + (initRoom * gst) / 100) * 100) / 100
+      const initGrand = Math.round((initTaxable + (initTaxable * gst) / 100) * 100) / 100
       const initAdv = Math.min(booking.advance || 0, initGrand)
       const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
 
@@ -125,7 +127,8 @@ export function GenerateBillDialog({
       setGstPercent(defaultGstPercent)
       setExtraCharges('0')
       setDiscount('0')
-      setIncludeFood(false)
+      // Pending room-service must land on this bill; checkout is refused if it would be left behind
+      setIncludeFood((booking.foodOrders || []).some((o) => o.total > 0))
       setPayCash(String(initPayable))
       setPayUpi('0')
       setPayCard('0')

@@ -49,8 +49,8 @@ const EMPTY: SearchResults = { guests: [], bookings: [], bills: [], rooms: [] }
 let globalIndexCache: SearchResults | null = null
 let indexPromise: Promise<SearchResults> | null = null
 
-function fetchSearchIndex(): Promise<SearchResults> {
-  if (globalIndexCache) return Promise.resolve(globalIndexCache)
+function fetchSearchIndex(force = false): Promise<SearchResults> {
+  if (globalIndexCache && !force) return Promise.resolve(globalIndexCache)
   if (!indexPromise) {
     indexPromise = fetch('/api/search?index=1', { cache: 'no-store' })
       .then((r) => r.json())
@@ -80,9 +80,11 @@ export function GlobalSearch({
   const [loading, setLoading] = React.useState(false)
   const localIndexRef = React.useRef<SearchResults>(globalIndexCache || EMPTY)
 
-  // Pre-fetch search index on mount or when dialog opens
+  // Refresh the index every time the dialog opens so new guests, bookings, bills and
+  // room status changes are searchable without a page reload (cached copy is shown meanwhile)
   React.useEffect(() => {
-    fetchSearchIndex().then((data) => {
+    if (!open) return
+    fetchSearchIndex(true).then((data) => {
       localIndexRef.current = data
     })
   }, [open])

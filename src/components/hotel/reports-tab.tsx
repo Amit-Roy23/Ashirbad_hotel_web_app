@@ -151,7 +151,7 @@ function StatCard({
   )
 }
 
-export function ReportsTab({ refreshKey }: TabProps) {
+export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
   const [data, setData] = useState<ReportData | null>(null)
   const [loading, setLoading] = useState(true)
   const [from, setFrom] = useState(() => {
@@ -188,6 +188,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
         alert(res.error)
       } else {
         await load()
+        onDataChanged?.()
       }
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Could not delete item')

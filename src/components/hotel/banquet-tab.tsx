@@ -166,7 +166,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
       loadData()
       onDataChanged()
     } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not save banquet hall' })
+      toast({ variant: 'destructive', title: 'Error', description: err instanceof Error ? err.message : 'Could not save banquet hall' })
     } finally {
       setHallBusy(false)
     }
@@ -181,7 +181,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
       loadData()
       onDataChanged()
     } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete booking' })
+      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Could not delete booking' })
     }
   }
 
@@ -193,7 +193,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
       loadData()
       onDataChanged()
     } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete banquet invoice' })
+      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Could not delete banquet invoice' })
     }
   }
 
@@ -208,7 +208,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
       loadData()
       onDataChanged()
     } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to update status' })
+      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Failed to update status' })
     }
   }
 
@@ -414,6 +414,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       <Button
                         size="sm"
                         className="h-7 text-xs flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                        disabled={b.status === 'COMPLETED' || b.status === 'CANCELLED'}
+                        title={b.status === 'COMPLETED' ? 'Already invoiced — see Billing & Invoices' : undefined}
                         onClick={() => {
                           setBillingBooking(b)
                           setEditingBill(null)
@@ -625,12 +627,13 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                           <Button
                             size="sm"
                             className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white gap-1 px-2"
+                            disabled={b.status === 'COMPLETED' || b.status === 'CANCELLED'}
                             onClick={() => {
                               setBillingBooking(b)
                               setEditingBill(null)
                               setBillDialogOpen(true)
                             }}
-                            title="Generate Final Bill"
+                            title={b.status === 'COMPLETED' ? 'Already invoiced — see Billing & Invoices' : 'Generate Final Bill'}
                           >
                             <Receipt className="h-3 w-3" /> Bill
                           </Button>

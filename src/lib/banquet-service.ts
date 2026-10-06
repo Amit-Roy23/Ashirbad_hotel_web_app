@@ -1,9 +1,80 @@
 import { prisma } from '@/lib/prisma'
+import { istDateStr } from '@/lib/stay'
 import { BanquetBooking, BanquetBill, BanquetHall, BanquetStats } from '@/types/banquet'
 import crypto from 'crypto'
 
 function genId(): string {
   return 'bnq_' + crypto.randomBytes(12).toString('hex')
+}
+
+/** Error whose message is safe to show to the user (returned as HTTP 400) */
+export class BanquetError extends Error {}
+
+/**
+ * Next sequence number for a `PREFIX-0001` style number. Uses the highest existing number,
+ * not the row count, so deleting a record never makes the next number collide.
+ */
+async function nextNumber(table: 'BanquetBooking' | 'BanquetBill', column: 'bookingNumber' | 'billNumber', prefix: string, start: number) {
+  const rows = await prisma.$queryRawUnsafe<{ n: number | null }[]>(
+    `SELECT MAX(CAST(SUBSTRING("${column}" FROM '([0-9]+)$') AS INTEGER))::int AS n FROM "${table}" WHERE "${column}" LIKE $1`,
+    `${prefix}%`
+  )
+  const max = rows?.[0]?.n
+  return `${prefix}${String(max ? max + 1 : start).padStart(4, '0')}`
+}
+
+const HOLDING_STATUSES = ['CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
+
+function slotsClash(a: string, b: string) {
+  return a === b || a === 'FULL_DAY' || b === 'FULL_DAY'
+}
+
+/** A hall can host one event per slot per day (FULL_DAY blocks the whole day) */
+async function assertHallAvailable(opts: { hallId: string; eventDate: Date; slot: string; status: string; excludeId?: string }) {
+  const hallRows = await prisma.$queryRawUnsafe<any[]>('SELECT "name", "status" FROM "BanquetHall" WHERE "id" = $1', opts.hallId)
+  const hall = hallRows?.[0]
+  if (!hall) throw new BanquetError('Selected banquet hall not found')
+  if (!HOLDING_STATUSES.includes(opts.status)) return
+  if (hall.status === 'MAINTENANCE') throw new BanquetError(`${hall.name} is under maintenance`)
+
+  const dayStr = istDateStr(opts.eventDate)
+  const others = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT "id", "bookingNumber", "customerName", "eventDate", "slot" FROM "BanquetBooking"
+     WHERE "hallId" = $1 AND "status" IN ('CONFIRMED', 'IN_PROGRESS', 'COMPLETED') AND "id" <> $2
+       AND "eventDate" BETWEEN $3 AND $4`,
+    opts.hallId,
+    opts.excludeId || '',
+    new Date(opts.eventDate.getTime() - 2 * 24 * 60 * 60 * 1000),
+    new Date(opts.eventDate.getTime() + 2 * 24 * 60 * 60 * 1000)
+  )
+  const clash = others.find((o) => istDateStr(o.eventDate) === dayStr && slotsClash(o.slot, opts.slot))
+  if (clash) {
+    throw new BanquetError(
+      `${hall.name} is already booked on ${dayStr} (${clash.slot}) for ${clash.customerName} — ${clash.bookingNumber}`
+    )
+  }
+}
+
+function advancePaymentStatus(advance: number, total: number) {
+  return advance >= total && total > 0 ? 'PAID' : advance > 0 ? 'PARTIAL' : 'UNPAID'
+}
+
+/** Applies a change in recorded advance (e.g. an edited/deleted ledger row) back onto the banquet booking */
+export async function adjustBanquetAdvance(bookingId: string, delta: number) {
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bookingId)
+  const b = rows?.[0]
+  if (!b) return
+  const advancePaid = Math.max(0, Math.round((Number(b.advancePaid) + delta) * 100) / 100)
+  const billRows = await prisma.$queryRawUnsafe<any[]>('SELECT "id" FROM "BanquetBill" WHERE "banquetBookingId" = $1', bookingId)
+  // Once invoiced, payment status follows the invoice; before that, the advance vs estimate
+  const paymentStatus = billRows.length > 0 ? b.paymentStatus : advancePaymentStatus(advancePaid, Number(b.totalEstimated))
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBooking" SET "advancePaid" = $2, "paymentStatus" = $3, "updatedAt" = $4 WHERE "id" = $1',
+    bookingId,
+    advancePaid,
+    paymentStatus,
+    new Date()
+  )
 }
 
 export const DEFAULT_BANQUET_HALLS = [
@@ -183,6 +254,14 @@ export async function updateBanquetHall(id: string, data: Partial<BanquetHall>) 
 }
 
 export async function deleteBanquetHall(id: string) {
+  const rows = await prisma.$queryRawUnsafe<{ count: number }[]>(
+    'SELECT count(*)::int as count FROM "BanquetBooking" WHERE "hallId" = $1',
+    id
+  )
+  const count = rows?.[0]?.count || 0
+  if (count > 0) {
+    throw new BanquetError(`Cannot delete this hall: it has ${count} booking(s). Set it to MAINTENANCE instead.`)
+  }
   return await prisma.$executeRawUnsafe('DELETE FROM "BanquetHall" WHERE "id" = $1', id)
 }
 
@@ -309,14 +388,13 @@ export async function createBanquetBooking(
     discount?: number
     advancePaid?: number
     advanceMethod?: string
+    status?: string
     notes?: string
   },
   userName?: string
 ) {
-  const countRows = await prisma.$queryRawUnsafe<any[]>('SELECT count(*)::int as count FROM "BanquetBooking"')
-  const count = countRows?.[0]?.count || 0
   const year = new Date().getFullYear()
-  const bookingNumber = `BNQ-BKG-${year}-${String(count + 101).padStart(4, '0')}`
+  const bookingNumber = await nextNumber('BanquetBooking', 'bookingNumber', `BNQ-BKG-${year}-`, 101)
 
   const id = genId()
   const now = new Date()
@@ -337,6 +415,10 @@ export async function createBanquetBooking(
 
   const eventDateObj = new Date(data.eventDate.length <= 10 ? data.eventDate + 'T12:00:00' : data.eventDate)
   const endDateObj = data.endDate ? new Date(data.endDate) : null
+  if (isNaN(eventDateObj.getTime())) throw new BanquetError('Valid event date is required')
+  // Only an enquiry can be created without holding the hall; anything else is a confirmed booking
+  const status = data.status === 'ENQUIRY' ? 'ENQUIRY' : 'CONFIRMED'
+  await assertHallAvailable({ hallId: data.hallId, eventDate: eventDateObj, slot: data.slot || 'EVENING', status })
 
   await prisma.$executeRawUnsafe(
     `INSERT INTO "BanquetBooking" (
@@ -371,7 +453,7 @@ export async function createBanquetBooking(
     discount,
     totalEstimated,
     advancePaid,
-    'CONFIRMED',
+    status,
     paymentStatus,
     data.notes || null,
     userName || null,
@@ -409,10 +491,22 @@ export async function updateBanquetBooking(
 ) {
   const existingRows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', id)
   const existing = existingRows?.[0]
-  if (!existing) throw new Error('Banquet booking not found')
+  if (!existing) throw new BanquetError('Banquet booking not found')
 
-  const advanceAddition = Number(data.advanceAddition) || 0
-  const newAdvance = Number(existing.advancePaid) + advanceAddition
+  const nextHallId = data.hallId || existing.hallId
+  const nextEventDate = data.eventDate
+    ? new Date(String(data.eventDate).length <= 10 ? String(data.eventDate) + 'T12:00:00' : String(data.eventDate))
+    : new Date(existing.eventDate)
+  const nextSlot = data.slot || existing.slot
+  const nextStatus = data.status || existing.status
+  await assertHallAvailable({ hallId: nextHallId, eventDate: nextEventDate, slot: nextSlot, status: nextStatus, excludeId: id })
+
+  // An edited advance (absolute advancePaid) is money in/out too: record the difference in the ledger
+  let advanceAddition = Number(data.advanceAddition) || 0
+  if (data.advancePaid !== undefined && !advanceAddition) {
+    advanceAddition = Math.round((Number(data.advancePaid) - Number(existing.advancePaid)) * 100) / 100
+  }
+  const newAdvance = Math.max(0, Number(existing.advancePaid) + advanceAddition)
 
   const hallRent = data.hallRent !== undefined ? Number(data.hallRent) : Number(existing.hallRent)
   const guestCount = data.guestCount !== undefined ? Number(data.guestCount) : Number(existing.guestCount)
@@ -422,9 +516,10 @@ export async function updateBanquetBooking(
   const discount = data.discount !== undefined ? Number(data.discount) : Number(existing.discount)
 
   const totalEstimated = Math.max(0, hallRent + foodTotal + decorCharges + extraCharges - discount)
-  const currentAdvance = data.advancePaid !== undefined ? Number(data.advancePaid) : newAdvance
-  const paymentStatus =
-    currentAdvance >= totalEstimated && totalEstimated > 0 ? 'PAID' : currentAdvance > 0 ? 'PARTIAL' : 'UNPAID'
+  const currentAdvance = newAdvance
+  const billRows = await prisma.$queryRawUnsafe<any[]>('SELECT "id" FROM "BanquetBill" WHERE "banquetBookingId" = $1', id)
+  // Once invoiced, the booking's payment status is driven by the invoice payments
+  const paymentStatus = billRows.length > 0 ? existing.paymentStatus : advancePaymentStatus(currentAdvance, totalEstimated)
 
   const now = new Date()
   const updates: string[] = [
@@ -527,20 +622,33 @@ export async function updateBanquetBooking(
   )
 
   if (advanceAddition > 0) {
-    try {
-      await prisma.ledgerEntry.create({
-        data: {
-          type: 'INCOME',
-          category: 'ADVANCE',
-          description: `Additional Banquet Advance - ${existing.eventName} (${existing.bookingNumber})`,
-          amount: advanceAddition,
-          method: data.advanceMethod || 'CASH',
-          source: 'AUTO',
-          refId: id,
-        },
-      })
-    } catch (e) {
-      console.error('Failed to log ledger entry for additional banquet advance:', e)
+    await prisma.ledgerEntry.create({
+      data: {
+        type: 'INCOME',
+        category: 'ADVANCE',
+        description: `Additional Banquet Advance - ${existing.eventName} (${existing.bookingNumber})`,
+        amount: advanceAddition,
+        method: data.advanceMethod || 'CASH',
+        source: 'AUTO',
+        refId: id,
+      },
+    })
+  } else if (advanceAddition < 0) {
+    // Advance reduced (refund / correction): take it back off the most recent advance rows
+    let toRemove = -advanceAddition
+    const rows = await prisma.ledgerEntry.findMany({
+      where: { refId: id, category: 'ADVANCE' },
+      orderBy: { date: 'desc' },
+    })
+    for (const row of rows) {
+      if (toRemove <= 0.001) break
+      if (row.amount <= toRemove + 0.001) {
+        await prisma.ledgerEntry.delete({ where: { id: row.id } })
+        toRemove -= row.amount
+      } else {
+        await prisma.ledgerEntry.update({ where: { id: row.id }, data: { amount: Math.round((row.amount - toRemove) * 100) / 100 } })
+        toRemove = 0
+      }
     }
   }
 
@@ -549,6 +657,9 @@ export async function updateBanquetBooking(
 }
 
 export async function deleteBanquetBooking(id: string) {
+  // Invoices cascade with the booking in the DB; their ledger rows and the advance must go too
+  const billRows = await prisma.$queryRawUnsafe<{ id: string }[]>('SELECT "id" FROM "BanquetBill" WHERE "banquetBookingId" = $1', id)
+  await prisma.ledgerEntry.deleteMany({ where: { refId: { in: [id, ...billRows.map((b) => b.id)] } } })
   return await prisma.$executeRawUnsafe('DELETE FROM "BanquetBooking" WHERE "id" = $1', id)
 }
 
@@ -661,12 +772,18 @@ export async function createBanquetBill(
   `, data.banquetBookingId)
 
   const booking = bkgRows?.[0]
-  if (!booking) throw new Error('Banquet booking not found')
+  if (!booking) throw new BanquetError('Banquet booking not found')
+  if (booking.status === 'CANCELLED') throw new BanquetError('Cannot invoice a cancelled banquet booking')
+  const existingBills = await prisma.$queryRawUnsafe<{ billNumber: string }[]>(
+    'SELECT "billNumber" FROM "BanquetBill" WHERE "banquetBookingId" = $1',
+    booking.id
+  )
+  if (existingBills.length > 0) {
+    throw new BanquetError(`This booking is already invoiced (${existingBills[0].billNumber}). Record payments on that invoice instead.`)
+  }
 
-  const countRows = await prisma.$queryRawUnsafe<any[]>('SELECT count(*)::int as count FROM "BanquetBill"')
-  const count = countRows?.[0]?.count || 0
   const year = new Date().getFullYear()
-  const billNumber = `BNQ-${year}-${String(count + 1).padStart(4, '0')}`
+  const billNumber = await nextNumber('BanquetBill', 'billNumber', `BNQ-${year}-`, 1)
 
   const id = genId()
   const now = new Date()
@@ -690,6 +807,9 @@ export async function createBanquetBill(
   const payBank = Number(data.payBank) || 0
 
   const totalPaid = advanceApplied + payCash + payUpi + payCard + payBank
+  if (totalPaid > grandTotal + 0.01) {
+    throw new BanquetError(`Payments (₹${totalPaid}) exceed the invoice total (₹${grandTotal})`)
+  }
   const balanceDue = Math.max(0, Math.round((grandTotal - totalPaid) * 100) / 100)
   const paymentStatus = balanceDue <= 0.01 ? 'PAID' : totalPaid > 0 ? 'PARTIAL' : 'UNPAID'
 
@@ -766,7 +886,7 @@ export async function createBanquetBill(
         await prisma.ledgerEntry.create({
           data: {
             type: 'INCOME',
-            category: 'ROOM_RENT',
+            category: 'BANQUET',
             description: `Banquet Invoice ${billNumber} settlement (${p.method}) - ${booking.customerName}`,
             amount: p.amount,
             method: p.method,
@@ -791,7 +911,7 @@ export async function addBanquetBillPayment(
 ) {
   const billRows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBill" WHERE "id" = $1', billId)
   const bill = billRows?.[0]
-  if (!bill) throw new Error('Banquet bill not found')
+  if (!bill) throw new BanquetError('Banquet bill not found')
 
   const addCash = Number(payment.payCash) || 0
   const addUpi = Number(payment.payUpi) || 0
@@ -804,6 +924,11 @@ export async function addBanquetBillPayment(
   const payBank = Number(bill.payBank) + addBank
 
   const totalPaid = Number(bill.advanceApplied) + payCash + payUpi + payCard + payBank
+  if (addCash + addUpi + addCard + addBank <= 0) throw new BanquetError('Payment amount required')
+  if (totalPaid > Number(bill.grandTotal) + 0.01) {
+    const outstanding = Number(bill.grandTotal) - (totalPaid - addCash - addUpi - addCard - addBank)
+    throw new BanquetError(`Payment exceeds outstanding balance (₹${Math.max(0, outstanding).toFixed(2)})`)
+  }
   const balanceDue = Math.max(0, Math.round((Number(bill.grandTotal) - totalPaid) * 100) / 100)
   const paymentStatus = balanceDue <= 0.01 ? 'PAID' : 'PARTIAL'
 
@@ -840,7 +965,7 @@ export async function addBanquetBillPayment(
         await prisma.ledgerEntry.create({
           data: {
             type: 'INCOME',
-            category: 'ROOM_RENT',
+            category: 'BANQUET',
             description: `Banquet Bill Payment (${bill.billNumber}) - ${p.method}`,
             amount: p.amount,
             method: p.method,
@@ -859,7 +984,23 @@ export async function addBanquetBillPayment(
 }
 
 export async function deleteBanquetBill(id: string) {
-  return await prisma.$executeRawUnsafe('DELETE FROM "BanquetBill" WHERE "id" = $1', id)
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBill" WHERE "id" = $1', id)
+  const bill = rows?.[0]
+  if (!bill) throw new BanquetError('Banquet bill not found')
+  await prisma.ledgerEntry.deleteMany({ where: { refId: id } })
+  await prisma.$executeRawUnsafe('DELETE FROM "BanquetBill" WHERE "id" = $1', id)
+  // The booking is no longer invoiced: reopen it and fall back to advance-based payment status
+  const bRows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bill.banquetBookingId)
+  const booking = bRows?.[0]
+  if (booking) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE "BanquetBooking" SET "status" = CASE WHEN "status" = 'COMPLETED' THEN 'CONFIRMED' ELSE "status" END,
+       "paymentStatus" = $2, "updatedAt" = $3 WHERE "id" = $1`,
+      booking.id,
+      advancePaymentStatus(Number(booking.advancePaid), Number(booking.totalEstimated)),
+      new Date()
+    )
+  }
 }
 
 // ---------------- STATS ----------------
