@@ -2788,18 +2788,6 @@ async function listAudit(req: NextRequest) {
   return NextResponse.json(logs)
 }
 
-async function deleteAudit(req: NextRequest, user: RequestUser) {
-  const { searchParams } = new URL(req.url)
-  const id = searchParams.get('id')
-  if (!id) return NextResponse.json({ error: 'Audit log ID required' }, { status: 400 })
-
-  const existing = await prisma.auditLog.findUnique({ where: { id } })
-  if (!existing) return NextResponse.json({ error: 'Audit log entry not found' }, { status: 404 })
-
-  await prisma.auditLog.delete({ where: { id } })
-  await logAudit('AUDIT_DELETE', 'AuditLog', id, `Audit log entry deleted: ${existing.action} - ${existing.details}`, user)
-  return NextResponse.json({ success: true })
-}
 
 // ============ EXPENSE CATEGORIES ============
 async function listExpenseCategories() {
@@ -3368,7 +3356,6 @@ async function dispatch(
       break
     case 'audit':
       if (method === 'GET') return await listAudit(req)
-      if (method === 'DELETE') return await deleteAudit(req, user)
       break
     case 'banquet-halls':
       if (method === 'GET') return NextResponse.json(await getBanquetHalls())
