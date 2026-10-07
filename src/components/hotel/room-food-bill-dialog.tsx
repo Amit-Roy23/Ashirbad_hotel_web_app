@@ -85,12 +85,14 @@ export function RoomFoodBillDialog({
       setSettings(settingsData)
 
       // Filter orders belonging to this booking or room
-      const roomOrders = allOrders.filter(
-        (o) =>
-          (bookingId && o.booking && (o as any).bookingId === bookingId) ||
-          (roomId && o.room && o.room.id === roomId) ||
-          (roomNumber && o.room && o.room.number === roomNumber)
-      )
+      // Orders belong to the stay, not the room: a previous guest's orders for this room must not show up here
+      const roomOrders = bookingId
+        ? allOrders.filter((o) => (o as any).bookingId === bookingId)
+        : allOrders.filter(
+            (o) =>
+              (roomId && o.room && o.room.id === roomId) ||
+              (roomNumber && o.room && o.room.number === roomNumber)
+          )
       setOrders(roomOrders)
     } finally {
       setLoading(false)

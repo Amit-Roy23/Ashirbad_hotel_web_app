@@ -227,6 +227,8 @@ export function BanquetBookingDialog({
             extraCharges: numExtra,
             discount: numDiscount,
             advancePaid: numAdvance,
+            // Needed so an increased advance is recorded in the ledger with the right payment mode
+            advanceMethod,
             status,
             notes,
           }),

@@ -998,7 +998,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                               if (b) {
                                 setBillBooking({
                                   ...b,
-                                  ratePerDay: currentRoom.rate,
+                                  ratePerDay: b.ratePerDay ?? currentRoom.rate,
                                   room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
                                 })
                                 setViewRoom(null)
@@ -1015,7 +1015,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                               if (b) {
                                 setBillBooking({
                                   ...b,
-                                  ratePerDay: currentRoom.rate,
+                                  ratePerDay: b.ratePerDay ?? currentRoom.rate,
                                   room: { id: currentRoom.id, number: currentRoom.number, type: currentRoom.type },
                                 })
                                 setViewRoom(null)
@@ -1139,6 +1139,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
         open={!!billBooking}
         onOpenChange={(o) => !o && setBillBooking(null)}
         booking={billBooking}
+        defaultGstPercent={hotelSettings.gstPercent}
         onSuccess={(bill) => {
           setLastBill(bill)
           load()
@@ -1157,11 +1158,13 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
           guestName={foodBillState.guestName}
           onOpenLodgingBill={() => {
             const targetRoom = rooms.find((r) => r.id === foodBillState.roomId || r.number === foodBillState.roomNumber)
-            if (targetRoom && targetRoom.bookings?.[0]) {
-              const b = targetRoom.bookings[0]
+            const b =
+              targetRoom?.bookings?.find((x) => x.id === foodBillState.bookingId) ||
+              targetRoom?.bookings?.find((x) => x.status === 'ACTIVE')
+            if (targetRoom && b) {
               setBillBooking({
                 ...b,
-                ratePerDay: targetRoom.rate,
+                ratePerDay: b.ratePerDay ?? targetRoom.rate,
                 room: { id: targetRoom.id, number: targetRoom.number, type: targetRoom.type },
               })
             }

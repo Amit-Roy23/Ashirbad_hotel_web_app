@@ -29,9 +29,11 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { BookingDialog } from './booking-dialog'
+import { GenerateBillDialog } from './generate-bill-dialog'
+import { toast } from '@/hooks/use-toast'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, todayStr, addDays } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState } from '@/lib/hotel-utils'
 import { calcNights, nextAutoExtensionAt, istDateStr } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { Loader2, UserPlus, LogIn, CalendarClock, XCircle, ArrowLeftRight, Wallet, Pencil, Save, Trash2, AlertTriangle, Clock, ShieldAlert, History } from 'lucide-react'
@@ -49,6 +51,8 @@ interface Room {
   type?: string
   rate?: number
   status?: string
+  housekeeping?: string
+  bookings?: { id: string; status: string; checkIn: string; checkOut?: string | null }[]
 }
 
 interface Bill {
@@ -138,6 +142,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
 
   const [changeBooking, setChangeBooking] = useState<Booking | null>(null)
   const [newRoomId, setNewRoomId] = useState('')
+  const [billBooking, setBillBooking] = useState<Booking | null>(null)
 
   useEffect(() => {
     if (initialFilter) setSearch(initialFilter)
@@ -366,7 +371,11 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
     )
   }
 
-  const vacantRooms = rooms.filter((r) => r.status !== 'OCCUPIED')
+  // Move targets: same derived state as the Rooms grid (no in-house guest, not under maintenance, no arrival due today)
+  const vacantRooms = rooms.filter((r) => {
+    const st = getRoomOperationalState(r).displayStatus
+    return st !== 'OCCUPIED' && st !== 'MAINTENANCE' && st !== 'BOOKED'
+  })
 
   return (
     <div className="space-y-4">
@@ -444,7 +453,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
               </TableRow>
             )}
             {(paged as unknown as Booking[]).map((b) => {
-              const busy = busyId === b.id
+              const busy = !!busyId && busyId.startsWith(b.id)
               const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
               const effPaymentStatus = hasDue ? 'PARTIAL' : 'PAID'
               return (
@@ -539,7 +548,13 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                           className="h-7 gap-1 px-2 text-xs w-full justify-center border-emerald-300 bg-emerald-50/60 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
                           disabled={busy}
                           onClick={() => {
-                            if (confirm(`Check out ${b.guest?.name || 'Guest'} from Room ${b.room?.number}?`)) action(b, 'checkout')
+                            // Checkout always goes through the lodging bill so room rent reaches ledger, payments and reports.
+                            // A stay that already has an interim bill can be closed directly.
+                            if (b.bills?.length) {
+                              if (confirm(`Check out ${b.guest?.name || 'Guest'} from Room ${b.room?.number}?`)) action(b, 'checkout')
+                            } else {
+                              setBillBooking(b)
+                            }
                           }}
                         >
                           <Wallet className="h-3 w-3" /> Checkout
@@ -596,6 +611,23 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
       {controls}
 
       <BookingDialog open={newOpen} onOpenChange={setNewOpen} onSuccess={() => { load(); onDataChanged() }} />
+
+      <GenerateBillDialog
+        open={!!billBooking}
+        onOpenChange={(o) => !o && setBillBooking(null)}
+        booking={billBooking as any}
+        defaultGstPercent={hotelSettings.gstPercent}
+        onSuccess={(bill) => {
+          setBillBooking(null)
+          load()
+          onDataChanged()
+          toast({
+            variant: 'success',
+            title: 'Checked Out',
+            description: `Invoice ${bill.billNumber} generated. Print it from the Billing tab.`,
+          })
+        }}
+      />
 
       {/* Extend stay dialog (Admin PIN authorized) */}
       <Dialog open={!!extendBooking} onOpenChange={(o) => { if (!o) setExtendBooking(null) }}>

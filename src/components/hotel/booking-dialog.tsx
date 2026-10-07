@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, addDays, formatINR, todayStr, sanitizePhone, formatDate, toDateStr, doDateRangesOverlap } from '@/lib/hotel-utils'
+import { api, apiAs, addDays, formatINR, todayStr, sanitizePhone, formatDate, toDateStr, doDateRangesOverlap, getRoomOperationalState } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
@@ -119,7 +119,12 @@ export function BookingDialog({
   const availableRooms = useMemo(() => {
     return rooms.filter((r) => {
       if (r.status === 'MAINTENANCE') return false
-      if (bookingMode === 'CHECKIN' && r.housekeeping === 'DIRTY') return false
+      if (bookingMode === 'CHECKIN') {
+        if (r.housekeeping === 'DIRTY') return false
+        // A walk-in needs the room now: skip rooms with a guest in-house or an arrival due today
+        const st = getRoomOperationalState(r).displayStatus
+        if (st === 'OCCUPIED' || st === 'BOOKED') return false
+      }
       return true
     })
   }, [rooms, bookingMode])

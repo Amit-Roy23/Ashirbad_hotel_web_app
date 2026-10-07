@@ -12,7 +12,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { apiAs, formatINR, formatDateTime } from '@/lib/hotel-utils'
+import { apiAs, formatINR, formatDateTime, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { Loader2, Info, Edit3, ShieldCheck } from 'lucide-react'
 
@@ -80,7 +80,7 @@ export function EditBillDialog({
   const [billedRoomTotal, setBilledRoomTotal] = useState('')
   const [roomNumber, setRoomNumber] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
-  const [gstPercent, setGstPercent] = useState('12')
+  const [gstPercent, setGstPercent] = useState('5')
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
   const [payCash, setPayCash] = useState('0')
@@ -100,7 +100,7 @@ export function EditBillDialog({
       setBilledRoomTotal(String(bill.billedRoomTotal))
       setRoomNumber(bill.roomNumber || bill.booking?.room?.number || '')
       setRoomDescription(bill.roomDescription || bill.booking?.room?.type || '')
-      setGstPercent(String(bill.gstPercent))
+      setGstPercent(normalizeLodgingGst(bill.gstPercent))
       setExtraCharges(String(bill.extraCharges || 0))
       setDiscount(String(bill.discount || 0))
       setPayCash(String(bill.payCash || 0))
@@ -197,8 +197,8 @@ export function EditBillDialog({
     }
 
     const parsedGst = parseFloat(gstPercent)
-    if (isNaN(parsedGst) || !isFinite(parsedGst) || parsedGst < 0 || parsedGst > 100) {
-      setError('GST percentage must be a valid number between 0 and 100')
+    if (parsedGst !== 0 && parsedGst !== 5) {
+      setError('GST on lodging bills can only be 0% or 5%')
       return
     }
 
@@ -210,6 +210,10 @@ export function EditBillDialog({
 
     if (calc.paid > calc.payable + 0.01) {
       setError(`Payment split (₹${calc.paid}) cannot exceed payable amount (₹${calc.payable})`)
+      return
+    }
+    if (calc.balance > 0.01) {
+      setError(`Full payment required: adjust the payment split to cover the outstanding ${formatINR(calc.balance)}.`)
       return
     }
 
@@ -338,34 +342,24 @@ export function EditBillDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-semibold text-foreground">GST % *</Label>
-                  <div className="flex gap-1">
-                    {(['0', '12', '18'] as const).map((pct) => (
-                      <button
-                        key={pct}
-                        type="button"
-                        onClick={() => setGstPercent(pct)}
-                        className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-                          num(gstPercent) === num(pct)
-                            ? 'bg-emerald-600 text-white border-emerald-600'
-                            : 'bg-muted text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        {pct === '0' ? '0%' : `${pct}%`}
-                      </button>
-                    ))}
-                  </div>
+                <Label className="text-xs font-semibold text-foreground">GST % *</Label>
+                {/* Lodging bills are issued at 0% or 5% GST only */}
+                <div className="grid h-9 grid-cols-2 gap-1">
+                  {LODGING_GST_RATES.map((pct) => (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => setGstPercent(pct)}
+                      className={`rounded border text-xs font-semibold transition-colors ${
+                        num(gstPercent) === num(pct)
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-muted text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
                 </div>
-                <Input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.1"
-                  value={gstPercent}
-                  onChange={(e) => setGstPercent(e.target.value)}
-                  className="h-9 text-xs"
-                />
               </div>
 
               <div className="space-y-1.5">
