@@ -22,8 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
-import { getCachedUser } from './user-context'
+import { api, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
 import {
   Loader2,
   Download,
@@ -37,7 +36,6 @@ import {
   TrendingDown,
   AlertCircle,
   FileText,
-  Trash2,
 } from 'lucide-react'
 
 interface ReportData {
@@ -52,6 +50,7 @@ interface ReportData {
     inHouseGuests: number
   }
   collections: { cash: number; upi: number; card: number; directFood: number; advances: number; total: number }
+  collectionsDaily: DayCollection[]
   revenue: {
     actualRoomRevenue: number
     billedRoomRevenue: number
@@ -118,6 +117,17 @@ interface ReportData {
   }
 }
 
+interface DayCollection {
+  date: string
+  cash: number
+  upi: number
+  card: number
+  bills: number
+  directFood: number
+  advances: number
+  total: number
+}
+
 interface TabProps {
   refreshKey: number
   onDataChanged: () => void
@@ -151,7 +161,7 @@ function StatCard({
   )
 }
 
-export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
+export function ReportsTab({ refreshKey }: TabProps) {
   const [data, setData] = useState<ReportData | null>(null)
   const [loading, setLoading] = useState(true)
   const [from, setFrom] = useState(() => {
@@ -159,6 +169,8 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
     return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10)
   })
   const [to, setTo] = useState(todayStr())
+  // Collections tab: '' = whole selected range, otherwise one day (YYYY-MM-DD)
+  const [collectionDay, setCollectionDay] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -176,24 +188,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
     load()
   }, [load, refreshKey])
 
-  async function deleteReportItem(endpoint: string, id: string, label: string) {
-    if (!confirm(`Are you sure you want to delete ${label}?`)) return
-    try {
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        `${endpoint}?id=${id}`,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        await load()
-        onDataChanged?.()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not delete item')
-    }
-  }
 
   if (loading && !data) {
     return (
@@ -312,13 +306,12 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                       <TableHead>GST</TableHead>
                       <TableHead>Invoice Total</TableHead>
                       <TableHead>Internal Total</TableHead>
-                      <TableHead className="text-center">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.invoices.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={11} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={10} className="py-6 text-center text-sm text-muted-foreground">
                           No invoices in this range.
                         </TableCell>
                       </TableRow>
@@ -344,16 +337,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                         <TableCell className="text-xs">{formatINR(r.gst)}</TableCell>
                         <TableCell className="text-xs font-bold">{formatINR(r.grandTotal)}</TableCell>
                         <TableCell className="text-xs font-medium text-muted-foreground">{formatINR(r.internalTotal)}</TableCell>
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                            onClick={() => r.id && deleteReportItem('/api/bills', r.id, `Invoice ${r.billNumber}`)}
-                          >
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </Button>
-                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -367,44 +350,127 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
 
             {/* ===== Collections report ===== */}
             <TabsContent value="collections" className="mt-4 space-y-3">
-              <div className="grid grid-cols-3 gap-3">
-                <Card>
-                  <CardContent className="p-4 text-center">
-                    <p className="text-xs text-muted-foreground">Cash</p>
-                    <p className="text-lg font-bold">{formatINR(data.collections.cash)}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="p-4 text-center">
-                    <p className="text-xs text-muted-foreground">UPI</p>
-                    <p className="text-lg font-bold">{formatINR(data.collections.upi)}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="p-4 text-center">
-                    <p className="text-xs text-muted-foreground">Card</p>
-                    <p className="text-lg font-bold">{formatINR(data.collections.card)}</p>
-                  </CardContent>
-                </Card>
-              </div>
-              <div className="space-y-1 rounded-lg bg-muted p-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Bill collections (room + food)</span>
-                  <span className="font-medium">{formatINR(data.collections.total - data.collections.directFood - data.collections.advances)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Direct restaurant (walk-in)</span>
-                  <span className="font-medium">{formatINR(data.collections.directFood)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Guest advances</span>
-                  <span className="font-medium">{formatINR(data.collections.advances)}</span>
-                </div>
-                <div className="flex justify-between border-t pt-1 font-bold">
-                  <span>Total</span>
-                  <span>{formatINR(data.collections.total)}</span>
-                </div>
-              </div>
+              {(() => {
+                const daily = data.collectionsDaily || []
+                const day = collectionDay ? daily.find((d) => d.date === collectionDay) : null
+                const zero = { cash: 0, upi: 0, card: 0, bills: 0, directFood: 0, advances: 0, total: 0 }
+                const c = collectionDay
+                  ? day || zero
+                  : {
+                      cash: data.collections.cash,
+                      upi: data.collections.upi,
+                      card: data.collections.card,
+                      bills: data.collections.total - data.collections.directFood - data.collections.advances,
+                      directFood: data.collections.directFood,
+                      advances: data.collections.advances,
+                      total: data.collections.total,
+                    }
+                return (
+                  <>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="col-day" className="text-xs">Day</Label>
+                        <Input
+                          id="col-day"
+                          type="date"
+                          value={collectionDay}
+                          min={from}
+                          max={to}
+                          onChange={(e) => setCollectionDay(e.target.value)}
+                          className="h-9 w-40 text-xs"
+                        />
+                      </div>
+                      <Button size="sm" variant={collectionDay === todayStr() ? 'default' : 'outline'} className="h-9" onClick={() => setCollectionDay(todayStr())}>
+                        Today
+                      </Button>
+                      <Button size="sm" variant={collectionDay ? 'outline' : 'default'} className="h-9" onClick={() => setCollectionDay('')}>
+                        All days in range
+                      </Button>
+                      <p className="pb-2 text-xs text-muted-foreground">
+                        {collectionDay ? `Showing ${formatDate(collectionDay)}` : `Showing ${formatDate(from)} – ${formatDate(to)}`}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <p className="text-xs text-muted-foreground">Cash</p>
+                          <p className="text-lg font-bold">{formatINR(c.cash)}</p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <p className="text-xs text-muted-foreground">UPI</p>
+                          <p className="text-lg font-bold">{formatINR(c.upi)}</p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <p className="text-xs text-muted-foreground">Card</p>
+                          <p className="text-lg font-bold">{formatINR(c.card)}</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+                    <div className="space-y-1 rounded-lg bg-muted p-3 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Bill collections (room + food)</span>
+                        <span className="font-medium">{formatINR(c.bills)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Direct restaurant (paid at counter)</span>
+                        <span className="font-medium">{formatINR(c.directFood)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Guest advances</span>
+                        <span className="font-medium">{formatINR(c.advances)}</span>
+                      </div>
+                      <div className="flex justify-between border-t pt-1 font-bold">
+                        <span>Total</span>
+                        <span>{formatINR(c.total)}</span>
+                      </div>
+                    </div>
+
+                    <div className="max-h-96 overflow-y-auto rounded-lg border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Day</TableHead>
+                            <TableHead className="text-right">Cash</TableHead>
+                            <TableHead className="text-right">UPI</TableHead>
+                            <TableHead className="text-right">Card</TableHead>
+                            <TableHead className="text-right">Restaurant</TableHead>
+                            <TableHead className="text-right">Advances</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {daily.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                                No collections in this range.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          {daily.map((d) => (
+                            <TableRow
+                              key={d.date}
+                              className={`cursor-pointer ${d.date === collectionDay ? 'bg-emerald-50 dark:bg-emerald-950/40' : ''}`}
+                              onClick={() => setCollectionDay(d.date === collectionDay ? '' : d.date)}
+                            >
+                              <TableCell className="text-xs font-medium">{formatDate(d.date)}</TableCell>
+                              <TableCell className="text-right text-xs">{formatINR(d.cash)}</TableCell>
+                              <TableCell className="text-right text-xs">{formatINR(d.upi)}</TableCell>
+                              <TableCell className="text-right text-xs">{formatINR(d.card)}</TableCell>
+                              <TableCell className="text-right text-xs">{formatINR(d.directFood)}</TableCell>
+                              <TableCell className="text-right text-xs">{formatINR(d.advances)}</TableCell>
+                              <TableCell className="text-right text-xs font-bold">{formatINR(d.total)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </>
+                )
+              })()}
             </TabsContent>
 
             {/* ===== Booking report ===== */}
@@ -441,13 +507,12 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                       <TableHead>Rate</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Payment</TableHead>
-                      <TableHead className="text-center">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.bookings.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
                           No bookings in this range.
                         </TableCell>
                       </TableRow>
@@ -465,16 +530,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                         <TableCell className="text-xs">{formatINR(r.ratePerDay)}</TableCell>
                         <TableCell className="text-xs">{r.status}</TableCell>
                         <TableCell className="text-xs">{r.paymentStatus}</TableCell>
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                            onClick={() => r.id && deleteReportItem('/api/bookings', r.id, `Booking for Room ${r.roomNumber}`)}
-                          >
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </Button>
-                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -521,15 +576,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="font-bold">{formatINR(r.total)}</span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                        onClick={() => deleteReportItem('/api/orders', r.id, `Food order (${formatINR(r.total)})`)}
-                        title="Delete order"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
                     </div>
                   </div>
                 ))}
@@ -568,13 +614,12 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                       <TableHead>Date</TableHead>
                       <TableHead>Recovery</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
-                      <TableHead className="text-center">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.staff.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
                           No staff payments in range.
                         </TableCell>
                       </TableRow>
@@ -587,16 +632,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                         <TableCell className="text-xs">{formatDate(r.date)}</TableCell>
                         <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">{r.recoveryNotes || '—'}</TableCell>
                         <TableCell className="text-right text-xs font-bold">{formatINR(r.amount)}</TableCell>
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                            onClick={() => r.id && deleteReportItem('/api/staff-payments', r.id, `Staff payment for ${r.staffName}`)}
-                          >
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </Button>
-                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -640,13 +675,12 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                       <TableHead>Category</TableHead>
                       <TableHead>Description</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
-                      <TableHead className="text-center">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.expenses.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={5} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
                           No expenses in range.
                         </TableCell>
                       </TableRow>
@@ -657,16 +691,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                         <TableCell className="text-xs">{r.category}</TableCell>
                         <TableCell className="max-w-[240px] truncate text-xs">{r.description}</TableCell>
                         <TableCell className="text-right text-xs font-bold">{formatINR(r.amount)}</TableCell>
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                            onClick={() => r.id && deleteReportItem('/api/ledger', r.id, `Expense "${r.description}"`)}
-                          >
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </Button>
-                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -707,13 +731,12 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                       <TableHead>Total</TableHead>
                       <TableHead>Paid</TableHead>
                       <TableHead className="text-right">Balance</TableHead>
-                      <TableHead className="text-center">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.outstanding.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
                           Nothing outstanding — all bills collected.
                         </TableCell>
                       </TableRow>
@@ -729,16 +752,6 @@ export function ReportsTab({ refreshKey, onDataChanged }: TabProps) {
                         <TableCell className="text-xs">{formatINR(r.grandTotal)}</TableCell>
                         <TableCell className="text-xs">{formatINR(r.paid)}</TableCell>
                         <TableCell className="text-right text-xs font-bold text-red-600">{formatINR(r.balance)}</TableCell>
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                            onClick={() => r.id && deleteReportItem('/api/bills', r.id, `Outstanding Bill ${r.billNumber}`)}
-                          >
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </Button>
-                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

@@ -23,7 +23,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
-import { api, apiAs, formatDateTime, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, formatDateTime, exportCSV, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
 import { useUser, getCachedUser } from './user-context'
 import { LoginDialog } from './login-dialog'
 import { toast } from '@/hooks/use-toast'
@@ -278,7 +278,23 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="s-gst">Default GST %</Label>
-                <Input id="s-gst" type="number" value={settings.gstPercent || '0'} onChange={(e) => setSettings({ ...settings, gstPercent: e.target.value })} />
+                {/* Lodging bills allow only 0% or 5% GST */}
+                <div id="s-gst" className="grid h-9 grid-cols-2 gap-1">
+                  {LODGING_GST_RATES.map((pct) => (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => setSettings({ ...settings, gstPercent: pct })}
+                      className={`rounded border text-xs font-semibold transition-colors ${
+                        normalizeLodgingGst(settings.gstPercent) === pct
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-muted text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="s-inv">Invoice Prefix</Label>

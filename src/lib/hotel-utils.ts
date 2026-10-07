@@ -372,3 +372,11 @@ export function getRoomOperationalState(room: RoomWithBookings | any): RoomOpera
   }
 }
 
+
+/** Lodging (room) invoices are issued at 0% or 5% GST only */
+export const LODGING_GST_RATES = ['0', '5'] as const
+
+/** Maps any stored/legacy GST value onto an allowed lodging rate (0 stays 0, anything else becomes 5) */
+export function normalizeLodgingGst(v: string | number | null | undefined): string {
+  return Number(v) === 0 ? '0' : '5'
+}

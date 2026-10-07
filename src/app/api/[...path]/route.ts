@@ -87,7 +87,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   restaurantAddress: 'Station Road, Kolkata',
   restaurantPhone: '+91 90000 00000',
   restaurantGstin: '',
-  gstPercent: '12',
+  gstPercent: '5',
   invoicePrefix: 'INV',
   invoiceCounter: '1',
   checkoutTime: '08:00',
@@ -100,6 +100,14 @@ async function getSettingsMap(): Promise<Record<string, string>> {
   const map = { ...DEFAULT_SETTINGS }
   for (const r of rows) map[r.key] = r.value
   return map
+}
+
+/** Lodging (room) invoices are issued at 0% or 5% GST only */
+const LODGING_GST_RATES = [0, 5]
+
+/** Default lodging GST from settings, mapped onto an allowed rate (legacy 12/18 → 5) */
+function defaultLodgingGst(settingValue: string | undefined): number {
+  return Number(settingValue) === 0 ? 0 : 5
 }
 
 function num(v: unknown): number {
@@ -1434,15 +1442,12 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
 
   if (gstPercent !== undefined && gstPercent !== null && gstPercent !== '') {
     const parsedGst = parseFloat(String(gstPercent))
-    if (isNaN(parsedGst) || !isFinite(parsedGst) || parsedGst < 0 || parsedGst > 100) {
-      return NextResponse.json(
-        { error: 'GST percentage must be a valid number between 0 and 100' },
-        { status: 400 }
-      )
+    if (!LODGING_GST_RATES.includes(parsedGst)) {
+      return NextResponse.json({ error: 'GST on lodging bills can only be 0% or 5%' }, { status: 400 })
     }
   }
 
-  const gstPct = gstPercent !== undefined && gstPercent !== '' ? num(gstPercent) : parseFloat(settings.gstPercent) || 0
+  const gstPct = gstPercent !== undefined && gstPercent !== null && gstPercent !== '' ? num(gstPercent) : defaultLodgingGst(settings.gstPercent)
 
   // Full customer-facing calculation
   const taxable = Math.max(0, billedRoom + foodTotal + extra - disc)
@@ -1463,6 +1468,13 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   if (paidTotal > payableNow + 0.01) {
     return NextResponse.json(
       { error: `Payment split (₹${paidTotal}) cannot exceed payable amount (₹${payableNow})` },
+      { status: 400 }
+    )
+  }
+  // A lodging checkout bill is only issued once the full amount is collected
+  if (paidTotal < payableNow - 0.01) {
+    return NextResponse.json(
+      { error: `Full payment required: collect ₹${payableNow.toFixed(2)} (received ₹${paidTotal.toFixed(2)}, balance ₹${(payableNow - paidTotal).toFixed(2)})` },
       { status: 400 }
     )
   }
@@ -1659,11 +1671,8 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   let newGstPercent = bill.gstPercent
   if (gstPercent !== undefined && gstPercent !== null && gstPercent !== '') {
     const parsedGst = parseFloat(String(gstPercent))
-    if (isNaN(parsedGst) || !isFinite(parsedGst) || parsedGst < 0 || parsedGst > 100) {
-      return NextResponse.json(
-        { error: 'GST percentage must be a valid number between 0 and 100' },
-        { status: 400 }
-      )
+    if (!LODGING_GST_RATES.includes(parsedGst)) {
+      return NextResponse.json({ error: 'GST on lodging bills can only be 0% or 5%' }, { status: 400 })
     }
     newGstPercent = parsedGst
   }
@@ -1765,6 +1774,13 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   if (paidTotal > payableNow + 0.01) {
     return NextResponse.json(
       { error: `Payment split (₹${paidTotal}) cannot exceed updated payable amount (₹${payableNow})` },
+      { status: 400 }
+    )
+  }
+  // An edited bill must stay fully paid (edits that change the amount need the payment adjusted too)
+  if (isFinancialChange && paidTotal < payableNow - 0.01) {
+    return NextResponse.json(
+      { error: `Full payment required: updated payable is ₹${payableNow.toFixed(2)} but only ₹${paidTotal.toFixed(2)} is recorded. Adjust the payment split.` },
       { status: 400 }
     )
   }
@@ -2673,6 +2689,9 @@ async function getSettings() {
 
 async function updateSettings(body: Record<string, unknown>, user: RequestUser) {
   const updates = (body || {}) as Record<string, unknown>
+  if (updates.gstPercent !== undefined && !LODGING_GST_RATES.includes(Number(updates.gstPercent))) {
+    return NextResponse.json({ error: 'Default GST can only be 0% or 5%' }, { status: 400 })
+  }
   const updatedKeys: string[] = []
   for (const [key, value] of Object.entries(updates)) {
     if (typeof key === 'string' && key.trim() !== '' && value !== undefined && value !== null) {
@@ -3071,6 +3090,42 @@ async function getReports(req: NextRequest) {
     .filter((r) => r.balance > 0.01)
     .sort((a, b) => b.balance - a.balance)
 
+  // Day-wise collections (IST calendar day) so the Reports page can filter collections by a single day
+  type DayCollection = { date: string; cash: number; upi: number; card: number; bills: number; directFood: number; advances: number; total: number }
+  const daily = new Map<string, DayCollection>()
+  const dayRow = (d: Date) => {
+    const key = istDateStr(d)
+    let row = daily.get(key)
+    if (!row) {
+      row = { date: key, cash: 0, upi: 0, card: 0, bills: 0, directFood: 0, advances: 0, total: 0 }
+      daily.set(key, row)
+    }
+    return row
+  }
+  for (const b of bills) {
+    const row = dayRow(b.createdAt)
+    row.cash += b.payCash
+    row.upi += b.payUpi
+    row.card += b.payCard
+    row.bills += b.payCash + b.payUpi + b.payCard
+  }
+  for (const e of ledger) {
+    if (e.type !== 'INCOME' || e.category !== 'ADVANCE') continue
+    const row = dayRow(e.date)
+    if (e.method === 'CASH') row.cash += e.amount
+    if (e.method === 'UPI') row.upi += e.amount
+    if (e.method === 'CARD') row.card += e.amount
+    row.advances += e.amount
+  }
+  for (const o of orders) {
+    if (o.status !== 'PAID') continue
+    dayRow(o.createdAt).directFood += o.total
+  }
+  const collectionsDaily = [...daily.values()]
+    .filter((r) => r.date >= fromStr && r.date <= toStr)
+    .map((r) => ({ ...r, total: Math.round((r.bills + r.directFood + r.advances) * 100) / 100 }))
+    .sort((a, b) => b.date.localeCompare(a.date))
+
   const expenseByCategory: Record<string, number> = {}
   for (const e of ledger.filter((x) => x.type === 'EXPENSE')) {
     expenseByCategory[e.category] = (expenseByCategory[e.category] || 0) + e.amount
@@ -3102,6 +3157,7 @@ async function getReports(req: NextRequest) {
       advances: ledger.filter((e) => e.type === 'INCOME' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
       total: bills.reduce((s, b) => s + b.payCash + b.payUpi + b.payCard, 0) + orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0) + ledger.filter((e) => e.type === 'INCOME' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
     },
+    collectionsDaily,
     revenue: {
       actualRoomRevenue: bills.reduce((s, b) => s + b.actualRoomTotal, 0),
       billedRoomRevenue: bills.reduce((s, b) => s + b.billedRoomTotal, 0),

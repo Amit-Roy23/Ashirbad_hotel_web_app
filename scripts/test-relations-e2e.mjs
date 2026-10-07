@@ -22,6 +22,7 @@ const ledger = async () => (await call('GET', '/api/ledger')).data.entries
 
 console.log('— setup')
 for (const n of ['101', '102', '103', '104']) await call('POST', '/api/rooms', { number: n, type: 'AC', rate: 1000, capacity: 2 })
+check('default GST 12% rejected in settings', (await call('PATCH', '/api/settings', { gstPercent: '12' })).status === 400)
 await call('PATCH', '/api/settings', { gstPercent: '5' })
 const r101 = await room('101'), r102 = await room('102'), r103 = await room('103'), r104 = await room('104')
 
@@ -76,7 +77,12 @@ res = await call('POST', '/api/orders', { bookingId: bD.id, items: [{ name: 'Tea
 check('order on cancelled stay blocked', res.status === 400)
 res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 5, includeFood: false, payCash: 0 })
 check('bill+checkout leaving pending food blocked', res.status === 400, JSON.stringify(res.data))
+// room 2000 + food 100 + extra 200 - discount 300 = 2000, GST 5% = 100 → 2100, advance 500 → 1600 payable
+res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 12, includeFood: true, extraCharges: 200, discount: 300, payCash: 1600 })
+check('GST other than 0%/5% rejected', res.status === 400, JSON.stringify(res.data))
 res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 5, includeFood: true, extraCharges: 200, discount: 300, payCash: 1000 })
+check('bill without full payment rejected', res.status === 400, JSON.stringify(res.data))
+res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 5, includeFood: true, extraCharges: 200, discount: 300, payCash: 1000, payUpi: 600 })
 const bill1 = res.data
 check('bill created (fresh DB invoice counter)', res.status === 200, JSON.stringify(res.data))
 const billRows = (await ledger()).filter((e) => e.refId === bill1.id)
@@ -111,7 +117,7 @@ check('food back to PENDING', orders.find((o) => o.id === order1.id).status === 
 check('bill ledger rows gone', (await ledger()).filter((e) => e.refId === bill1.id).length === 0)
 
 console.log('— reservation due today, checkout of previous guest, check-in')
-res = await call('POST', '/api/bills', { bookingId: bB.id, days: 1, payCash: 0 })
+res = await call('POST', '/api/bills', { bookingId: bB.id, days: 1, gstPercent: 5, payCash: 1050 })
 check('bill+checkout 102', res.status === 200, JSON.stringify(res.data))
 check('102 now BOOKED for Chitra (was VACANT)', (await room('102')).status === 'BOOKED', (await room('102')).status)
 res = await call('PATCH', '/api/bookings', { id: bC.id, action: 'checkin' })
@@ -128,6 +134,10 @@ res = await call('POST', '/api/orders', { bookingId: bC.id, items: [{ name: 'Lun
 await call('PATCH', '/api/orders', { id: res.data.id, action: 'paid', method: 'UPI' })
 const rep = (await call('GET', `/api/reports?from=${plus(-1)}&to=${plus(1)}`)).data
 check('room guest paid-at-restaurant order counted', rep.collections.directFood >= 300, String(rep.collections.directFood))
+const todayRow = rep.collectionsDaily.find((d) => d.date === today)
+const dailySum = rep.collectionsDaily.reduce((s, d) => s + d.total, 0)
+check('collections has a row for today', !!todayRow, JSON.stringify(rep.collectionsDaily))
+check('day-wise collections add up to the range total', Math.abs(dailySum - rep.collections.total) < 0.01, `${dailySum} vs ${rep.collections.total}`)
 
 console.log('— staff payments')
 const staff = (await call('POST', '/api/staff', { name: 'Ravi', salary: 10000 })).data
