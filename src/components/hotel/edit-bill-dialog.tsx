@@ -135,7 +135,8 @@ export function EditBillDialog({
     const payable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
 
     const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
-    const internalGst = Math.round(internalTaxable * gstRate) / 100
+    // Internal GST = the GST charged on the invoice (custom amount for corporate bills)
+    const internalGst = gstAmount
     const internalTotal = Math.round((internalTaxable + internalGst) * 100) / 100
 
     const paid = num(payCash) + num(payUpi) + num(payCard)
@@ -328,7 +329,7 @@ export function EditBillDialog({
               </div>
             </div>
             <p className="text-[11px] text-muted-foreground -mt-2">
-              Internal revenue: {formatINR(calc.internalTotal)} (actual tariff + GST)
+              Internal revenue: {formatINR(calc.internalTotal)} (actual tariff + invoice GST)
             </p>
 
             {calc.customerAmount !== calc.actualRoomTotal && (

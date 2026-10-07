@@ -159,7 +159,8 @@ export function GenerateBillDialog({
 
     // Hotel internal accounting total
     const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
-    const internalGst = Math.round(internalTaxable * num(gstPercent)) / 100
+    // Internal GST = the GST charged on the invoice (custom amount for corporate bills)
+    const internalGst = gstAmount
     const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
 
     const paid = num(payCash) + num(payUpi) + num(payCard)
@@ -339,7 +340,7 @@ export function GenerateBillDialog({
                   </div>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Internal revenue: <b>{formatINR(calc.internalTotal)}</b> (actual tariff + GST)
+                  Internal revenue: <b>{formatINR(calc.internalTotal)}</b> (actual tariff + invoice GST)
                 </p>
 
                 <div className="space-y-1.5 pt-1">

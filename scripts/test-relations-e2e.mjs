@@ -139,6 +139,24 @@ const dailySum = rep.collectionsDaily.reduce((s, d) => s + d.total, 0)
 check('collections has a row for today', !!todayRow, JSON.stringify(rep.collectionsDaily))
 check('day-wise collections add up to the range total', Math.abs(dailySum - rep.collections.total) < 0.01, `${dailySum} vs ${rep.collections.total}`)
 
+console.log('— custom corporate bill: invoice GST on the custom amount goes into Internal Total')
+await call('POST', '/api/rooms', { number: '105', type: 'AC', rate: 800, capacity: 2 })
+const r105 = await room('105')
+res = await call('POST', '/api/bookings', { roomId: r105.id, phone: '9876500020', name: 'Corp Guest', checkIn: new Date().toISOString(), checkOut: plus(1), bookingType: 'CHECKIN', isCorporate: true })
+const bCorp = res.data
+// actual 800, custom 4000, GST 5% of 4000 = 200 → invoice 4200, internal total 800 + 200 = 1000
+res = await call('POST', '/api/bills', { bookingId: bCorp.id, days: 1, billedRoomTotal: 4000, gstPercent: 5, corporateName: 'Acme', managerPin: '5678', payCash: 4200 })
+const corpBill = res.data
+check('custom bill created', res.status === 200, JSON.stringify(res.data))
+check('invoice total 4200 (4000 + 200 GST)', corpBill.grandTotal === 4200, String(corpBill.grandTotal))
+check('internal GST = 200 (5% of custom amount)', corpBill.internalGst === 200, String(corpBill.internalGst))
+check('internal total = 800 + 200 = 1000', corpBill.internalTotal === 1000, String(corpBill.internalTotal))
+const corpLedger = (await ledger()).filter((e) => e.refId === corpBill.id).reduce((s, e) => s + e.amount, 0)
+check('ledger income for the bill = 1000', Math.abs(corpLedger - 1000) < 0.01, String(corpLedger))
+const repCorp = (await call('GET', `/api/reports?from=${plus(-1)}&to=${plus(1)}`)).data
+const corpRow = repCorp.invoices.rows.find((r) => r.id === corpBill.id)
+check('Reports row internal total 1000 / internal GST 200', corpRow.internalTotal === 1000 && corpRow.internalGst === 200, JSON.stringify(corpRow))
+
 console.log('— staff payments')
 const staff = (await call('POST', '/api/staff', { name: 'Ravi', salary: 10000 })).data
 const sp = (await call('POST', '/api/staff-payments', { staffId: staff.id, type: 'SALARY', amount: 5000 })).data

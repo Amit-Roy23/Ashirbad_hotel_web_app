@@ -20,7 +20,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
 import { api, apiAs, formatDateTime, exportCSV, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
@@ -51,6 +50,23 @@ interface AppUserRow {
   createdAt: string
 }
 
+/** "BILL_FINALIZED" -> "Bill Finalized" */
+function auditLabel(action: string): string {
+  return action
+    .toLowerCase()
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+function auditTone(action: string): string {
+  if (/DELETE|CANCEL/.test(action)) return 'border-red-300 text-red-700 dark:border-red-800 dark:text-red-300'
+  if (/CUSTOM|WAIVED|CORRECTION/.test(action)) return 'border-violet-300 text-violet-700 dark:border-violet-800 dark:text-violet-300'
+  if (/PAYMENT|BILL|ORDER_PAID|LEDGER_INCOME/.test(action)) return 'border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300'
+  if (/EXTEND|CHECKOUT|CHECKIN|CHANGE_ROOM/.test(action)) return 'border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-300'
+  return 'text-foreground'
+}
+
 interface AuditRow {
   id: string
   action: string
@@ -77,6 +93,7 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
   const [users, setUsers] = useState<AppUserRow[]>([])
   const [audit, setAudit] = useState<AuditRow[]>([])
   const [auditAction, setAuditAction] = useState('ALL')
+  const [auditSearch, setAuditSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -175,7 +192,13 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
     )
   }
 
-  const filteredAudit = auditAction === 'ALL' ? audit : audit.filter((a) => a.action === auditAction)
+  const auditActions = [...new Set(audit.map((a) => a.action))].sort()
+  const auditQ = auditSearch.trim().toLowerCase()
+  const filteredAudit = audit.filter((a) => {
+    if (auditAction !== 'ALL' && a.action !== auditAction) return false
+    if (auditQ && !`${a.action} ${a.details || ''} ${a.userName || ''} ${a.entity}`.toLowerCase().includes(auditQ)) return false
+    return true
+  })
 
   return (
     <div className="space-y-4">
@@ -449,24 +472,29 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
             <div className="flex items-center gap-2">
               <History className="h-4 w-4 text-emerald-600" />
               <p className="text-sm font-semibold">Audit Trail</p>
+              <span className="text-xs text-muted-foreground">
+                {filteredAudit.length} of {audit.length}
+              </span>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Input
+                value={auditSearch}
+                onChange={(e) => setAuditSearch(e.target.value)}
+                placeholder="Search details or user…"
+                className="h-8 w-[200px] text-xs"
+                aria-label="Search audit trail"
+              />
               <Select value={auditAction} onValueChange={setAuditAction}>
-                <SelectTrigger className="h-8 w-[170px]" aria-label="Filter audit actions">
+                <SelectTrigger className="h-8 w-[190px]" aria-label="Filter audit actions">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ALL">All Actions</SelectItem>
-                  <SelectItem value="CUSTOM_BILL">Custom Billing</SelectItem>
-                  <SelectItem value="BILL_CREATE">Invoices</SelectItem>
-                  <SelectItem value="BOOKING_CREATE">Bookings</SelectItem>
-                  <SelectItem value="CHECKIN">Check-ins</SelectItem>
-                  <SelectItem value="CHECKOUT">Checkouts</SelectItem>
-                  <SelectItem value="BOOKING_CANCEL">Cancellations</SelectItem>
-                  <SelectItem value="PAYMENT">Payments</SelectItem>
-                  <SelectItem value="STAFF_PAYMENT">Staff Payments</SelectItem>
-                  <SelectItem value="EXPENSE">Expenses</SelectItem>
-                  <SelectItem value="SETTINGS">Settings</SelectItem>
+                  {auditActions.map((act) => (
+                    <SelectItem key={act} value={act}>
+                      {auditLabel(act)}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               <Button size="sm" variant="outline" onClick={exportAudit}>
@@ -474,44 +502,28 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
               </Button>
             </div>
           </div>
-          <div className="max-h-80 overflow-y-auto rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Time</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Details</TableHead>
-                  <TableHead>User</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredAudit.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
-                      No audit entries yet.
-                    </TableCell>
-                  </TableRow>
+
+          <div className="max-h-[480px] overflow-y-auto rounded-lg border divide-y">
+            {filteredAudit.length === 0 && (
+              <p className="py-6 text-center text-sm text-muted-foreground">No audit entries found.</p>
+            )}
+            {filteredAudit.map((a) => (
+              <div key={a.id} className="space-y-1 px-3 py-2.5 hover:bg-muted/40">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Badge variant="outline" className={`text-[10px] font-semibold ${auditTone(a.action)}`}>
+                    {auditLabel(a.action)}
+                  </Badge>
+                  <span className="text-[11px] text-muted-foreground">{formatDateTime(a.createdAt)}</span>
+                  <span className="ml-auto text-[11px] font-medium text-foreground">
+                    {a.userName || '—'}
+                    {a.userRole ? <span className="font-normal text-muted-foreground"> · {a.userRole}</span> : null}
+                  </span>
+                </div>
+                {a.details && (
+                  <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">{a.details}</p>
                 )}
-                {filteredAudit.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="whitespace-nowrap text-xs">{formatDateTime(a.createdAt)}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className={`text-[10px] ${a.action === 'CUSTOM_BILL' ? 'border-violet-400 text-violet-700 dark:text-violet-300' : ''}`}
-                      >
-                        {a.action}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="max-w-[420px] text-xs">{a.details}</TableCell>
-                    <TableCell className="whitespace-nowrap text-xs">
-                      {a.userName || '—'}
-                      {a.userRole ? ` (${a.userRole})` : ''}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>
