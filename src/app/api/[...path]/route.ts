@@ -110,6 +110,23 @@ function defaultLodgingGst(settingValue: string | undefined): number {
   return Number(settingValue) === 0 ? 0 : 5
 }
 
+/**
+ * Hotel internal accounting for a room bill: actual tariff + food + extra − discount,
+ * plus the GST charged on the invoice. For a custom corporate bill that GST is 5% of the
+ * custom amount (e.g. ₹4000 → ₹200), so it is added in full to the internal total.
+ * Computed from the bill's fields so older bills show the same rule in Reports.
+ */
+function billInternal(b: {
+  actualRoomTotal: number
+  foodTotal: number
+  extraCharges: number
+  discount: number
+  actualGst: number
+}): { gst: number; total: number } {
+  const taxable = Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount)
+  return { gst: b.actualGst, total: Math.round((taxable + b.actualGst) * 100) / 100 }
+}
+
 function num(v: unknown): number {
   const f = parseFloat(String(v))
   return isNaN(f) ? 0 : f
@@ -1458,7 +1475,8 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
 
   // Hotel internal accounting calculation
   const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
-  const internalGst = Math.round(internalTaxable * gstPct) / 100
+  // Internal total = actual tariff + the GST actually charged on the invoice (on the custom amount for corporate bills)
+  const internalGst = billedGst
   const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
 
   const cash = num(payCash)
@@ -1763,7 +1781,8 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
 
   // Internal accounting calculation
   const internalTaxable = Math.max(0, actualRoomTotal + bill.foodTotal + extra - disc)
-  const internalGst = Math.round(internalTaxable * newGstPercent) / 100
+  // Internal total = actual tariff + the GST actually charged on the invoice (on the custom amount for corporate bills)
+  const internalGst = newBilledGst
   const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
 
   const cash = payCash !== undefined ? num(payCash) : bill.payCash
@@ -2552,6 +2571,11 @@ async function getStats() {
         bookingId: true,
         grandTotal: true,
         internalTotal: true,
+        actualGst: true,
+        actualRoomTotal: true,
+        foodTotal: true,
+        extraCharges: true,
+        discount: true,
         advanceApplied: true,
         payCash: true,
         payUpi: true,
@@ -2580,7 +2604,7 @@ async function getStats() {
   const booked = rooms.filter((r) => r.status === 'BOOKED').length
   const maintenance = rooms.filter((r) => r.status === 'MAINTENANCE').length
   const dirtyRooms = rooms.filter((r) => r.housekeeping === 'DIRTY').length
-  const todayRevenue = todayBills.reduce((s, b) => s + (b.internalTotal !== undefined && b.internalTotal > 0 ? b.internalTotal : b.grandTotal), 0)
+  const todayRevenue = todayBills.reduce((s, b) => s + billInternal(b).total, 0)
 
   const billedBookingIds = new Set(allBills.map((b) => b.bookingId))
   const income = todayLedger
@@ -3149,11 +3173,11 @@ async function getReports(req: NextRequest) {
     revenue: {
       actualRoomRevenue: bills.reduce((s, b) => s + b.actualRoomTotal, 0),
       billedRoomRevenue: bills.reduce((s, b) => s + b.billedRoomTotal, 0),
-      gst: bills.reduce((s, b) => s + (b.internalGst !== undefined && b.internalGst > 0 ? b.internalGst : (Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01 ? b.actualGst : Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100)), 0),
+      gst: bills.reduce((s, b) => s + billInternal(b).gst, 0),
       foodRoomPosted: bills.reduce((s, b) => s + b.foodTotal, 0),
       foodDirect: orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0),
       discounts: bills.reduce((s, b) => s + b.discount, 0),
-      grandTotal: bills.reduce((s, b) => s + (b.internalTotal !== undefined && b.internalTotal > 0 ? b.internalTotal : (Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01 ? b.grandTotal : Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) + Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100)), 0),
+      grandTotal: bills.reduce((s, b) => s + billInternal(b).total, 0),
     },
     invoices: {
       count: bills.length,
@@ -3169,9 +3193,9 @@ async function getReports(req: NextRequest) {
         billedRoomTotal: b.billedRoomTotal,
         foodTotal: b.foodTotal,
         gst: b.actualGst,
-        internalGst: b.internalGst !== undefined && b.internalGst > 0 ? b.internalGst : (Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01 ? b.actualGst : Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100),
+        internalGst: billInternal(b).gst,
         grandTotal: b.grandTotal,
-        internalTotal: b.internalTotal !== undefined && b.internalTotal > 0 ? b.internalTotal : (Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01 ? b.grandTotal : Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) + Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100),
+        internalTotal: billInternal(b).total,
         isCustom: Math.abs(b.billedRoomTotal - b.actualRoomTotal) > 0.01 || (!!b.roomDescription && b.roomDescription !== b.booking.room.type) || (!!b.roomNumber && b.roomNumber !== b.booking.room.number),
         approvedBy: b.approvedBy,
       })),
