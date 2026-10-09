@@ -30,7 +30,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking, BanquetBill, BanquetStats } from '@/types/banquet'
@@ -527,10 +527,11 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               size="sm"
               variant="outline"
               className="gap-1 text-xs"
-              onClick={() =>
+              onClick={() => {
+                const headers = ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
                 exportCSV(
                   'banquet_bookings.csv',
-                  ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status'],
+                  headers,
                   filteredBookings.map((b) => [
                     b.bookingNumber,
                     formatDate(b.eventDate),
@@ -548,9 +549,41 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     b.paymentStatus,
                   ])
                 )
-              }
+              }}
             >
               <Download className="h-3.5 w-3.5" /> Export
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1 text-xs"
+              onClick={() => {
+                const headers = ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
+                printTableReport(
+                  'Banquet Bookings Report',
+                  headers,
+                  filteredBookings.map((b) => [
+                    b.bookingNumber,
+                    formatDate(b.eventDate),
+                    b.slot,
+                    b.eventName,
+                    b.hall?.name || '',
+                    b.customerName,
+                    b.customerPhone,
+                    b.guestCount,
+                    formatINR(b.hallRent),
+                    formatINR(b.foodTotal),
+                    formatINR(b.totalEstimated),
+                    formatINR(b.advancePaid),
+                    b.status,
+                    b.paymentStatus,
+                  ]),
+                  `${filteredBookings.length} banquet bookings listed`
+                )
+              }}
+            >
+              <Printer className="h-3.5 w-3.5" /> Print
             </Button>
           </div>
 
@@ -672,10 +705,11 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               size="sm"
               variant="outline"
               className="gap-1 text-xs"
-              onClick={() =>
+              onClick={() => {
+                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'GST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
                 exportCSV(
                   'banquet_invoices.csv',
-                  ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'GST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status'],
+                  headers,
                   filteredBills.map((b) => {
                     const paid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0) + (b.payBank || 0)
                     const bal = Math.max(0, b.grandTotal - paid)
@@ -696,9 +730,44 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     ]
                   })
                 )
-              }
+              }}
             >
               <Download className="h-3.5 w-3.5" /> Export CSV
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1 text-xs"
+              onClick={() => {
+                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'GST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
+                printTableReport(
+                  'Banquet Invoices Report',
+                  headers,
+                  filteredBills.map((b) => {
+                    const paid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0) + (b.payBank || 0)
+                    const bal = Math.max(0, b.grandTotal - paid)
+                    return [
+                      b.billNumber,
+                      formatDateTime(b.createdAt),
+                      b.customerName,
+                      b.customerPhone,
+                      b.eventName,
+                      b.hallName,
+                      formatINR(b.taxableAmount),
+                      formatINR(b.gstAmount),
+                      formatINR(b.grandTotal),
+                      formatINR(b.advanceApplied),
+                      formatINR(paid - b.advanceApplied),
+                      formatINR(bal),
+                      b.paymentStatus,
+                    ]
+                  }),
+                  `${filteredBills.length} banquet invoices listed`
+                )
+              }}
+            >
+              <Printer className="h-3.5 w-3.5" /> Print
             </Button>
           </div>
 

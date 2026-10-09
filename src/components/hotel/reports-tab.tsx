@@ -30,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import {
@@ -394,24 +394,45 @@ export function ReportsTab({ refreshKey }: TabProps) {
                 <Badge variant="outline">
                   {data.invoices.count} invoices · {data.invoices.customCount} custom
                 </Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'invoice-report.csv',
-                      ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'Food', 'GST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
-                      data.invoices.rows.map((r) => [
-                        r.billNumber, formatDateTime(r.date), r.guestName, r.originalRoomNumber || r.roomNumber, r.roomNumber,
-                        r.actualRoomTotal, r.billedRoomTotal, r.roomDescription || '', r.foodTotal, r.gst, r.internalGst, r.grandTotal, r.internalTotal,
-                        r.isCustom ? 'Yes' : 'No', r.approvedBy || '',
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'Invoice Report',
+                        ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'GST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
+                        data.invoices.rows.map((r) => [
+                          r.billNumber, formatDateTime(r.date), r.guestName, r.originalRoomNumber || r.roomNumber, r.roomNumber,
+                          formatINR(r.actualRoomTotal), formatINR(r.billedRoomTotal), r.roomDescription || '', formatINR(r.gst), formatINR(r.internalGst), formatINR(r.grandTotal), formatINR(r.internalTotal),
+                          r.isCustom ? 'Yes' : 'No', r.approvedBy || '',
+                        ]),
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'invoice-report.csv',
+                        ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'GST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
+                        data.invoices.rows.map((r) => [
+                          r.billNumber, formatDateTime(r.date), r.guestName, r.originalRoomNumber || r.roomNumber, r.roomNumber,
+                          r.actualRoomTotal, r.billedRoomTotal, r.roomDescription || '', r.gst, r.internalGst, r.grandTotal, r.internalTotal,
+                          r.isCustom ? 'Yes' : 'No', r.approvedBy || '',
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export
+                  </Button>
+                </div>
               </div>
               <div className="overflow-x-auto rounded-lg border">
                 <Table>
@@ -609,23 +630,43 @@ export function ReportsTab({ refreshKey }: TabProps) {
                 <Badge variant="outline">{data.occupancy.bookingsCount} bookings</Badge>
                 <Badge variant="outline">{data.occupancy.roomNightsSold} room-nights billed</Badge>
                 <Badge variant="outline">{data.occupancy.inHouseGuests} in-house now</Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'booking-report.csv',
-                      ['Guest', 'Phone', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Rate', 'Status', 'Payment'],
-                      data.bookings.rows.map((r) => [
-                        r.guestName, r.phone, r.roomNumber, formatDate(r.checkIn), formatDate(r.checkOut),
-                        r.days, r.ratePerDay, r.status, r.paymentStatus,
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'Bookings Report',
+                        ['Guest', 'Phone', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Rate', 'Status', 'Payment'],
+                        data.bookings.rows.map((r) => [
+                          r.guestName, r.phone, r.roomNumber, formatDate(r.checkIn), formatDate(r.checkOut),
+                          r.days, formatINR(r.ratePerDay), r.status, r.paymentStatus,
+                        ]),
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'booking-report.csv',
+                        ['Guest', 'Phone', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Rate', 'Status', 'Payment'],
+                        data.bookings.rows.map((r) => [
+                          r.guestName, r.phone, r.roomNumber, formatDate(r.checkIn), formatDate(r.checkOut),
+                          r.days, r.ratePerDay, r.status, r.paymentStatus,
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export
+                  </Button>
+                </div>
               </div>
               <div className="max-h-96 overflow-y-auto rounded-lg border">
                 <Table>
@@ -675,23 +716,43 @@ export function ReportsTab({ refreshKey }: TabProps) {
                 <Badge variant="outline">
                   Room-posted: {formatINR(data.revenue.foodRoomPosted)} · Direct: {formatINR(data.revenue.foodDirect)}
                 </Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'food-sales.csv',
-                      ['Time', 'Room', 'Table', 'Items', 'Total', 'Posted To Room', 'Taken By'],
-                      data.food.rows.map((r) => [
-                        formatDateTime(r.time), r.roomNumber || '', r.tableNo || '', r.items, r.total,
-                        r.postedToRoom ? 'Yes' : 'No', r.createdBy || '',
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'Food Sales Report',
+                        ['Time', 'Room', 'Table', 'Items', 'Total', 'Posted To Room', 'Taken By'],
+                        data.food.rows.map((r) => [
+                          formatDateTime(r.time), r.roomNumber || '', r.tableNo || '', r.items, formatINR(r.total),
+                          r.postedToRoom ? 'Yes' : 'No', r.createdBy || '',
+                        ]),
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'food-sales.csv',
+                        ['Time', 'Room', 'Table', 'Items', 'Total', 'Posted To Room', 'Taken By'],
+                        data.food.rows.map((r) => [
+                          formatDateTime(r.time), r.roomNumber || '', r.tableNo || '', r.items, r.total,
+                          r.postedToRoom ? 'Yes' : 'No', r.createdBy || '',
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export
+                  </Button>
+                </div>
               </div>
               <div className="max-h-96 space-y-1.5 overflow-y-auto">
                 {data.food.rows.length === 0 && <p className="py-4 text-center text-sm text-muted-foreground">No food sales in range.</p>}
@@ -717,22 +778,41 @@ export function ReportsTab({ refreshKey }: TabProps) {
               <div className="flex flex-wrap gap-2">
                 <Badge variant="outline">Salary paid: {formatINR(data.staff.salaryTotal)}</Badge>
                 <Badge variant="outline">Advances: {formatINR(data.staff.advanceTotal)}</Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'staff-report.csv',
-                      ['Staff', 'Type', 'Amount', 'Mode', 'Date', 'Recovery Notes'],
-                      data.staff.rows.map((r) => [
-                        r.staffName, r.type, r.amount, r.method, formatDate(r.date), r.recoveryNotes || '',
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'Staff Payments Report',
+                        ['Staff', 'Type', 'Amount', 'Mode', 'Date', 'Recovery Notes'],
+                        data.staff.rows.map((r) => [
+                          r.staffName, r.type, formatINR(r.amount), r.method, formatDate(r.date), r.recoveryNotes || '',
+                        ]),
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'staff-report.csv',
+                        ['Staff', 'Type', 'Amount', 'Mode', 'Date', 'Recovery Notes'],
+                        data.staff.rows.map((r) => [
+                          r.staffName, r.type, r.amount, r.method, formatDate(r.date), r.recoveryNotes || '',
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export
+                  </Button>
+                </div>
               </div>
               <div className="max-h-96 overflow-y-auto rounded-lg border">
                 <Table>
@@ -773,22 +853,41 @@ export function ReportsTab({ refreshKey }: TabProps) {
             <TabsContent value="expenses" className="mt-4 space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">Total: {formatINR(data.expenses.total)}</Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'expense-report.csv',
-                      ['Date', 'Category', 'Description', 'Vendor', 'Mode', 'Amount'],
-                      data.expenses.rows.map((r) => [
-                        formatDate(r.date), r.category, r.description, r.vendor || '', r.method, r.amount,
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'Expenses Report',
+                        ['Date', 'Category', 'Description', 'Vendor', 'Mode', 'Amount'],
+                        data.expenses.rows.map((r) => [
+                          formatDate(r.date), r.category, r.description, r.vendor || '', r.method, formatINR(r.amount),
+                        ]),
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'expense-report.csv',
+                        ['Date', 'Category', 'Description', 'Vendor', 'Mode', 'Amount'],
+                        data.expenses.rows.map((r) => [
+                          formatDate(r.date), r.category, r.description, r.vendor || '', r.method, r.amount,
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export
+                  </Button>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 {Object.entries(data.expenses.byCategory).map(([cat, amt]) => (
@@ -834,22 +933,41 @@ export function ReportsTab({ refreshKey }: TabProps) {
                 <Badge className="bg-red-600">
                   Total Outstanding: {formatINR(data.outstanding.total)}
                 </Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'outstanding-report.csv',
-                      ['Invoice', 'Guest', 'Phone', 'Room', 'Total', 'Paid', 'Balance', 'Date'],
-                      data.outstanding.rows.map((r) => [
-                        r.billNumber, r.guestName, r.phone, r.roomNumber, r.grandTotal, r.paid, r.balance, formatDate(r.createdAt),
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'Outstanding Due Report',
+                        ['Invoice', 'Guest', 'Phone', 'Room', 'Total', 'Paid', 'Balance', 'Date'],
+                        data.outstanding.rows.map((r) => [
+                          r.billNumber, r.guestName, r.phone, r.roomNumber, formatINR(r.grandTotal), formatINR(r.paid), formatINR(r.balance), formatDate(r.createdAt),
+                        ]),
+                        `Total Outstanding: ${formatINR(data.outstanding.total)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'outstanding-report.csv',
+                        ['Invoice', 'Guest', 'Phone', 'Room', 'Total', 'Paid', 'Balance', 'Date'],
+                        data.outstanding.rows.map((r) => [
+                          r.billNumber, r.guestName, r.phone, r.roomNumber, r.grandTotal, r.paid, r.balance, formatDate(r.createdAt),
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export
+                  </Button>
+                </div>
               </div>
               <div className="max-h-96 overflow-y-auto rounded-lg border">
                 <Table>
@@ -967,30 +1085,57 @@ export function ReportsTab({ refreshKey }: TabProps) {
                   </div>
                 </div>
 
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1"
-                  onClick={() =>
-                    exportCSV(
-                      'gst-bills-report.csv',
-                      [
-                        'Customer Name',
-                        'Invoice Number',
-                        'How Much Guest Paid',
-                        'How Much GST Paid',
-                      ],
-                      filteredGstRows.map((r) => [
-                        r.guestName,
-                        r.billNumber,
-                        r.paid,
-                        r.actualGst,
-                      ])
-                    )
-                  }
-                >
-                  <Download className="h-3.5 w-3.5" /> Export GST Report
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      printTableReport(
+                        'GST Tax Invoices Report',
+                        [
+                          'Customer Name',
+                          'Invoice Number',
+                          'How Much Guest Paid',
+                          'How Much GST Paid',
+                        ],
+                        filteredGstRows.map((r) => [
+                          r.guestName,
+                          r.billNumber,
+                          formatINR(r.paid),
+                          formatINR(r.actualGst),
+                        ]),
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)} · Total GST Paid: ${formatINR(data.gstBills?.totalGstAmount || 0)}`
+                      )
+                    }
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print GST Report
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() =>
+                      exportCSV(
+                        'gst-bills-report.csv',
+                        [
+                          'Customer Name',
+                          'Invoice Number',
+                          'How Much Guest Paid',
+                          'How Much GST Paid',
+                        ],
+                        filteredGstRows.map((r) => [
+                          r.guestName,
+                          r.billNumber,
+                          r.paid,
+                          r.actualGst,
+                        ])
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Export GST Report
+                  </Button>
+                </div>
               </div>
 
               {/* GST Bills Table */}

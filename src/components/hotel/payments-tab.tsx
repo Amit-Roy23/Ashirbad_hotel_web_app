@@ -13,7 +13,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV, printTableReport } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -201,13 +201,26 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'date')
   const { paged, controls } = usePagination(sorted as unknown as PaymentRow[], 10)
 
+  const paymentHeaders = ['Date', 'Source', 'Reference', 'Guest', 'Detail', 'Cash', 'UPI', 'Card', 'Total']
+
   function doExport() {
     exportCSV(
       'payments.csv',
-      ['Date', 'Source', 'Reference', 'Guest', 'Detail', 'Cash', 'UPI', 'Card', 'Total'],
+      paymentHeaders,
       (filtered as unknown as PaymentRow[]).map((r) => [
         formatDateTime(r.date), r.source, r.ref, r.guest, r.detail, r.cash, r.upi, r.card, r.amount,
       ])
+    )
+  }
+
+  function doPrint() {
+    printTableReport(
+      'Payments & Collections Report',
+      paymentHeaders,
+      (filtered as unknown as PaymentRow[]).map((r) => [
+        formatDateTime(r.date), r.source, r.ref, r.guest, r.detail, formatINR(r.cash), formatINR(r.upi), formatINR(r.card), formatINR(r.amount),
+      ]),
+      `Total Collection: ${formatINR(summary.total)} (${filtered.length} entries)`
     )
   }
 
@@ -316,6 +329,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
         }}
         onReset={resetFilters}
         onExport={doExport}
+        onPrint={doPrint}
       >
         <div className="flex items-center gap-1.5">
           <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />

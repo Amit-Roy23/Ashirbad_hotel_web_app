@@ -160,6 +160,117 @@ export function exportCSV(
   URL.revokeObjectURL(link.href)
 }
 
+/** Client-side Report / Table printing */
+export function printTableReport(
+  title: string,
+  headers: string[],
+  rows: (string | number | null | undefined)[][],
+  subtitle?: string
+) {
+  const esc = (v: string | number | null | undefined) => {
+    if (v === null || v === undefined || v === '') return '—'
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+  }
+
+  const theadHtml = headers
+    .map(
+      (h) =>
+        `<th style="border: 1px solid #cbd5e1; padding: 8px 10px; background-color: #f1f5f9; text-align: left; font-size: 11px; font-weight: 700; color: #1e293b; text-transform: uppercase;">${esc(h)}</th>`
+    )
+    .join('')
+
+  const tbodyHtml = rows
+    .map(
+      (row, idx) =>
+        `<tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">` +
+        row
+          .map(
+            (cell) =>
+              `<td style="border: 1px solid #e2e8f0; padding: 7px 10px; font-size: 11px; color: #334155;">${esc(cell)}</td>`
+          )
+          .join('') +
+        `</tr>`
+    )
+    .join('')
+
+  const printTime = new Date().toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${esc(title)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 15px; color: #0f172a; }
+    .header { margin-bottom: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-end; }
+    .title { font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.3px; }
+    .subtitle { font-size: 11px; color: #64748b; margin-top: 2px; }
+    .meta { font-size: 11px; color: #64748b; text-align: right; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    @media print {
+      body { padding: 0; }
+      th { background-color: #e2e8f0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="title">${esc(title)}</div>
+      ${subtitle ? `<div class="subtitle">${esc(subtitle)}</div>` : ''}
+    </div>
+    <div class="meta">
+      <div>Printed: <strong>${printTime}</strong></div>
+      <div>Total Records: <strong>${rows.length}</strong></div>
+    </div>
+  </div>
+  <table>
+    <thead><tr>${theadHtml}</tr></thead>
+    <tbody>${tbodyHtml || '<tr><td colspan="' + headers.length + '" style="text-align: center; padding: 20px; color: #94a3b8;">No records found</td></tr>'}</tbody>
+  </table>
+</body>
+</html>
+  `
+
+  const iframe = document.createElement('iframe')
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
+  document.body.appendChild(iframe)
+
+  const doc = iframe.contentWindow?.document
+  if (!doc) return
+
+  doc.open()
+  doc.write(html)
+  doc.close()
+
+  setTimeout(() => {
+    iframe.contentWindow?.focus()
+    iframe.contentWindow?.print()
+    setTimeout(() => {
+      document.body.removeChild(iframe)
+    }, 1000)
+  }, 300)
+}
+
 export function dateOnly(d: string | Date | null | undefined): string {
   if (!d) return '-'
   return new Date(d).toISOString().slice(0, 10)

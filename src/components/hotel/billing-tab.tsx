@@ -30,7 +30,7 @@ import { EditAdvanceBookingDialog } from './edit-advance-booking-dialog'
 import { PrintableInvoice } from './printable-invoice'
 import { PrintableAdvanceReceipt } from './printable-advance-receipt'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, payableNow } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, payableNow } from '@/lib/hotel-utils'
 import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
 import {
@@ -270,49 +270,60 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
   )
   const { paged: pagedAdvance, controls: advanceControls } = usePagination(sortedAdvance as unknown as Booking[], 10)
 
+  const checkoutExportHeaders = ['Invoice', 'Date', 'Guest', 'Phone', 'Room', 'Actual Room', 'Billed Room', 'GST', 'Grand Total', 'Advance Applied', 'Paid at Checkout', 'Balance Due', 'Status']
+
+  function getCheckoutRowsData() {
+    return (filteredBills as unknown as Bill[]).map((b) => [
+      b.billNumber,
+      formatDateTime(b.createdAt),
+      b.booking?.guest?.name || '',
+      b.booking?.guest?.phone || '',
+      b.roomNumber || b.booking?.room?.number || '',
+      formatINR(b.actualRoomTotal),
+      formatINR(b.billedRoomTotal),
+      formatINR(b.actualGst),
+      formatINR(b.grandTotal),
+      formatINR(b.advanceApplied),
+      formatINR(paidOf(b) - (b.advanceApplied || 0)),
+      formatINR(balanceOf(b)),
+      balanceOf(b) <= 0.01 ? 'PAID' : 'PARTIAL',
+    ])
+  }
+
   function doExportCheckout() {
-    exportCSV(
-      'checkout_invoices.csv',
-      ['Invoice', 'Date', 'Guest', 'Phone', 'Room', 'Actual Room', 'Billed Room', 'Food', 'GST', 'Grand Total', 'Advance Applied', 'Paid at Checkout', 'Balance Due', 'Status'],
-      (filteredBills as unknown as Bill[]).map((b) => [
-        b.billNumber,
-        formatDateTime(b.createdAt),
-        b.booking?.guest?.name || '',
-        b.booking?.guest?.phone || '',
-        b.roomNumber || b.booking?.room?.number || '',
-        b.actualRoomTotal,
-        b.billedRoomTotal,
-        b.foodTotal,
-        b.actualGst,
-        b.grandTotal,
-        b.advanceApplied,
-        paidOf(b) - (b.advanceApplied || 0),
-        balanceOf(b),
-        balanceOf(b) <= 0.01 ? 'PAID' : 'PARTIAL',
-      ])
-    )
+    exportCSV('checkout_invoices.csv', checkoutExportHeaders, getCheckoutRowsData())
+  }
+
+  function doPrintCheckout() {
+    printTableReport('Checkout Invoices Report', checkoutExportHeaders, getCheckoutRowsData(), `${filteredBills.length} checkout invoices`)
+  }
+
+  const bookingAdvanceHeaders = ['Receipt No', 'Date', 'Guest', 'Phone', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Rate/Night', 'Estimated Stay Value', 'Advance Paid', 'Balance on Checkout', 'Status']
+
+  function getBookingAdvanceRowsData() {
+    return (filteredAdvanceBookings as unknown as Booking[]).map((b) => [
+      `ADV-${b.id.slice(-6).toUpperCase()}`,
+      formatDateTime(b.createdAt),
+      b.guest?.name || '',
+      b.guest?.phone || '',
+      b.room?.number || '',
+      formatDate(b.checkIn),
+      formatDate(b.checkOut),
+      b.days,
+      formatINR(b.ratePerDay),
+      formatINR(b.ratePerDay * b.days),
+      formatINR(b.advance),
+      formatINR(Math.max(0, b.ratePerDay * b.days - b.advance)),
+      'PAID',
+    ])
   }
 
   function doExportBooking() {
-    exportCSV(
-      'advance_booking_bills.csv',
-      ['Receipt No', 'Date', 'Guest', 'Phone', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Rate/Night', 'Estimated Stay Value', 'Advance Paid', 'Balance on Checkout', 'Status'],
-      (filteredAdvanceBookings as unknown as Booking[]).map((b) => [
-        `ADV-${b.id.slice(-6).toUpperCase()}`,
-        formatDateTime(b.createdAt),
-        b.guest?.name || '',
-        b.guest?.phone || '',
-        b.room?.number || '',
-        formatDate(b.checkIn),
-        formatDate(b.checkOut),
-        b.days,
-        b.ratePerDay,
-        b.ratePerDay * b.days,
-        b.advance,
-        Math.max(0, b.ratePerDay * b.days - b.advance),
-        'PAID',
-      ])
-    )
+    exportCSV('advance_booking_bills.csv', bookingAdvanceHeaders, getBookingAdvanceRowsData())
+  }
+
+  function doPrintBooking() {
+    printTableReport('Advance Booking Receipts Report', bookingAdvanceHeaders, getBookingAdvanceRowsData(), `${filteredAdvanceBookings.length} advance receipts`)
   }
 
   if (loading) {
@@ -639,6 +650,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 setKind('ALL')
               }}
               onExport={doExportCheckout}
+              onPrint={doPrintCheckout}
             >
               <div className="flex items-center gap-1.5">
                 <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />
@@ -884,6 +896,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 setAdvTo('')
               }}
               onExport={doExportBooking}
+              onPrint={doPrintBooking}
             >
               <div className="flex items-center gap-1.5">
                 <Input type="date" value={advFrom} onChange={(e) => setAdvFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />

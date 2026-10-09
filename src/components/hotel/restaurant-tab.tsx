@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDateTime, formatDate, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDateTime, formatDate, exportCSV, printTableReport } from '@/lib/hotel-utils'
 import { triggerPrintFoodBill } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import {
@@ -431,10 +431,12 @@ export function RestaurantTab({
     )
   }
 
+  const orderHeaders = ['Time', 'Type', 'Room / Guest', 'Items', 'Total', 'Status', 'Taken By']
+
   function exportOrders() {
     exportCSV(
       'food-orders.csv',
-      ['Time', 'Type', 'Room / Guest', 'Items', 'Total', 'Status', 'Taken By'],
+      orderHeaders,
       filteredOrders.map((o) => [
         formatDateTime(o.createdAt),
         o.room ? 'Room Service' : 'Direct / Parcel',
@@ -444,6 +446,24 @@ export function RestaurantTab({
         o.status,
         o.createdBy || '',
       ])
+    )
+  }
+
+  function printOrders() {
+    const totalAmount = filteredOrders.reduce((sum, o) => sum + o.total, 0)
+    printTableReport(
+      'Food & Restaurant Orders Report',
+      orderHeaders,
+      filteredOrders.map((o) => [
+        formatDateTime(o.createdAt),
+        o.room ? 'Room Service' : 'Direct / Parcel',
+        o.room ? `Room ${o.room.number} (${o.booking?.guest?.name || '-'})` : 'Direct Takeaway',
+        o.items.map((it) => `${it.name} x${it.quantity}`).join('; '),
+        formatINR(o.total),
+        o.status,
+        o.createdBy || '',
+      ]),
+      `Total Orders: ${filteredOrders.length} · Total Value: ${formatINR(totalAmount)}`
     )
   }
 
@@ -922,9 +942,14 @@ export function RestaurantTab({
                 <SelectItem value="DIRECT">Direct / Takeaway</SelectItem>
               </SelectContent>
             </Select>
-            <Button variant="outline" size="sm" className="ml-auto gap-1" onClick={exportOrders}>
-              <Download className="h-3.5 w-3.5" /> Export
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="outline" size="sm" className="gap-1" onClick={exportOrders}>
+                <Download className="h-3.5 w-3.5" /> Export
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1" onClick={printOrders}>
+                <Printer className="h-3.5 w-3.5" /> Print
+              </Button>
+            </div>
           </div>
 
           {filteredOrders.length === 0 && (

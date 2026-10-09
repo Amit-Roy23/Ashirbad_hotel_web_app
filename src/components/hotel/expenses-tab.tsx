@@ -28,7 +28,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, apiList, formatINR, formatDate, exportCSV, todayStr } from '@/lib/hotel-utils'
+import { api, apiAs, apiList, formatINR, formatDate, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { Loader2, Plus, Trash2, Tag, TrendingDown, Pencil } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
@@ -141,13 +141,26 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'date')
   const { paged, controls } = usePagination(sorted as unknown as LedgerEntry[], 10)
 
+  const expenseHeaders = ['Date', 'Category', 'Description', 'Vendor/Staff', 'Mode', 'Amount']
+
   function doExport() {
     exportCSV(
       'expenses.csv',
-      ['Date', 'Category', 'Description', 'Vendor/Staff', 'Mode', 'Amount'],
+      expenseHeaders,
       (filtered as unknown as LedgerEntry[]).map((e) => [
         formatDate(e.date), e.category, e.description, e.vendor || '', e.method, e.amount,
       ])
+    )
+  }
+
+  function doPrint() {
+    printTableReport(
+      'Expenses Report',
+      expenseHeaders,
+      (filtered as unknown as LedgerEntry[]).map((e) => [
+        formatDate(e.date), e.category, e.description, e.vendor || '', e.method, formatINR(e.amount),
+      ]),
+      `Total Expenses: ${formatINR(summary.total)} (${filtered.length} entries)`
     )
   }
 
@@ -318,6 +331,7 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
         onFilterChange={(k, v) => k === 'category' && setCategory(v)}
         onReset={resetFilters}
         onExport={doExport}
+        onPrint={doPrint}
       >
         <div className="flex items-center gap-1.5">
           <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />

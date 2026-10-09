@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/select'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { Loader2, History, Pencil, Trash2, ShieldCheck, AlertTriangle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -141,25 +141,55 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'createdAt')
   const { paged, controls } = usePagination(sorted as unknown as GuestRow[], 10)
 
+  const guestExportHeaders = [
+    'Guest Name',
+    'Phone Number',
+    'Gov ID Proof Number',
+    'How Much Paid',
+    'Date to Stay (From - To)',
+  ]
+
+  function getGuestRowsData() {
+    return (filtered as unknown as GuestRow[]).map((g) => {
+      let totalPaid = 0
+      for (const b of g.bookings || []) {
+        if (b.bills && b.bills.length > 0) {
+          for (const bill of b.bills) {
+            totalPaid +=
+              (Number(bill.advanceApplied) || 0) +
+              (Number(bill.payCash) || 0) +
+              (Number(bill.payUpi) || 0) +
+              (Number(bill.payCard) || 0)
+          }
+        } else if (b.advance) {
+          totalPaid += Number(b.advance) || 0
+        }
+      }
+      totalPaid = Math.round(totalPaid * 100) / 100
+
+      const stayDates =
+        g.bookings && g.bookings.length > 0
+          ? g.bookings
+              .map((b) => `${formatDate(b.checkIn)} to ${b.checkOut ? formatDate(b.checkOut) : 'Present'}`)
+              .join('; ')
+          : '—'
+
+      return [
+        g.name,
+        g.phone,
+        g.idProof ? formatGovIdDisplay(g.idProof) : '—',
+        totalPaid,
+        stayDates,
+      ]
+    })
+  }
+
   function doExport() {
-    exportCSV(
-      'guests-report.csv',
-      ['Name', 'Phone Number', 'ID Proof and Number', 'Staying Date (From - To)'],
-      (filtered as unknown as GuestRow[]).map((g) => {
-        const stayDates =
-          g.bookings && g.bookings.length > 0
-            ? g.bookings
-                .map((b) => `${formatDate(b.checkIn)} to ${b.checkOut ? formatDate(b.checkOut) : 'Present'}`)
-                .join('; ')
-            : '—'
-        return [
-          g.name,
-          g.phone,
-          g.idProof ? formatGovIdDisplay(g.idProof) : '—',
-          stayDates,
-        ]
-      })
-    )
+    exportCSV('guests-report.csv', guestExportHeaders, getGuestRowsData())
+  }
+
+  function doPrint() {
+    printTableReport('Guests Directory Report', guestExportHeaders, getGuestRowsData(), `${filtered.length} guests recorded`)
   }
 
   function openEdit(g: GuestRow) {
@@ -231,6 +261,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
         searchPlaceholder="Name, phone, company, GST…"
         onReset={() => setSearch('')}
         onExport={doExport}
+        onPrint={doPrint}
       />
 
       <div className="overflow-x-auto rounded-lg border">

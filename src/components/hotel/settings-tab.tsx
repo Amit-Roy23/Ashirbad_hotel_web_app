@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
-import { api, apiAs, formatDateTime, exportCSV, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
+import { api, apiAs, formatDateTime, exportCSV, printTableReport, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
 import { useUser, getCachedUser } from './user-context'
 import { LoginDialog } from './login-dialog'
 import { AdminDeleteDialog } from './admin-delete-dialog'
@@ -43,6 +43,8 @@ import {
   Clock,
   Trash2,
   Lock,
+  Printer,
+  Download,
 } from 'lucide-react'
 
 interface AppUserRow {
@@ -179,11 +181,22 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
     }
   }
 
+  const auditHeaders = ['Time', 'Action', 'Entity', 'Details', 'User', 'Role']
+
   function exportAudit() {
     exportCSV(
       'audit-log.csv',
-      ['Time', 'Action', 'Entity', 'Details', 'User', 'Role'],
+      auditHeaders,
       audit.map((a) => [formatDateTime(a.createdAt), a.action, a.entity, a.details || '', a.userName || '', a.userRole || ''])
+    )
+  }
+
+  function printAudit() {
+    printTableReport(
+      'System Audit & Activity Log',
+      auditHeaders,
+      filteredAudit.map((a) => [formatDateTime(a.createdAt), a.action, a.entity, a.details || '', a.userName || '', a.userRole || '']),
+      `${filteredAudit.length} audit log entries`
     )
   }
 
@@ -531,9 +544,16 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
                   ))}
                 </SelectContent>
               </Select>
-              <Button size="sm" variant="outline" onClick={exportAudit}>
-                Export
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button size="sm" variant="outline" className="gap-1" onClick={exportAudit}>
+                  <Download className="h-3.5 w-3.5" />
+                  Export
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={printAudit}>
+                  <Printer className="h-3.5 w-3.5" />
+                  Print
+                </Button>
+              </div>
             </div>
           </div>
 

@@ -14,9 +14,9 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDate, exportCSV, sanitizePhone } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, exportCSV, printTableReport, sanitizePhone } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
-import { Loader2, Plus, Phone, IndianRupee, UserRound, ArrowRightLeft, Search, Trash2 } from 'lucide-react'
+import { Loader2, Plus, Phone, IndianRupee, UserRound, ArrowRightLeft, Search, Trash2, Printer, Download } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface StaffPayment {
@@ -173,10 +173,12 @@ export function StaffTab({ refreshKey, onDataChanged }: { refreshKey: number; on
     )
   }
 
+  const staffHeaders = ['Name', 'Phone', 'Role', 'Monthly Salary', 'Joined', 'Status', 'Advances', 'Salary Paid Total']
+
   function exportStaff() {
     exportCSV(
       'staff.csv',
-      ['Name', 'Phone', 'Role', 'Monthly Salary', 'Joined', 'Status', 'Advances', 'Salary Paid Total'],
+      staffHeaders,
       filteredStaff.map((s) => [
         s.name,
         s.phone || '',
@@ -187,6 +189,24 @@ export function StaffTab({ refreshKey, onDataChanged }: { refreshKey: number; on
         (s.payments || []).filter((p) => p.type === 'ADVANCE').reduce((sum, p) => sum + p.amount, 0),
         (s.payments || []).filter((p) => p.type === 'SALARY').reduce((sum, p) => sum + p.amount, 0),
       ])
+    )
+  }
+
+  function printStaff() {
+    printTableReport(
+      'Staff Directory & Payroll Summary',
+      staffHeaders,
+      filteredStaff.map((s) => [
+        s.name,
+        s.phone || '',
+        s.role,
+        formatINR(s.salary),
+        formatDate(s.joinDate),
+        s.active ? 'Active' : 'Inactive',
+        formatINR((s.payments || []).filter((p) => p.type === 'ADVANCE').reduce((sum, p) => sum + p.amount, 0)),
+        formatINR((s.payments || []).filter((p) => p.type === 'SALARY').reduce((sum, p) => sum + p.amount, 0)),
+      ]),
+      `Total Active Staff: ${staff.filter((s) => s.active).length} · Monthly Salary Expense: ${formatINR(totalMonthlySalary)}`
     )
   }
 
@@ -201,8 +221,13 @@ export function StaffTab({ refreshKey, onDataChanged }: { refreshKey: number; on
             <p className="text-xs text-muted-foreground">Monthly salary expense: {formatINR(totalMonthlySalary)}</p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={exportStaff}>
+            <Button variant="outline" size="sm" onClick={exportStaff} className="gap-1">
+              <Download className="h-3.5 w-3.5" />
               Export
+            </Button>
+            <Button variant="outline" size="sm" onClick={printStaff} className="gap-1">
+              <Printer className="h-3.5 w-3.5" />
+              Print
             </Button>
             <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setAddOpen(true)}>
               <Plus className="mr-1.5 h-4 w-4" /> Add Staff

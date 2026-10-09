@@ -33,7 +33,7 @@ import { GenerateBillDialog } from './generate-bill-dialog'
 import { toast } from '@/hooks/use-toast'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState } from '@/lib/hotel-utils'
 import { calcNights, nextAutoExtensionAt, istDateStr } from '@/lib/stay'
 import { Loader2, UserPlus, LogIn, CalendarClock, XCircle, ArrowLeftRight, Wallet, Pencil, Save, Trash2, AlertTriangle, Clock, ShieldAlert, History, Eye, Phone, Info } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
@@ -265,19 +265,25 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
     setTo('')
   }
 
+  const bookingExportHeaders = ['Guest', 'Phone', 'Room', 'Check-in', 'Check-out', 'Nights', 'Rate/Night', 'Advance', 'Status', 'Payment', 'Corporate']
+
+  function getBookingRowsData() {
+    return (filtered as unknown as Booking[]).map((b) => {
+      const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
+      const effPayment = hasDue ? 'PARTIAL' : 'PAID'
+      return [
+        b.guest?.name || '', b.guest?.phone || '', b.room?.number || '', formatDate(b.checkIn), formatDate(b.checkOut),
+        b.days, formatINR(b.ratePerDay), formatINR(b.advance), b.status, effPayment, b.isCorporate ? 'Yes' : 'No',
+      ]
+    })
+  }
+
   function doExport() {
-    exportCSV(
-      'bookings.csv',
-      ['Guest', 'Phone', 'Room', 'Check-in', 'Check-out', 'Nights', 'Rate/Night', 'Advance', 'Status', 'Payment', 'Corporate'],
-      (filtered as unknown as Booking[]).map((b) => {
-        const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
-        const effPayment = hasDue ? 'PARTIAL' : 'PAID'
-        return [
-          b.guest?.name || '', b.guest?.phone || '', b.room?.number || '', formatDate(b.checkIn), formatDate(b.checkOut),
-          b.days, b.ratePerDay, b.advance, b.status, effPayment, b.isCorporate ? 'Yes' : 'No',
-        ]
-      })
-    )
+    exportCSV('bookings.csv', bookingExportHeaders, getBookingRowsData())
+  }
+
+  function doPrint() {
+    printTableReport('Bookings & Reservations Report', bookingExportHeaders, getBookingRowsData(), `${filtered.length} bookings listed`)
   }
 
   async function action(booking: Booking, act: string, extra: Record<string, unknown> = {}) {
@@ -451,6 +457,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
         }}
         onReset={resetFilters}
         onExport={doExport}
+        onPrint={doPrint}
       >
         <div className="flex items-center gap-1.5">
           <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />
