@@ -25,6 +25,7 @@ import { useTheme } from 'next-themes'
 import { api, apiAs, formatDateTime, exportCSV, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
 import { useUser, getCachedUser } from './user-context'
 import { LoginDialog } from './login-dialog'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 import { toast } from '@/hooks/use-toast'
 import {
   Loader2,
@@ -40,6 +41,8 @@ import {
   UtensilsCrossed,
   Key,
   Clock,
+  Trash2,
+  Lock,
 } from 'lucide-react'
 
 interface AppUserRow {
@@ -99,6 +102,7 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
   const [saved, setSaved] = useState(false)
   const [loginOpen, setLoginOpen] = useState(false)
   const [userDlg, setUserDlg] = useState<{ mode: 'add' | 'edit'; row?: AppUserRow } | null>(null)
+  const [deleteTargetUser, setDeleteTargetUser] = useState<AppUserRow | null>(null)
   const [uName, setUName] = useState('')
   const [uRole, setURole] = useState('RECEPTION')
   const [uPin, setUPin] = useState('')
@@ -355,6 +359,27 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
               </div>
             </div>
 
+            <div className="flex items-center gap-2 border-t pt-3">
+              <Lock className="h-4 w-4 text-emerald-600" />
+              <p className="text-sm font-semibold">Admin Security PIN</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2 space-y-1.5">
+                <Label htmlFor="s-adminpin">Master Admin / Delete Authorization PIN</Label>
+                <Input
+                  id="s-adminpin"
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="Master PIN (Default: 0000)"
+                  value={settings.adminPin || ''}
+                  onChange={(e) => setSettings({ ...settings, adminPin: e.target.value })}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Master PIN to authorize deletions across the entire hotel app (any active Admin&apos;s login PIN also works).
+                </p>
+              </div>
+            </div>
+
             <div className="flex items-center justify-between pt-2">
               <p className="text-xs text-muted-foreground">
                 Settings update across all bills, dashboard, and stay calculations.
@@ -399,7 +424,7 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
                         {u.role}
                       </Badge>
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1.5">
                       <Button
                         size="sm"
                         variant="outline"
@@ -412,6 +437,15 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
                         }}
                       >
                         <Key className="h-3 w-3" /> Change PIN
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 w-7 p-0 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/40"
+                        title="Delete User (Admin Protected)"
+                        onClick={() => setDeleteTargetUser(u)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </li>
@@ -567,6 +601,34 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Admin Protected User Delete Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetUser}
+        onOpenChange={(open) => !open && setDeleteTargetUser(null)}
+        title="Delete App User"
+        itemType="User Account"
+        itemName={deleteTargetUser ? `${deleteTargetUser.name} (${deleteTargetUser.role})` : ''}
+        warningNotice="Deleting this user account permanently removes their login access. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetUser) return
+          const currentUser = user || getCachedUser()
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            `/api/users?id=${deleteTargetUser.id}`,
+            currentUser,
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          toast({
+            title: 'User deleted',
+            description: `User account ${deleteTargetUser.name} has been removed.`,
+          })
+          if (onDataChanged) onDataChanged()
+          await load()
+        }}
+      />
     </div>
   )
 }

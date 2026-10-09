@@ -38,6 +38,7 @@ import {
   SendHorizontal,
   PackageCheck,
 } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 export interface MenuItem {
   id: string
@@ -106,6 +107,7 @@ export function RestaurantTab({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [orderFilter, setOrderFilter] = useState('ALL') // ALL | PENDING | ROOM | DIRECT
   const [printOrder, setPrintOrder] = useState<FoodOrder | null>(null)
+  const [deleteTargetMenuItem, setDeleteTargetMenuItem] = useState<MenuItem | null>(null)
 
   // Order building state (POS)
   const [orderType, setOrderType] = useState<'ROOM' | 'DIRECT'>('ROOM')
@@ -403,16 +405,8 @@ export function RestaurantTab({
     }
   }
 
-  async function deleteMenuItem(id: string) {
-    if (!confirm('Delete this menu item?')) return
-    const targetItem = rawMenu.find((m) => m.id === id)
-    setRawMenu((prev) => prev.filter((m) => m.id !== id))
-    try {
-      await api(`/api/menu?id=${id}`, { method: 'DELETE' })
-    } catch (e) {
-      if (targetItem) setRawMenu((prev) => [...prev, targetItem])
-      alert(e instanceof Error ? e.message : 'Failed to delete item')
-    }
+  function deleteMenuItem(item: MenuItem) {
+    setDeleteTargetMenuItem(item)
   }
 
   const pendingOrders = orders.filter((o) => o.status === 'PENDING')
@@ -1119,7 +1113,7 @@ export function RestaurantTab({
                               )}
                             </Button>
                             <Switch checked={item.available} onCheckedChange={() => toggleAvailability(item)} title="Toggle availability" />
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => deleteMenuItem(item.id)}>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => deleteMenuItem(item)}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           </div>
@@ -1233,6 +1227,23 @@ export function RestaurantTab({
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Menu Item Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetMenuItem}
+        onOpenChange={(open) => !open && setDeleteTargetMenuItem(null)}
+        title="Delete Menu Item"
+        itemType="Menu Item"
+        itemName={deleteTargetMenuItem ? `${deleteTargetMenuItem.name} (${formatINR(deleteTargetMenuItem.price)})` : ''}
+        warningNotice="This will permanently delete this item from the restaurant menu. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetMenuItem) return
+          await api(`/api/menu?id=${deleteTargetMenuItem.id}`, { method: 'DELETE', adminPin })
+          setRawMenu((prev) => prev.filter((m) => m.id !== deleteTargetMenuItem.id))
+          setDeleteTargetMenuItem(null)
+          onDataChanged()
+        }}
+      />
     </div>
   )
 }

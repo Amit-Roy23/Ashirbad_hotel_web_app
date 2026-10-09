@@ -118,6 +118,8 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   const [addOpen, setAddOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteRoomId, setDeleteRoomId] = useState('')
+  const [deleteAdminPin, setDeleteAdminPin] = useState('')
+  const [deleteError, setDeleteError] = useState('')
   const [newNumber, setNewNumber] = useState('')
   const [newFloor, setNewFloor] = useState('1')
   const [newType, setNewType] = useState('Non-AC')
@@ -296,45 +298,51 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     }
   }
 
-  async function handleDeleteRoom(roomId: string, roomNum?: string) {
+  async function handleDeleteRoom(roomId: string, adminPin: string) {
     if (!roomId) return
+    if (!adminPin || !adminPin.trim()) {
+      setDeleteError('Admin PIN is required to delete a room')
+      return
+    }
     const targetRoom = rooms.find((r) => r.id === roomId)
-    const num = roomNum || targetRoom?.number || ''
-    if (!confirm(`Are you sure you want to delete Room ${num}?`)) return
-    
-    // Instant optimistic update
-    setRooms((prev) => prev.filter((r) => r.id !== roomId))
-    setViewRoom(null)
-    setDeleteOpen(false)
-    setDeleteRoomId('')
+    const num = targetRoom?.number || ''
     
     setBusy(true)
+    setDeleteError('')
     try {
       const res = await apiAs<{ success?: boolean; error?: string }>(
         `/api/rooms?id=${roomId}`,
         getCachedUser(),
-        { method: 'DELETE' }
+        { method: 'DELETE', adminPin: adminPin.trim() }
       )
       if (res && res.error) {
+        setDeleteError(res.error)
         toast({
           variant: 'destructive',
           title: 'Delete Failed',
           description: res.error,
         })
-        await load()
       } else {
+        setRooms((prev) => prev.filter((r) => r.id !== roomId))
+        setViewRoom(null)
+        setDeleteOpen(false)
+        setDeleteRoomId('')
+        setDeleteAdminPin('')
         toast({
           variant: 'success',
           title: 'Room Deleted',
           description: `Room ${num} has been deleted.`,
         })
         onDataChanged()
+        await load()
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not delete room'
+      setDeleteError(msg)
       toast({
         variant: 'destructive',
         title: 'Error',
-        description: e instanceof Error ? e.message : 'Could not delete room',
+        description: msg,
       })
       await load()
     } finally {
@@ -1437,18 +1445,36 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
       </Dialog>
 
       {/* Delete room modal */}
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent className="max-w-xs">
+      <Dialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          setDeleteOpen(open)
+          if (!open) {
+            setDeleteRoomId('')
+            setDeleteAdminPin('')
+            setDeleteError('')
+          }
+        }}
+      >
+        <DialogContent className="max-w-sm border-red-200 dark:border-red-900/50">
           <DialogHeader>
             <DialogTitle className="text-red-600 flex items-center gap-2">
-              <Trash2 className="h-5 w-5" /> Delete Room
+              <Trash2 className="h-5 w-5" /> Delete Room (Admin Protected)
             </DialogTitle>
-            <DialogDescription>Select a vacant room to remove permanently.</DialogDescription>
+            <DialogDescription>
+              Select a vacant room to remove permanently. Admin PIN is required.
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-3.5">
             <div className="space-y-1.5">
               <Label>Select Room</Label>
-              <Select value={deleteRoomId} onValueChange={setDeleteRoomId}>
+              <Select
+                value={deleteRoomId}
+                onValueChange={(val) => {
+                  setDeleteRoomId(val)
+                  setDeleteError('')
+                }}
+              >
                 <SelectTrigger aria-label="Select room to delete">
                   <SelectValue placeholder="Choose a room" />
                 </SelectTrigger>
@@ -1461,13 +1487,47 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                 </SelectContent>
               </Select>
             </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="room-admin-pin" className="text-xs font-semibold">
+                Admin PIN / Password <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="room-admin-pin"
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="Enter Admin PIN"
+                value={deleteAdminPin}
+                onChange={(e) => {
+                  setDeleteAdminPin(e.target.value)
+                  setDeleteError('')
+                }}
+                className="font-mono tracking-widest"
+              />
+            </div>
+
+            {deleteError && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 p-2 text-xs font-medium text-destructive">
+                {deleteError}
+              </div>
+            )}
+
             <Button
               variant="destructive"
-              className="w-full"
-              disabled={busy || !deleteRoomId}
-              onClick={() => handleDeleteRoom(deleteRoomId)}
+              className="w-full gap-2"
+              disabled={busy || !deleteRoomId || !deleteAdminPin.trim()}
+              onClick={() => handleDeleteRoom(deleteRoomId, deleteAdminPin)}
             >
-              Delete Room
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Verifying & Deleting…
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4" /> Authorize & Delete Room
+                </>
+              )}
             </Button>
           </div>
         </DialogContent>

@@ -60,6 +60,7 @@ import {
   XCircle,
   Wallet,
 } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface BanquetTabProps {
   refreshKey: number
@@ -86,6 +87,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   // Dialog states
   const [bookingDialogOpen, setBookingDialogOpen] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<BanquetBooking | null>(null)
+  const [deleteTargetBanquetBooking, setDeleteTargetBanquetBooking] = useState<BanquetBooking | null>(null)
+  const [deleteTargetBanquetBill, setDeleteTargetBanquetBill] = useState<BanquetBill | null>(null)
 
   const [billDialogOpen, setBillDialogOpen] = useState(false)
   const [billingBooking, setBillingBooking] = useState<BanquetBooking | null>(null)
@@ -173,28 +176,12 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   }
 
   // Delete Handlers
-  async function handleDeleteBooking(b: BanquetBooking) {
-    if (!confirm(`Are you sure you want to delete booking ${b.bookingNumber} (${b.customerName})?`)) return
-    try {
-      await apiAs(`/api/banquet-bookings?id=${b.id}`, getCachedUser(), { method: 'DELETE' })
-      toast({ variant: 'success', title: 'Deleted', description: 'Banquet booking deleted.' })
-      loadData()
-      onDataChanged()
-    } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Could not delete booking' })
-    }
+  function handleDeleteBooking(b: BanquetBooking) {
+    setDeleteTargetBanquetBooking(b)
   }
 
-  async function handleDeleteBill(b: BanquetBill) {
-    if (!confirm(`Are you sure you want to delete banquet invoice ${b.billNumber}?`)) return
-    try {
-      await apiAs(`/api/banquet-bills?id=${b.id}`, getCachedUser(), { method: 'DELETE' })
-      toast({ variant: 'success', title: 'Deleted', description: 'Banquet invoice deleted.' })
-      loadData()
-      onDataChanged()
-    } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Could not delete banquet invoice' })
-    }
+  function handleDeleteBill(b: BanquetBill) {
+    setDeleteTargetBanquetBill(b)
   }
 
   // Status Updater
@@ -1007,6 +994,42 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Banquet Booking Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetBanquetBooking}
+        onOpenChange={(open) => !open && setDeleteTargetBanquetBooking(null)}
+        title="Delete Banquet Booking"
+        itemType="Banquet Booking"
+        itemName={deleteTargetBanquetBooking ? `Booking ${deleteTargetBanquetBooking.bookingNumber} (${deleteTargetBanquetBooking.customerName}) - ${deleteTargetBanquetBooking.eventName}` : ''}
+        warningNotice="Deleting this booking permanently deletes related bills and ledger records. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetBanquetBooking) return
+          await apiAs(`/api/banquet-bookings?id=${deleteTargetBanquetBooking.id}`, getCachedUser(), { method: 'DELETE', adminPin })
+          toast({ variant: 'success', title: 'Deleted', description: 'Banquet booking deleted.' })
+          setDeleteTargetBanquetBooking(null)
+          loadData()
+          onDataChanged()
+        }}
+      />
+
+      {/* Admin PIN Protected Delete Banquet Invoice Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetBanquetBill}
+        onOpenChange={(open) => !open && setDeleteTargetBanquetBill(null)}
+        title="Delete Banquet Invoice"
+        itemType="Banquet Invoice"
+        itemName={deleteTargetBanquetBill ? `Invoice ${deleteTargetBanquetBill.billNumber} (${formatINR(deleteTargetBanquetBill.grandTotal)}) for ${deleteTargetBanquetBill.customerName}` : ''}
+        warningNotice="Deleting a banquet invoice deletes associated income ledger records. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetBanquetBill) return
+          await apiAs(`/api/banquet-bills?id=${deleteTargetBanquetBill.id}`, getCachedUser(), { method: 'DELETE', adminPin })
+          toast({ variant: 'success', title: 'Deleted', description: 'Banquet invoice deleted.' })
+          setDeleteTargetBanquetBill(null)
+          loadData()
+          onDataChanged()
+        }}
+      />
     </div>
   )
 }

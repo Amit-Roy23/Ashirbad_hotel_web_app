@@ -48,7 +48,10 @@ import {
   Smartphone,
   Eye,
   CheckCircle2,
+  Phone,
+  ArrowDownRight,
 } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface Guest {
   id: string
@@ -133,6 +136,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
   const [selectedAdvanceBooking, setSelectedAdvanceBooking] = useState<Booking | null>(null)
   const [editBill, setEditBill] = useState<Bill | null>(null)
   const [editAdvanceBooking, setEditAdvanceBooking] = useState<Booking | null>(null)
+  const [deleteTargetBill, setDeleteTargetBill] = useState<Bill | null>(null)
 
   // List filters - Checkout Bills
   const [search, setSearch] = useState('')
@@ -216,27 +220,8 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
     }
   }
 
-  async function deleteBill(bill: Bill) {
-    if (!confirm(`Are you sure you want to delete Invoice ${bill.billNumber} (${formatINR(bill.grandTotal)})?`)) return
-    setBusy(true)
-    try {
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        `/api/bills?id=${bill.id}`,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        if (lastBill?.id === bill.id) setLastBill(null)
-        await load()
-        onDataChanged()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not delete invoice')
-    } finally {
-      setBusy(false)
-    }
+  function deleteBill(bill: Bill) {
+    setDeleteTargetBill(bill)
   }
 
   // Filtered checkout bills
@@ -388,6 +373,71 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
       {/* ========================================================= */}
       {activeTab === 'CHECKOUT' && (
         <div className="space-y-5">
+          {/* Summary Stat Cards for Checkout Invoices */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-transparent dark:border-blue-900 dark:from-blue-950/40">
+              <CardContent className="flex items-center gap-3 p-4">
+                <div className="rounded-full bg-blue-100 p-2.5 dark:bg-blue-900">
+                  <Receipt className="h-5 w-5 text-blue-700 dark:text-blue-300" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Total Invoices Billed</p>
+                  <p className="text-lg sm:text-xl font-bold text-blue-900 dark:text-blue-200">
+                    {formatINR(bills.reduce((s, b) => s + (b.grandTotal || 0), 0))}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">{bills.length} total invoice(s)</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
+              <CardContent className="flex items-center gap-3 p-4">
+                <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
+                  <Banknote className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Total Paid / Settled</p>
+                  <p className="text-lg sm:text-xl font-bold text-emerald-700 dark:text-emerald-300">
+                    {formatINR(bills.reduce((s, b) => s + paidOf(b), 0))}
+                  </p>
+                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
+                    {bills.filter((b) => balanceOf(b) <= 0.01).length} fully settled
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className={`border-red-200 bg-gradient-to-br from-red-50 to-transparent dark:border-red-900 dark:from-red-950/40 ${outstandingBills.length > 0 ? 'ring-1 ring-red-400/50' : ''}`}>
+              <CardContent className="flex items-center gap-3 p-4">
+                <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
+                  <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-red-600 dark:text-red-400">Total Customer Due</p>
+                  <p className="text-lg sm:text-xl font-extrabold text-red-600 dark:text-red-400">
+                    {formatINR(outstandingBills.reduce((s, b) => s + balanceOf(b), 0))}
+                  </p>
+                  <p className="text-[10px] font-semibold text-red-500">
+                    {outstandingBills.length} pending due bill(s)
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-slate-200 bg-card dark:border-slate-800">
+              <CardContent className="flex items-center gap-3 p-4">
+                <div className="rounded-full bg-slate-100 p-2.5 dark:bg-slate-800">
+                  <Building2 className="h-5 w-5 text-slate-700 dark:text-slate-300" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">In-House Guests</p>
+                  <p className="text-lg sm:text-xl font-bold">{inHouseBookings.length}</p>
+                  <p className="text-[10px] text-muted-foreground">Active in-house</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
           {/* In-house guests to bill */}
           <div>
             <div className="mb-2 flex items-center justify-between">
@@ -420,7 +470,12 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                             <span className="rounded-md bg-emerald-700 px-2 py-0.5 text-xs font-bold text-white">
                               Room {b.room?.number}
                             </span>
-                            <span className="font-semibold text-sm">{b.guest?.name || 'Guest'}</span>
+                            <div>
+                              <span className="font-semibold text-sm">{b.guest?.name || 'Guest'}</span>
+                              {b.guest?.phone && (
+                                <span className="text-xs text-muted-foreground ml-1.5">({b.guest.phone})</span>
+                              )}
+                            </div>
                           </div>
                           {b.isCorporate && (
                             <Badge variant="outline" className="h-4 border-violet-400 px-1 text-[9px] text-violet-700 dark:text-violet-300">
@@ -464,61 +519,89 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
           </div>
 
           {/* Outstanding balances */}
-          <Card className="border-red-200 dark:border-red-900">
+          <Card className="border-red-200 bg-red-50/20 dark:border-red-900 dark:bg-red-950/10">
             <CardContent className="p-4">
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 text-red-600" />
-                  <p className="text-sm font-semibold">
-                    Outstanding Balances — {formatINR(outstandingBills.reduce((s, b) => s + balanceOf(b), 0))}
+                  <p className="text-sm font-bold text-red-700 dark:text-red-300">
+                    Outstanding Customer Dues — {formatINR(outstandingBills.reduce((s, b) => s + balanceOf(b), 0))}
                   </p>
                 </div>
-                <Badge variant="outline" className="text-red-600 border-red-300 dark:border-red-800">
+                <Badge variant="destructive" className="bg-red-600 text-white font-semibold">
                   {outstandingBills.length} unpaid / partial bill(s)
                 </Badge>
               </div>
 
               {outstandingBills.length === 0 ? (
-                <p className="text-xs text-muted-foreground">All checkout bills are fully settled. No pending balance.</p>
+                <div className="flex items-center gap-2 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 border border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>All customer checkout bills are fully settled! No outstanding dues.</span>
+                </div>
               ) : (
-                <ul className="max-h-52 space-y-1.5 overflow-y-auto">
-                  {outstandingBills.map((b) => (
-                    <li key={b.id} className="flex items-center justify-between rounded-lg bg-muted px-3 py-2 text-sm">
-                      <div>
-                        <span className="font-medium">{b.billNumber}</span>
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          {b.booking?.guest?.name || 'Guest'} · Room {b.roomNumber || b.booking?.room?.number}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <PaymentStatusBadge status={balanceOf(b) >= b.grandTotal ? 'UNPAID' : 'PARTIAL'} />
-                        <span className="font-bold text-red-600">{formatINR(balanceOf(b))}</span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 gap-1 px-2 text-xs font-semibold bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
-                          onClick={() => {
-                            setCollectBill(b)
-                            setCCash(String(balanceOf(b)))
-                            setCUpi('0')
-                            setCCard('0')
-                            setError('')
-                          }}
-                        >
-                          <Wallet className="h-3 w-3" /> Collect &amp; Mark Paid
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title="Delete Invoice"
-                          onClick={() => deleteBill(b)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </li>
-                  ))}
+                <ul className="max-h-60 space-y-2 overflow-y-auto">
+                  {outstandingBills.map((b) => {
+                    const custName = b.booking?.guest?.name || b.corporateName || 'Guest'
+                    const custPhone = b.booking?.guest?.phone || '—'
+                    const roomNo = b.roomNumber || b.booking?.room?.number || '—'
+                    const dueAmt = balanceOf(b)
+                    return (
+                      <li key={b.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-card p-3 shadow-xs dark:border-red-900/60">
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-sm text-foreground">{custName}</span>
+                            <span className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                              <Phone className="h-3 w-3 text-muted-foreground" /> {custPhone}
+                            </span>
+                            <Badge variant="outline" className="text-[10px]">
+                              Room {roomNo}
+                            </Badge>
+                            <span className="text-xs font-semibold text-muted-foreground">
+                              ({b.billNumber})
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                            <span>Total Billed: <b className="text-foreground">{formatINR(b.grandTotal)}</b></span>
+                            <span>•</span>
+                            <span>Paid so far: <b className="text-emerald-600 dark:text-emerald-400">{formatINR(paidOf(b))}</b></span>
+                            <span>•</span>
+                            <span className="text-[11px]">{formatDate(b.createdAt)}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="text-right">
+                            <div className="text-[10px] uppercase font-bold text-red-600 dark:text-red-400">Due Balance</div>
+                            <div className="text-base sm:text-lg font-extrabold text-red-600 dark:text-red-400">
+                              {formatINR(dueAmt)}
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            className="h-8 gap-1.5 bg-emerald-600 text-xs font-semibold text-white hover:bg-emerald-700 shadow-xs"
+                            onClick={() => {
+                              setCollectBill(b)
+                              setCCash(String(balanceOf(b)))
+                              setCUpi('0')
+                              setCCard('0')
+                              setError('')
+                            }}
+                          >
+                            <Wallet className="h-3.5 w-3.5" /> Collect Due
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            title="Delete Invoice"
+                            onClick={() => deleteBill(b)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </CardContent>
@@ -533,7 +616,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             <TableControls
               search={search}
               onSearch={setSearch}
-              searchPlaceholder="Invoice no, guest, room…"
+              searchPlaceholder="Invoice no, customer name, phone, room…"
               filters={[
                 {
                   key: 'kind',
@@ -542,8 +625,8 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                     { value: 'GST', label: 'GST Tax Invoices' },
                     { value: 'NON_GST', label: 'Non-GST Bills' },
                     { value: 'CUSTOM', label: 'Custom / Corp' },
-                    { value: 'PAID', label: 'Fully Paid' },
-                    { value: 'UNPAID', label: 'With Balance' },
+                    { value: 'PAID', label: 'Fully Paid (No Due)' },
+                    { value: 'UNPAID', label: 'With Balance Due' },
                   ],
                 },
               ]}
@@ -569,11 +652,11 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 <TableHeader>
                   <TableRow>
                     <SortableTh label="Invoice" sortKey="billNumber" sort={sortBills} onToggle={toggleSortBills} />
-                    <TableHead>Guest</TableHead>
-                    <TableHead>Original Room</TableHead>
+                    <TableHead>Customer / Phone</TableHead>
                     <TableHead>Room</TableHead>
-                    <TableHead>Billed Amount</TableHead>
-                    <TableHead>Settlement</TableHead>
+                    <TableHead>Billed Total</TableHead>
+                    <TableHead>Total Paid</TableHead>
+                    <TableHead>Due / Balance</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
@@ -589,11 +672,15 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                   {pagedBills.map((b) => {
                     const isPaid = balanceOf(b) <= 0.01
                     const checkoutPaid = (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0)
+                    const totalReceivedAmt = paidOf(b)
+                    const dueAmt = balanceOf(b)
+                    const customerName = b.booking?.guest?.name || b.corporateName || 'Guest'
+                    const customerPhone = b.booking?.guest?.phone || '—'
                     const originalRoomNo = b.booking?.room?.number || b.roomNumber
                     const displayedRoomNo = b.roomNumber || b.booking?.room?.number
                     const isCustomRoom = Boolean(b.roomNumber && b.booking?.room?.number && b.roomNumber !== b.booking?.room?.number)
                     return (
-                      <TableRow key={b.id}>
+                      <TableRow key={b.id} className={dueAmt > 0.01 ? 'bg-red-50/20 dark:bg-red-950/10' : ''}>
                         <TableCell className="py-2.5">
                           <div className="flex items-center gap-1">
                             <span className="font-semibold text-xs sm:text-sm">{b.billNumber}</span>
@@ -609,16 +696,25 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                           <div className="text-[11px] text-muted-foreground">{formatDate(b.createdAt)}</div>
                         </TableCell>
                         <TableCell className="py-2.5">
-                          <div className="text-xs sm:text-sm font-medium">{b.booking?.guest?.name || 'Guest'}</div>
-                          <div className="text-[11px] text-muted-foreground">{b.booking?.guest?.phone}</div>
+                          <div className="text-xs sm:text-sm font-bold text-foreground">{customerName}</div>
+                          <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
+                            <Phone className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <span>{customerPhone}</span>
+                          </div>
+                          {b.booking?.guest?.company && b.booking.guest.company !== customerName && (
+                            <div className="text-[10px] text-violet-700 dark:text-violet-300 font-medium">
+                              {b.booking.guest.company}
+                            </div>
+                          )}
                         </TableCell>
-                        <TableCell className="py-2.5 font-semibold text-xs text-muted-foreground">
-                          Room {originalRoomNo || '—'}
-                        </TableCell>
-                        <TableCell className={`py-2.5 font-semibold text-xs ${isCustomRoom ? 'text-violet-700 dark:text-violet-300 font-bold' : ''}`}>
-                          Room {displayedRoomNo || '—'}
-                          {isCustomRoom && (
-                            <div className="text-[10px] font-normal text-violet-600 dark:text-violet-400">(Custom)</div>
+                        <TableCell className="py-2.5">
+                          <div className={`font-semibold text-xs ${isCustomRoom ? 'text-violet-700 dark:text-violet-300 font-bold' : ''}`}>
+                            Room {displayedRoomNo || '—'}
+                          </div>
+                          {isCustomRoom ? (
+                            <div className="text-[10px] text-violet-600 dark:text-violet-400">(Orig: Room {originalRoomNo})</div>
+                          ) : (
+                            <div className="text-[11px] text-muted-foreground">{b.booking?.room?.type || ''}</div>
                           )}
                         </TableCell>
                         <TableCell className="py-2.5">
@@ -630,10 +726,31 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                           )}
                         </TableCell>
                         <TableCell className="py-2.5">
-                          <div className="font-medium text-xs sm:text-sm">{formatINR(checkoutPaid)}</div>
-                          {!isPaid && (
-                            <div className="text-[11px] text-red-600 font-semibold">
-                              Due: {formatINR(balanceOf(b))}
+                          <div className="font-semibold text-xs sm:text-sm text-foreground">{formatINR(totalReceivedAmt)}</div>
+                          {checkoutPaid > 0 && (
+                            <div className="text-[10px] text-muted-foreground">
+                              Checkout: {formatINR(checkoutPaid)}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="py-2.5">
+                          {dueAmt > 0.01 ? (
+                            <div className="space-y-0.5">
+                              <div className="font-extrabold text-xs sm:text-sm text-red-600 dark:text-red-400">
+                                {formatINR(dueAmt)}
+                              </div>
+                              <Badge variant="outline" className="h-4 border-red-300 bg-red-50 px-1 text-[9px] font-bold text-red-700 dark:border-red-800 dark:bg-red-950/60 dark:text-red-300">
+                                PENDING DUE
+                              </Badge>
+                            </div>
+                          ) : (
+                            <div className="space-y-0.5">
+                              <div className="font-semibold text-xs text-emerald-600 dark:text-emerald-400">
+                                ₹0
+                              </div>
+                              <Badge variant="outline" className="h-4 border-emerald-300 bg-emerald-50 px-1 text-[9px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                SETTLED
+                              </Badge>
                             </div>
                           )}
                         </TableCell>
@@ -642,6 +759,23 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                         </TableCell>
                         <TableCell className="py-2.5 text-right">
                           <div className="flex items-center justify-end gap-1">
+                            {!isPaid && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs font-semibold gap-1 bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200"
+                                title="Collect Due Payment"
+                                onClick={() => {
+                                  setCollectBill(b)
+                                  setCCash(String(balanceOf(b)))
+                                  setCUpi('0')
+                                  setCCard('0')
+                                  setError('')
+                                }}
+                              >
+                                <Wallet className="h-3 w-3" /> Collect
+                              </Button>
+                            )}
                             <Button
                               size="icon"
                               variant="outline"
@@ -763,10 +897,11 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 <TableHeader>
                   <TableRow>
                     <SortableTh label="Receipt No" sortKey="id" sort={sortAdvance} onToggle={toggleSortAdvance} />
-                    <TableHead>Guest</TableHead>
+                    <TableHead>Customer / Phone</TableHead>
                     <TableHead>Room</TableHead>
                     <TableHead>Stay Dates</TableHead>
                     <TableHead>Advance Paid</TableHead>
+                    <TableHead>Due on Checkout</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
@@ -774,7 +909,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 <TableBody>
                   {pagedAdvance.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                      <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                         No advance booking bills found.
                       </TableCell>
                     </TableRow>
@@ -783,6 +918,8 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                     const receiptNo = `ADV-${b.id.slice(-6).toUpperCase()}`
                     const stayTotal = (b.ratePerDay || 0) * (b.days || 1)
                     const estBalance = Math.max(0, stayTotal - (b.advance || 0))
+                    const custName = b.guest?.name || 'Guest'
+                    const custPhone = b.guest?.phone || '—'
                     return (
                       <TableRow key={b.id}>
                         <TableCell className="py-2.5">
@@ -794,8 +931,16 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                           </div>
                         </TableCell>
                         <TableCell className="py-2.5">
-                          <div className="text-xs sm:text-sm font-medium">{b.guest?.name || 'Guest'}</div>
-                          <div className="text-[11px] text-muted-foreground">{b.guest?.phone}</div>
+                          <div className="text-xs sm:text-sm font-bold text-foreground">{custName}</div>
+                          <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
+                            <Phone className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <span>{custPhone}</span>
+                          </div>
+                          {b.guest?.company && (
+                            <div className="text-[10px] text-violet-700 dark:text-violet-300 font-medium">
+                              {b.guest.company}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="py-2.5">
                           <div className="font-semibold text-xs">Room {b.room?.number}</div>
@@ -809,9 +954,30 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                           <div className="font-bold text-xs sm:text-sm text-emerald-700 dark:text-emerald-400">
                             {formatINR(b.advance || 0)}
                           </div>
-                          <div className="text-[11px] text-muted-foreground">
-                            Est: {formatINR(stayTotal)}{estBalance > 0 ? ` · Due: ${formatINR(estBalance)}` : ''}
+                          <div className="text-[10px] text-muted-foreground">
+                            Est Stay: {formatINR(stayTotal)}
                           </div>
+                        </TableCell>
+                        <TableCell className="py-2.5">
+                          {estBalance > 0 ? (
+                            <div className="space-y-0.5">
+                              <div className="font-bold text-xs sm:text-sm text-amber-700 dark:text-amber-300">
+                                {formatINR(estBalance)}
+                              </div>
+                              <Badge variant="outline" className="h-4 border-amber-300 bg-amber-50 px-1 text-[9px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                                PAYABLE AT CHECKOUT
+                              </Badge>
+                            </div>
+                          ) : (
+                            <div className="space-y-0.5">
+                              <div className="font-semibold text-xs text-emerald-600 dark:text-emerald-400">
+                                ₹0
+                              </div>
+                              <Badge variant="outline" className="h-4 border-emerald-300 bg-emerald-50 px-1 text-[9px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                FULLY ADVANCED
+                              </Badge>
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="py-2.5">
                           <div className="flex flex-col gap-1 items-start">
@@ -1009,6 +1175,32 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
         onSuccess={() => {
           setEditAdvanceBooking(null)
           load()
+          onDataChanged()
+        }}
+      />
+
+      {/* Admin PIN Protected Delete Bill Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetBill}
+        onOpenChange={(open) => !open && setDeleteTargetBill(null)}
+        title="Delete Customer Invoice"
+        itemType="Invoice"
+        itemName={deleteTargetBill ? `Invoice ${deleteTargetBill.billNumber} (${formatINR(deleteTargetBill.grandTotal)}) for Room ${deleteTargetBill.roomNumber || deleteTargetBill.booking?.room?.number || ''}` : ''}
+        warningNotice="Deleting an invoice removes associated ledger accounting entries. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetBill) return
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            `/api/bills?id=${deleteTargetBill.id}`,
+            getCachedUser(),
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          if (lastBill?.id === deleteTargetBill.id) setLastBill(null)
+          setDeleteTargetBill(null)
+          toast({ variant: 'success', title: 'Invoice Deleted', description: 'Invoice deleted successfully.' })
+          await load()
           onDataChanged()
         }}
       />

@@ -7,12 +7,16 @@ import { Separator } from '@/components/ui/separator'
 export interface PrintableAdvanceReceiptProps {
   booking: {
     id: string
+    status?: string
     checkIn: string
     checkOut?: string | null
+    actualCheckOut?: string | null
     days: number
     ratePerDay: number
     advance: number
+    notes?: string | null
     createdAt?: string
+    updatedAt?: string
     guest: {
       name: string
       phone: string
@@ -35,6 +39,7 @@ export function PrintableAdvanceReceipt({ booking, settings = {} }: PrintableAdv
   const hotelPhone = settings.hotelPhone || '+91 90000 00000'
   const hotelGstin = settings.hotelGstin || ''
 
+  const isCancelled = booking.status === 'CANCELLED'
   const guest = booking.guest
   const room = booking.room
   const receiptNo = `ADV-${booking.id?.slice(-6).toUpperCase() || '1001'}`
@@ -43,7 +48,9 @@ export function PrintableAdvanceReceipt({ booking, settings = {} }: PrintableAdv
   const estBalance = Math.max(0, stayTotal - advance)
 
   return (
-    <div className="print-area w-full rounded-lg border border-amber-300 bg-white p-5 text-slate-900 shadow-sm dark:border-amber-700 dark:bg-slate-950 dark:text-slate-100">
+    <div className={`print-area w-full rounded-lg border bg-white p-5 text-slate-900 shadow-sm dark:bg-slate-950 dark:text-slate-100 ${
+      isCancelled ? 'border-red-300 dark:border-red-800' : 'border-amber-300 dark:border-amber-700'
+    }`}>
       {/* Header */}
       <div className="mb-4 text-center">
         <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">{hotelName}</h2>
@@ -51,9 +58,21 @@ export function PrintableAdvanceReceipt({ booking, settings = {} }: PrintableAdv
         {hotelPhone && <p className="text-xs text-slate-600 dark:text-slate-400">Ph: {hotelPhone}</p>}
         {hotelGstin && <p className="text-xs font-medium text-slate-700 dark:text-slate-300">GSTIN: {hotelGstin}</p>}
 
-        <div className="mt-2 inline-block rounded-full bg-amber-100 px-3 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
-          ADVANCE BOOKING RECEIPT
+        <div className="mt-2 flex items-center justify-center gap-2">
+          <div className="inline-block rounded-full bg-amber-100 px-3 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
+            ADVANCE BOOKING RECEIPT
+          </div>
+          {isCancelled && (
+            <div className="inline-block rounded-full bg-red-100 px-3 py-0.5 text-xs font-bold uppercase tracking-wider text-red-800 dark:bg-red-950 dark:text-red-300">
+              BOOKING CANCELLED
+            </div>
+          )}
         </div>
+        {isCancelled && (
+          <p className="mt-1 text-xs font-semibold text-red-600 dark:text-red-400">
+            Cancelled on: {formatDateTime(booking.actualCheckOut || booking.updatedAt || new Date().toISOString())}
+          </p>
+        )}
       </div>
 
       <Separator className="my-3" />

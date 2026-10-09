@@ -1143,10 +1143,25 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
         )
       }
     }
+    const cancelDate = new Date()
+    const reasonStr = body.reason ? String(body.reason).trim() : 'Cancelled by staff'
+    const refundNoteStr = body.refundNote ? String(body.refundNote).trim() : ''
+    const refundAmt = body.refundAmount !== undefined && body.refundAmount !== '' ? Number(body.refundAmount) : null
+
+    // Compose comprehensive cancellation record to store in notes
+    const cancelTimestamp = cancelDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })
+    const cancelLog = `[CANCELLED on ${cancelTimestamp} by ${user.name || 'Staff'}${user.role ? ` (${user.role})` : ''} | Reason: ${reasonStr}${refundNoteStr ? ` | Refund/Advance: ${refundNoteStr}` : ''}${refundAmt !== null ? ` | Refund Amount: ₹${refundAmt}` : ''}${booking.advance > 0 ? ` | Advance Paid: ₹${booking.advance}` : ''}]`
+    const updatedNotes = booking.notes ? `${booking.notes}\n${cancelLog}` : cancelLog
+
     const updated = await prisma.$transaction(async (tx) => {
       const b = await tx.booking.update({
         where: { id: String(id) },
-        data: { status: 'CANCELLED', actualCheckOut: new Date() },
+        data: {
+          status: 'CANCELLED',
+          actualCheckOut: cancelDate,
+          notes: updatedNotes,
+        },
+        include: { room: true, guest: true, bills: true },
       })
       if (booking.status === 'ACTIVE') {
         await tx.room.update({ where: { id: booking.roomId }, data: { housekeeping: 'DIRTY' } })
@@ -1156,7 +1171,13 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       return b
     })
     await refreshBookingPaymentStatus(booking.id)
-    await logAudit('BOOKING_CANCEL', 'Booking', booking.id, `Cancelled: ${booking.guest.name} (Room ${booking.room.number})`, user)
+    await logAudit(
+      'BOOKING_CANCEL',
+      'Booking',
+      booking.id,
+      `Cancelled booking for ${booking.guest.name} (${booking.guest.phone}) in Room ${booking.room.number}. Advance: ₹${booking.advance}, Reserved: ${formatDate(booking.checkIn)} to ${formatDate(booking.checkOut)}. Reason: ${reasonStr}`,
+      user
+    )
     return NextResponse.json(updated)
   }
 
@@ -1960,12 +1981,15 @@ async function updateMenuItem(body: Record<string, unknown>) {
   return NextResponse.json(item)
 }
 
-async function deleteMenuItem(req: NextRequest) {
+async function deleteMenuItem(req: NextRequest, user: RequestUser) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  const item = await prisma.menuItem.findUnique({ where: { id } })
+  if (!item) return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
   await prisma.menuItem.delete({ where: { id } })
-  return NextResponse.json({ ok: true })
+  await logAudit('DELETE_MENU_ITEM', 'MenuItem', id, `Deleted menu item ${item.name}`, user)
+  return NextResponse.json({ success: true, message: `Menu item ${item.name} deleted` })
 }
 
 // ============ FOOD ORDERS ============
@@ -2790,6 +2814,72 @@ async function login(body: Record<string, unknown>) {
   return NextResponse.json({ id: user.id, name: user.name, role: user.role })
 }
 
+async function verifyAdminAuth(
+  req: NextRequest,
+  body?: Record<string, unknown>
+): Promise<{ ok: boolean; error?: string; adminUser?: RequestUser }> {
+  const pinHeader = req.headers.get('x-admin-pin') || req.headers.get('x-admin-password')
+  const url = new URL(req.url)
+  const pinParam = url.searchParams.get('adminPin') || url.searchParams.get('adminPassword')
+  const pinBody = body?.adminPin ? String(body.adminPin) : (body?.adminPassword ? String(body.adminPassword) : undefined)
+  const providedPin = (pinHeader || pinParam || pinBody || '').trim()
+
+  if (!providedPin) {
+    return {
+      ok: false,
+      error: 'Admin PIN / Password is required to perform deletion. Authorization required.',
+    }
+  }
+
+  // 1. Check active ADMIN user in database
+  const adminUser = await prisma.user.findFirst({
+    where: {
+      pin: providedPin,
+      active: true,
+      role: 'ADMIN',
+    },
+  })
+  if (adminUser) {
+    return { ok: true, adminUser: { id: adminUser.id, name: adminUser.name, role: 'ADMIN' } }
+  }
+
+  // 2. Check adminPin in Setting table
+  const settingAdminPin = await prisma.setting.findUnique({ where: { key: 'adminPin' } })
+  if (settingAdminPin?.value && settingAdminPin.value.trim() === providedPin) {
+    return { ok: true, adminUser: { id: 'setting-admin', name: 'Master Admin', role: 'ADMIN' } }
+  }
+
+  // 3. Fallback if no active ADMIN user in DB yet and no setting set: allow default '0000'
+  const countAdmins = await prisma.user.count({ where: { role: 'ADMIN', active: true } })
+  if (countAdmins === 0 && providedPin === '0000') {
+    return { ok: true, adminUser: { id: 'default-admin', name: 'Default Admin', role: 'ADMIN' } }
+  }
+
+  return {
+    ok: false,
+    error: 'Access Denied: Invalid Admin PIN or Password. Only administrators can authorize deletions.',
+  }
+}
+
+async function deleteUser(req: NextRequest, user: RequestUser) {
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get('id')
+  if (!id) return NextResponse.json({ error: 'User id required' }, { status: 400 })
+  const target = await prisma.user.findUnique({ where: { id } })
+  if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+
+  if (target.role === 'ADMIN') {
+    const adminCount = await prisma.user.count({ where: { role: 'ADMIN', active: true } })
+    if (adminCount <= 1) {
+      return NextResponse.json({ error: 'Cannot delete the only active Admin account.' }, { status: 400 })
+    }
+  }
+
+  await prisma.user.delete({ where: { id } })
+  await logAudit('USER_DELETE', 'User', id, `Deleted user ${target.name} (${target.role})`, user)
+  return NextResponse.json({ success: true, message: `User ${target.name} deleted` })
+}
+
 // ============ AUDIT ============
 async function listAudit(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -2861,16 +2951,19 @@ async function updateExpenseCategory(body: Record<string, unknown>) {
   return NextResponse.json(cat)
 }
 
-async function deleteExpenseCategory(req: NextRequest) {
+async function deleteExpenseCategory(req: NextRequest, user: RequestUser) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  const cat = await prisma.expenseCategory.findUnique({ where: { id } })
+  if (!cat) return NextResponse.json({ error: 'Category not found' }, { status: 404 })
   try {
     await prisma.expenseCategory.delete({ where: { id } })
+    await logAudit('DELETE_EXPENSE_CAT', 'ExpenseCategory', id, `Deleted expense category ${cat.name}`, user)
   } catch {
-    return NextResponse.json({ error: 'Cannot delete (may be in use)' }, { status: 400 })
+    return NextResponse.json({ error: 'Cannot delete (category may be in use)' }, { status: 400 })
   }
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ success: true, message: `Category ${cat.name} deleted` })
 }
 
 // ============ GLOBAL SEARCH ============
@@ -3402,7 +3495,27 @@ async function dispatch(
   const resource = segments[0] || ''
   const user = getRequestUser(req)
 
+  // Enforce Admin PIN / Password authorization for ANY delete operation across the entire application
+  if (method === 'DELETE') {
+    const adminAuth = await verifyAdminAuth(req, body)
+    if (!adminAuth.ok) {
+      return NextResponse.json({ error: adminAuth.error }, { status: 403 })
+    }
+    if (adminAuth.adminUser) {
+      user.id = user.id || adminAuth.adminUser.id
+      user.name = user.name || adminAuth.adminUser.name
+      user.role = 'ADMIN'
+    }
+  }
+
   switch (resource) {
+    case 'verify-admin':
+      if (method === 'POST') {
+        const check = await verifyAdminAuth(req, body)
+        if (!check.ok) return NextResponse.json({ error: check.error }, { status: 403 })
+        return NextResponse.json({ ok: true, user: check.adminUser })
+      }
+      break
     case 'rooms':
       if (method === 'GET') return await listRooms(req)
       if (method === 'POST') return await createRoom(body)
@@ -3433,7 +3546,7 @@ async function dispatch(
       if (method === 'GET') return await listMenu()
       if (method === 'POST') return await createMenuItem(body)
       if (method === 'PATCH') return await updateMenuItem(body)
-      if (method === 'DELETE') return await deleteMenuItem(req)
+      if (method === 'DELETE') return await deleteMenuItem(req, user)
       break
     case 'orders':
       if (method === 'GET') return await listOrders(req)
@@ -3469,6 +3582,7 @@ async function dispatch(
       if (method === 'GET') return await listUsers()
       if (method === 'POST') return await createUser(body, user)
       if (method === 'PATCH') return await updateUser(body, user)
+      if (method === 'DELETE') return await deleteUser(req, user)
       break
     case 'auth':
       if (method === 'POST') return await login(body)
@@ -3586,7 +3700,7 @@ async function dispatch(
       if (method === 'GET') return await listExpenseCategories()
       if (method === 'POST') return await createExpenseCategory(body)
       if (method === 'PATCH') return await updateExpenseCategory(body)
-      if (method === 'DELETE') return await deleteExpenseCategory(req)
+      if (method === 'DELETE') return await deleteExpenseCategory(req, user)
       break
     case 'search':
       if (method === 'GET') return await globalSearch(req)

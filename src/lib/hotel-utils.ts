@@ -70,16 +70,24 @@ export function doDateRangesOverlap(
   return startA < endB && endA > startB
 }
 
-export async function api<T = unknown>(url: string, options?: RequestInit): Promise<T> {
+export interface ApiFetchOptions extends RequestInit {
+  adminPin?: string
+}
+
+export async function api<T = unknown>(url: string, options?: ApiFetchOptions): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    ...(options?.headers as Record<string, string> || {}),
+  }
+  if (options?.adminPin) {
+    headers['X-Admin-Pin'] = options.adminPin
+  }
   const res = await fetch(url, {
     cache: 'no-store',
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      ...(options?.headers || {}),
-    },
+    headers,
   })
   const data = await res.json()
   if (!res.ok) {
@@ -93,7 +101,7 @@ export async function api<T = unknown>(url: string, options?: RequestInit): Prom
  * the endpoint wraps rows (e.g. { entries: [...] }) — prevents
  * "x.filter is not a function" client crashes from shape mismatches.
  */
-export async function apiList<T = unknown>(url: string, options?: RequestInit): Promise<T[]> {
+export async function apiList<T = unknown>(url: string, options?: ApiFetchOptions): Promise<T[]> {
   const data = await api<T[] | { entries?: T[] }>(url, options)
   if (Array.isArray(data)) return data
   if (data && typeof data === 'object' && Array.isArray((data as { entries?: T[] }).entries)) {
@@ -106,7 +114,7 @@ export async function apiList<T = unknown>(url: string, options?: RequestInit): 
 export function apiAs<T = unknown>(
   url: string,
   user: { id: string; name: string; role: string } | null,
-  options?: RequestInit
+  options?: ApiFetchOptions
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -118,6 +126,9 @@ export function apiAs<T = unknown>(
     headers['X-User-Id'] = user.id
     headers['X-User-Name'] = encodeURIComponent(user.name)
     headers['X-User-Role'] = user.role
+  }
+  if (options?.adminPin) {
+    headers['X-Admin-Pin'] = options.adminPin
   }
   return fetch(url, { cache: 'no-store', ...options, headers }).then(async (res) => {
     const data = await res.json()

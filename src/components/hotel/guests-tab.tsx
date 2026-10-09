@@ -31,6 +31,7 @@ import { TableControls, SortableTh, useSort, usePagination } from './table-contr
 import { api, apiAs, formatINR, formatDate, exportCSV, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { Loader2, History, Pencil, Trash2, ShieldCheck } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface Bill {
   id: string
@@ -84,6 +85,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const [editGst, setEditGst] = useState('')
   const [editAddress, setEditAddress] = useState('')
   const [busy, setBusy] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<GuestRow | null>(null)
 
   useEffect(() => {
     if (initialFilter) setSearch(initialFilter)
@@ -138,27 +140,6 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
     setEditCompany(g.company || '')
     setEditGst(g.gst || '')
     setEditAddress(g.address || '')
-  }
-
-  async function deleteGuest(g: GuestRow) {
-    if (!confirm(`Are you sure you want to delete guest profile ${g.name} (${g.phone})?`)) return
-    setBusy(true)
-    try {
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        `/api/guests?id=${g.id}`,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        await load()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not delete guest')
-    } finally {
-      setBusy(false)
-    }
   }
 
   async function saveEdit() {
@@ -278,7 +259,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
                       size="sm"
                       variant="ghost"
                       className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                      onClick={() => deleteGuest(g)}
+                      onClick={() => setDeleteTarget(g)}
                     >
                       <Trash2 className="h-3 w-3" /> Delete
                     </Button>
@@ -440,6 +421,28 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title="Delete Guest Profile"
+        itemType="Guest"
+        itemName={deleteTarget ? `${deleteTarget.name} (${deleteTarget.phone})` : ''}
+        warningNotice="Deleting this guest profile requires an Admin PIN or Password."
+        onConfirm={async (adminPin) => {
+          if (!deleteTarget) return
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            `/api/guests?id=${deleteTarget.id}`,
+            getCachedUser(),
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          await load()
+        }}
+      />
     </div>
   )
 }

@@ -19,6 +19,7 @@ import { getCachedUser } from './user-context'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
 import { Banknote, Smartphone, CreditCard, Loader2, Wallet, Trash2, Receipt, Printer } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface PaymentRow {
   id: string
@@ -86,6 +87,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
   const [ledger, setLedger] = useState<LedgerEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [lastBill, setLastBill] = useState<Bill | null>(null)
+  const [deleteTargetPayment, setDeleteTargetPayment] = useState<PaymentRow | null>(null)
 
   const [search, setSearch] = useState('')
   const [channel, setChannel] = useState('ALL')
@@ -209,36 +211,8 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
     )
   }
 
-  async function handleDeletePayment(row: PaymentRow) {
-    const isAdv = row.source === 'ADVANCE'
-    const isBill = row.source === 'BILL'
-    const isOrder = row.source === 'ORDER'
-    const cleanId = row.id.replace(/^(bill|order|adv)-/, '')
-
-    const label = isBill ? `Bill ${row.ref}` : isOrder ? `Order ${row.ref}` : `Advance (${row.guest})`
-    if (!confirm(`Are you sure you want to delete ${label} (₹${row.amount})?`)) return
-
-    try {
-      const endpoint = isBill
-        ? `/api/bills?id=${cleanId}`
-        : isOrder
-          ? `/api/orders?id=${cleanId}`
-          : `/api/ledger?id=${cleanId}`
-
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        endpoint,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        await load()
-        onDataChanged?.()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Delete failed')
-    }
+  function handleDeletePayment(row: PaymentRow) {
+    setDeleteTargetPayment(row)
   }
 
   function resetFilters() {
@@ -474,6 +448,39 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Payment Record Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetPayment}
+        onOpenChange={(open) => !open && setDeleteTargetPayment(null)}
+        title="Delete Payment Record"
+        itemType="Payment"
+        itemName={deleteTargetPayment ? `${deleteTargetPayment.source} - ${deleteTargetPayment.ref} (${formatINR(deleteTargetPayment.amount)}) for ${deleteTargetPayment.guest}` : ''}
+        warningNotice="Deleting this payment removes associated invoice or ledger entries. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetPayment) return
+          const isBill = deleteTargetPayment.source === 'BILL'
+          const isOrder = deleteTargetPayment.source === 'ORDER'
+          const cleanId = deleteTargetPayment.id.replace(/^(bill|order|adv)-/, '')
+          const endpoint = isBill
+            ? `/api/bills?id=${cleanId}`
+            : isOrder
+              ? `/api/orders?id=${cleanId}`
+              : `/api/ledger?id=${cleanId}`
+
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            endpoint,
+            getCachedUser(),
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          setDeleteTargetPayment(null)
+          await load()
+          onDataChanged?.()
+        }}
+      />
     </div>
   )
 }

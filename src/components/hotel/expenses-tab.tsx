@@ -31,6 +31,7 @@ import { TableControls, SortableTh, useSort, usePagination } from './table-contr
 import { api, apiAs, apiList, formatINR, formatDate, exportCSV, todayStr } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { Loader2, Plus, Trash2, Tag, TrendingDown, Pencil } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface ExpenseCategory {
   id: string
@@ -88,6 +89,8 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
   const [editDate, setEditDate] = useState('')
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState('')
+  const [deleteTargetExpense, setDeleteTargetExpense] = useState<LedgerEntry | null>(null)
+  const [deleteTargetCategory, setDeleteTargetCategory] = useState<ExpenseCategory | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -229,24 +232,8 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
     }
   }
 
-  async function deleteExpense(entry: LedgerEntry) {
-    if (!confirm(`Are you sure you want to delete expense "${entry.description}" (${formatINR(entry.amount)})?`)) return
-    try {
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        `/api/ledger?id=${entry.id}`,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        setEntries((prev) => prev.filter((e) => e.id !== entry.id))
-        await load()
-        onDataChanged()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not delete expense')
-    }
+  function deleteExpense(entry: LedgerEntry) {
+    setDeleteTargetExpense(entry)
   }
 
   async function addCategory() {
@@ -260,10 +247,8 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
     }
   }
 
-  async function deleteCategory(id: string) {
-    if (!confirm('Delete this category?')) return
-    await api(`/api/expense-categories?id=${id}`, { method: 'DELETE' })
-    await load()
+  function deleteCategory(cat: ExpenseCategory) {
+    setDeleteTargetCategory(cat)
   }
 
   if (loading) {
@@ -507,7 +492,7 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
               {categories.map((c) => (
                 <li key={c.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
                   <span className="truncate pr-2">{c.name}</span>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30" onClick={() => deleteCategory(c.id)} aria-label={`Delete ${c.name}`}>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30" onClick={() => deleteCategory(c)} aria-label={`Delete ${c.name}`}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </li>
@@ -581,6 +566,47 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Expense Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetExpense}
+        onOpenChange={(open) => !open && setDeleteTargetExpense(null)}
+        title="Delete Expense Record"
+        itemType="Expense"
+        itemName={deleteTargetExpense ? `${deleteTargetExpense.description} (${formatINR(deleteTargetExpense.amount)})` : ''}
+        warningNotice="This will permanently delete this operational expense from the accounts ledger. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetExpense) return
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            `/api/ledger?id=${deleteTargetExpense.id}`,
+            getCachedUser(),
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          setEntries((prev) => prev.filter((e) => e.id !== deleteTargetExpense.id))
+          setDeleteTargetExpense(null)
+          await load()
+          onDataChanged()
+        }}
+      />
+
+      {/* Admin PIN Protected Delete Category Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetCategory}
+        onOpenChange={(open) => !open && setDeleteTargetCategory(null)}
+        title="Delete Expense Category"
+        itemType="Category"
+        itemName={deleteTargetCategory ? deleteTargetCategory.name : ''}
+        warningNotice="Deleting an expense category requires Admin authorization."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetCategory) return
+          await api(`/api/expense-categories?id=${deleteTargetCategory.id}`, { method: 'DELETE', adminPin })
+          setDeleteTargetCategory(null)
+          await load()
+        }}
+      />
     </div>
   )
 }
