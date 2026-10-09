@@ -380,3 +380,128 @@ export const LODGING_GST_RATES = ['0', '5'] as const
 export function normalizeLodgingGst(v: string | number | null | undefined): string {
   return Number(v) === 0 ? '0' : '5'
 }
+
+export type GovIdType = 'AADHAAR' | 'PAN' | 'PASSPORT' | 'VOTER_ID' | 'DRIVING_LICENSE'
+
+export const GOV_ID_TYPES: { value: GovIdType; label: string; placeholder: string; mask: string }[] = [
+  { value: 'AADHAAR', label: 'Aadhaar Card', placeholder: '12-digit UID (e.g. 1234 5678 9012)', mask: '12 digits' },
+  { value: 'PAN', label: 'PAN Card', placeholder: '10-char PAN (e.g. ABCDE1234F)', mask: 'ABCDE1234F' },
+  { value: 'PASSPORT', label: 'Passport', placeholder: 'Passport No. (e.g. A1234567)', mask: 'A1234567' },
+  { value: 'VOTER_ID', label: 'Voter ID Card', placeholder: 'Voter ID / EPIC No. (e.g. ABC1234567)', mask: 'EPIC No.' },
+  { value: 'DRIVING_LICENSE', label: 'Driving License', placeholder: 'Driving License No.', mask: 'DL No.' },
+]
+
+export function validateGovId(type: GovIdType, value: string): { valid: boolean; error?: string; formatted: string } {
+  const trimmed = value ? value.trim() : ''
+  if (!trimmed) {
+    return { valid: false, error: 'Government ID proof is mandatory', formatted: '' }
+  }
+
+  if (type === 'AADHAAR') {
+    const digits = trimmed.replace(/\D/g, '')
+    if (digits.length !== 12) {
+      return {
+        valid: false,
+        error: `Aadhaar number must be exactly 12 numeric digits (${digits.length}/12 entered)`,
+        formatted: digits,
+      }
+    }
+    const formatted = `${digits.slice(0, 4)} ${digits.slice(4, 8)} ${digits.slice(8, 12)}`
+    return { valid: true, formatted: `AADHAAR: ${formatted}` }
+  }
+
+  if (type === 'PAN') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/
+    if (upper.length !== 10 || !panRegex.test(upper)) {
+      return {
+        valid: false,
+        error: 'PAN must be standard 10 alphanumeric characters (5 letters, 4 numbers, 1 letter e.g. ABCDE1234F)',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `PAN: ${upper}` }
+  }
+
+  if (type === 'PASSPORT') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (upper.length < 6 || upper.length > 9) {
+      return {
+        valid: false,
+        error: 'Passport number must be 6 to 9 characters (e.g. A1234567)',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `PASSPORT: ${upper}` }
+  }
+
+  if (type === 'VOTER_ID') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (upper.length < 6 || upper.length > 15) {
+      return {
+        valid: false,
+        error: 'Voter ID must be at least 6 characters (e.g. ABC1234567)',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `VOTER_ID: ${upper}` }
+  }
+
+  if (type === 'DRIVING_LICENSE') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (upper.length < 8 || upper.length > 20) {
+      return {
+        valid: false,
+        error: 'Driving license must be at least 8 characters',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `DRIVING_LICENSE: ${upper}` }
+  }
+
+  return { valid: true, formatted: trimmed }
+}
+
+export function parseGovId(raw: string | null | undefined): { idType: GovIdType; idNumber: string } {
+  if (!raw || !raw.trim()) {
+    return { idType: 'AADHAAR', idNumber: '' }
+  }
+  const str = raw.trim()
+  if (str.toUpperCase().startsWith('AADHAAR:')) {
+    return { idType: 'AADHAAR', idNumber: str.slice(8).trim() }
+  }
+  if (str.toUpperCase().startsWith('PAN:')) {
+    return { idType: 'PAN', idNumber: str.slice(4).trim() }
+  }
+  if (str.toUpperCase().startsWith('PASSPORT:')) {
+    return { idType: 'PASSPORT', idNumber: str.slice(9).trim() }
+  }
+  if (str.toUpperCase().startsWith('VOTER_ID:')) {
+    return { idType: 'VOTER_ID', idNumber: str.slice(9).trim() }
+  }
+  if (str.toUpperCase().startsWith('DRIVING_LICENSE:')) {
+    return { idType: 'DRIVING_LICENSE', idNumber: str.slice(16).trim() }
+  }
+
+  // Auto-detect if raw string without prefix
+  const cleanDigits = str.replace(/\D/g, '')
+  if (cleanDigits.length === 12) {
+    return { idType: 'AADHAAR', idNumber: str }
+  }
+  if (/^[A-Za-z]{5}[0-9]{4}[A-Za-z]{1}$/.test(str)) {
+    return { idType: 'PAN', idNumber: str.toUpperCase() }
+  }
+  if (/^[A-Za-z]{1}[0-9]{7}$/.test(str)) {
+    return { idType: 'PASSPORT', idNumber: str.toUpperCase() }
+  }
+
+  return { idType: 'AADHAAR', idNumber: str }
+}
+
+export function formatGovIdDisplay(raw: string | null | undefined): string {
+  if (!raw || !raw.trim()) return '-'
+  const parsed = parseGovId(raw)
+  const item = GOV_ID_TYPES.find((t) => t.value === parsed.idType)
+  const label = item ? item.label : parsed.idType
+  return `${label}: ${parsed.idNumber}`
+}

@@ -696,7 +696,7 @@ async function listBookings(req: NextRequest) {
 
 async function createBooking(body: Record<string, unknown>, user: RequestUser) {
   const {
-    roomId, phone, name, company, gst, address, checkIn, checkOut, checkOutTime,
+    roomId, phone, name, company, gst, address, idProof, checkIn, checkOut, checkOutTime,
     guestCount, advance, advanceMethod, isCorporate, notes, bookingType, status: reqStatus,
   } = body
   if (!roomId || !phone || !name) {
@@ -823,6 +823,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         ...(company !== undefined && { company: String(company) }),
         ...(gst !== undefined && { gst: String(gst) }),
         ...(address !== undefined && { address: String(address) }),
+        ...(idProof !== undefined && { idProof: String(idProof) }),
       },
       create: {
         phone: cleanPhone,
@@ -830,6 +831,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         ...(company ? { company: String(company) } : {}),
         ...(gst ? { gst: String(gst) } : {}),
         ...(address ? { address: String(address) } : {}),
+        ...(idProof ? { idProof: String(idProof) } : {}),
       },
     })
 
@@ -1165,6 +1167,7 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       company,
       gst,
       address,
+      idProof,
       ratePerDay,
       advance,
       advanceMethod,
@@ -1198,6 +1201,7 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     if (company !== undefined) guestData.company = String(company)
     if (gst !== undefined) guestData.gst = String(gst)
     if (address !== undefined) guestData.address = String(address)
+    if (idProof !== undefined) guestData.idProof = String(idProof)
 
     if (advance !== undefined) {
       // A billed stay's advance is part of the invoice; it must not push received money past the bill total

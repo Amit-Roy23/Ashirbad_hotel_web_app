@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
-import { apiAs, formatINR, todayStr } from '@/lib/hotel-utils'
+import { apiAs, formatINR, todayStr, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking } from '@/types/banquet'
@@ -41,6 +41,7 @@ import {
   Tag,
   Wallet,
   FileText,
+  ShieldCheck,
 } from 'lucide-react'
 
 interface BanquetBookingDialogProps {
@@ -90,6 +91,8 @@ export function BanquetBookingDialog({
   const [hallId, setHallId] = useState('')
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
+  const [idType, setIdType] = useState<GovIdType>('AADHAAR')
+  const [idNumber, setIdNumber] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
   const [companyName, setCompanyName] = useState('')
@@ -159,6 +162,8 @@ export function BanquetBookingDialog({
       }
       setCustomerName('')
       setCustomerPhone('')
+      setIdType('AADHAAR')
+      setIdNumber('')
       setCustomerEmail('')
       setCustomerAddress('')
       setCompanyName('')
@@ -212,6 +217,16 @@ export function BanquetBookingDialog({
     }
     if (!customerName.trim() || !customerPhone.trim()) {
       toast({ variant: 'destructive', title: 'Required Fields', description: 'Customer Name and Phone Number are required.' })
+      return
+    }
+
+    const idCheck = validateGovId(idType, idNumber)
+    if (!idCheck.valid) {
+      toast({
+        variant: 'destructive',
+        title: 'Gov ID Proof Required',
+        description: idCheck.error || 'Valid Government ID Proof (Aadhaar / PAN / Passport) is mandatory.',
+      })
       return
     }
 
@@ -597,6 +612,75 @@ export function BanquetBookingDialog({
                   placeholder="Customer address for billing"
                   className="h-9 text-xs"
                 />
+              </div>
+
+              {/* Government ID Proof (Mandatory) */}
+              <div className="space-y-2 rounded-lg border bg-muted/30 p-3 sm:col-span-2 lg:col-span-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    Host Government ID Proof (Aadhaar / PAN / Passport) <span className="text-destructive">*</span>
+                  </Label>
+                  <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    Mandatory
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                  <div className="space-y-1 sm:col-span-1">
+                    <Select value={idType} onValueChange={(val: GovIdType) => setIdType(val)}>
+                      <SelectTrigger className="h-9 text-xs bg-background">
+                        <SelectValue placeholder="Select ID Type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GOV_ID_TYPES.map((t) => (
+                          <SelectItem key={t.value} value={t.value} className="text-xs">
+                            {t.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1 sm:col-span-2">
+                    <Input
+                      placeholder={GOV_ID_TYPES.find((t) => t.value === idType)?.placeholder || 'Enter ID number'}
+                      value={idNumber}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        if (idType === 'AADHAAR') {
+                          const digits = raw.replace(/\D/g, '').slice(0, 12)
+                          setIdNumber(digits)
+                        } else {
+                          setIdNumber(raw.toUpperCase())
+                        }
+                      }}
+                      className="h-9 text-xs font-mono font-medium uppercase bg-background"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Real-time validation message */}
+                {idNumber.length > 0 && (
+                  <div className="pt-0.5">
+                    {(() => {
+                      const check = validateGovId(idType, idNumber)
+                      if (check.valid) {
+                        return (
+                          <p className="text-[11px] font-medium text-emerald-600 flex items-center gap-1">
+                            ✓ Valid {GOV_ID_TYPES.find((t) => t.value === idType)?.label} ({check.formatted})
+                          </p>
+                        )
+                      }
+                      return (
+                        <p className="text-[11px] font-medium text-amber-600">
+                          {check.error}
+                        </p>
+                      )
+                    })()}
+                  </div>
+                )}
               </div>
             </div>
           </div>

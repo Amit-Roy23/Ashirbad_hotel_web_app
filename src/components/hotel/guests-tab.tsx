@@ -19,11 +19,18 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, exportCSV, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
-import { Loader2, History, Pencil, Trash2 } from 'lucide-react'
+import { Loader2, History, Pencil, Trash2, ShieldCheck } from 'lucide-react'
 
 interface Bill {
   id: string
@@ -52,6 +59,7 @@ interface GuestRow {
   company?: string | null
   gst?: string | null
   address?: string | null
+  idProof?: string | null
   createdAt: string
   bookings: Booking[]
 }
@@ -70,6 +78,8 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const [viewGuest, setViewGuest] = useState<GuestRow | null>(null)
   const [editGuest, setEditGuest] = useState<GuestRow | null>(null)
   const [editName, setEditName] = useState('')
+  const [editIdType, setEditIdType] = useState<GovIdType>('AADHAAR')
+  const [editIdNumber, setEditIdNumber] = useState('')
   const [editCompany, setEditCompany] = useState('')
   const [editGst, setEditGst] = useState('')
   const [editAddress, setEditAddress] = useState('')
@@ -117,6 +127,14 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   function openEdit(g: GuestRow) {
     setEditGuest(g)
     setEditName(g.name)
+    if (g.idProof) {
+      const parsed = parseGovId(g.idProof)
+      setEditIdType(parsed.idType)
+      setEditIdNumber(parsed.idNumber)
+    } else {
+      setEditIdType('AADHAAR')
+      setEditIdNumber('')
+    }
     setEditCompany(g.company || '')
     setEditGst(g.gst || '')
     setEditAddress(g.address || '')
@@ -145,6 +163,11 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
 
   async function saveEdit() {
     if (!editGuest) return
+    const idCheck = editIdNumber.trim() ? validateGovId(editIdType, editIdNumber) : null
+    if (idCheck && !idCheck.valid) {
+      alert(idCheck.error || 'Invalid ID proof')
+      return
+    }
     setBusy(true)
     try {
       await apiAs('/api/guests', getCachedUser(), {
@@ -152,6 +175,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
         body: JSON.stringify({
           phone: editGuest.phone,
           name: editName,
+          idProof: idCheck ? idCheck.formatted : editIdNumber.trim() ? editIdNumber : undefined,
           // Send empty strings (not undefined) so a cleared field is actually cleared
           company: editCompany.trim(),
           gst: editGst.trim(),
@@ -198,6 +222,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
             <TableRow>
               <SortableTh label="Name" sortKey="name" sort={sort} onToggle={toggle} />
               <TableHead>Phone</TableHead>
+              <TableHead>ID Proof</TableHead>
               <TableHead>Company</TableHead>
               <TableHead>GST</TableHead>
               <SortableTh label="Stays" sortKey="bookings" sort={sort} onToggle={toggle} className="text-center" />
@@ -207,7 +232,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
           <TableBody>
             {(paged as unknown as GuestRow[]).length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
                   No guests found.
                 </TableCell>
               </TableRow>
@@ -223,6 +248,16 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
                   )}
                 </TableCell>
                 <TableCell>{g.phone}</TableCell>
+                <TableCell>
+                  {g.idProof ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 text-xs font-mono font-medium text-foreground">
+                      <ShieldCheck className="h-3 w-3 text-emerald-600 shrink-0" />
+                      {formatGovIdDisplay(g.idProof)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
+                </TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.company || '—'}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.gst || '—'}</TableCell>
                 <TableCell className="text-center">{g.bookings.length}</TableCell>
@@ -270,6 +305,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
             </DialogTitle>
             <DialogDescription>
               {viewGuest?.phone}
+              {viewGuest?.idProof ? ` · ${formatGovIdDisplay(viewGuest.idProof)}` : ''}
               {viewGuest?.company ? ` · ${viewGuest.company}` : ''}
               {viewGuest?.gst ? ` · GST ${viewGuest.gst}` : ''}
               {viewGuest?.address ? ` · ${viewGuest.address}` : ''}
@@ -352,6 +388,39 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
             <div className="space-y-1.5">
               <Label htmlFor="g-name">Name</Label>
               <Input id="g-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
+            </div>
+            <div className="space-y-2 rounded-lg border bg-muted/30 p-2.5">
+              <Label className="text-xs font-semibold flex items-center gap-1.5">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                Govt. ID Proof
+              </Label>
+              <div className="grid grid-cols-1 gap-2">
+                <Select value={editIdType} onValueChange={(val: GovIdType) => setEditIdType(val)}>
+                  <SelectTrigger className="h-8 text-xs bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GOV_ID_TYPES.map((t) => (
+                      <SelectItem key={t.value} value={t.value} className="text-xs">
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  placeholder={GOV_ID_TYPES.find((t) => t.value === editIdType)?.placeholder || 'ID Number'}
+                  value={editIdNumber}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    if (editIdType === 'AADHAAR') {
+                      setEditIdNumber(raw.replace(/\D/g, '').slice(0, 12))
+                    } else {
+                      setEditIdNumber(raw.toUpperCase())
+                    }
+                  }}
+                  className="h-8 text-xs font-mono uppercase bg-background"
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="g-company">Company</Label>

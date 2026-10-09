@@ -20,12 +20,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap } from '@/lib/hotel-utils'
+import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
-import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight, Clock } from 'lucide-react'
+import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight, Clock, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface BookingInfo {
@@ -59,6 +59,8 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
   const [bookingMode, setBookingMode] = useState<'CHECKIN' | 'BOOKING'>(initialMode)
   const [phone, setPhone] = useState('')
   const [name, setName] = useState('')
+  const [idType, setIdType] = useState<GovIdType>('AADHAAR')
+  const [idNumber, setIdNumber] = useState('')
   const [company, setCompany] = useState('')
   const [gst, setGst] = useState('')
   const [address, setAddress] = useState('')
@@ -80,6 +82,8 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
       setBookingMode(initialMode)
       setPhone('')
       setName('')
+      setIdType('AADHAAR')
+      setIdNumber('')
       setCompany('')
       setGst('')
       setAddress('')
@@ -149,7 +153,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     if (clean.length >= 4) {
       setSearching(true)
       try {
-        const guest = await api<{ name: string; company?: string; gst?: string; address?: string } | null>(
+        const guest = await api<{ name: string; company?: string; gst?: string; address?: string; idProof?: string } | null>(
           `/api/guests?phone=${encodeURIComponent(clean)}`
         )
         if (guest) {
@@ -157,6 +161,11 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           setCompany(guest.company || '')
           setGst(guest.gst || '')
           setAddress(guest.address || '')
+          if (guest.idProof) {
+            const parsed = parseGovId(guest.idProof)
+            setIdType(parsed.idType)
+            setIdNumber(parsed.idNumber)
+          }
           if (guest.company) setIsCorporate(true)
           setAutoFilled(true)
         } else {
@@ -185,6 +194,11 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     }
     if (!name.trim()) {
       setError('Guest name is required')
+      return
+    }
+    const idCheck = validateGovId(idType, idNumber)
+    if (!idCheck.valid) {
+      setError(idCheck.error || 'Valid Government ID proof is mandatory (Aadhaar / PAN / Passport)')
       return
     }
     if (isCorporate && !company.trim()) {
@@ -220,6 +234,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           roomId: room.id,
           phone: cleanPhone,
           name: name.trim(),
+          idProof: idCheck.formatted,
           company: company.trim() || undefined,
           gst: gst.trim() || undefined,
           address: address.trim() || undefined,
@@ -487,6 +502,75 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 setAutoFilled(false)
               }}
             />
+          </div>
+
+          {/* Government ID Proof (Mandatory) */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-2.5">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                Govt. ID Proof <span className="text-destructive">*</span>
+              </Label>
+              <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                Mandatory
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="space-y-1 sm:col-span-1">
+                <Select value={idType} onValueChange={(val: GovIdType) => setIdType(val)}>
+                  <SelectTrigger className="h-9 text-xs bg-background">
+                    <SelectValue placeholder="ID Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GOV_ID_TYPES.map((t) => (
+                      <SelectItem key={t.value} value={t.value} className="text-xs">
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1 sm:col-span-2">
+                <Input
+                  placeholder={GOV_ID_TYPES.find((t) => t.value === idType)?.placeholder || 'Enter ID number'}
+                  value={idNumber}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    if (idType === 'AADHAAR') {
+                      const digits = raw.replace(/\D/g, '').slice(0, 12)
+                      setIdNumber(digits)
+                    } else {
+                      setIdNumber(raw.toUpperCase())
+                    }
+                  }}
+                  className="h-9 text-xs font-mono font-medium uppercase bg-background"
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Real-time validation message */}
+            {idNumber.length > 0 && (
+              <div className="pt-0.5">
+                {(() => {
+                  const check = validateGovId(idType, idNumber)
+                  if (check.valid) {
+                    return (
+                      <p className="text-[11px] font-medium text-emerald-600 flex items-center gap-1">
+                        ✓ Valid {GOV_ID_TYPES.find((t) => t.value === idType)?.label} ({check.formatted})
+                      </p>
+                    )
+                  }
+                  return (
+                    <p className="text-[11px] font-medium text-amber-600">
+                      {check.error}
+                    </p>
+                  )
+                })()}
+              </div>
+            )}
           </div>
 
           {isCorporate && (
