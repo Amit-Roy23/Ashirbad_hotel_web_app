@@ -975,74 +975,16 @@ export function ReportsTab({ refreshKey }: TabProps) {
                     exportCSV(
                       'gst-bills-report.csv',
                       [
-                        'Invoice No',
-                        'Date',
-                        'Bill Type',
-                        'Guest Name',
-                        'Phone',
-                        'Email',
-                        'Company',
-                        'Guest GSTIN',
-                        'Address',
-                        'ID Proof',
-                        'Original Room',
-                        'Billed Room',
-                        'Room Description',
-                        'Days/Nights',
-                        'Actual Room Tariff',
-                        'Billed Room Tariff',
-                        'Food Charges',
-                        'Extra Charges',
-                        'Discount',
-                        'Taxable Amount',
-                        'GST Rate (%)',
-                        'GST Paid',
-                        'Internal GST',
-                        'Invoice Total',
-                        'Internal Total',
-                        'Paid Amount',
-                        'Balance Due',
-                        'Cash Paid',
-                        'UPI Paid',
-                        'Card Paid',
-                        'Advance Applied',
-                        'Approved By',
-                        'Created By',
+                        'Customer Name',
+                        'Invoice Number',
+                        'How Much Guest Paid',
+                        'How Much GST Paid',
                       ],
                       filteredGstRows.map((r) => [
-                        r.billNumber,
-                        formatDateTime(r.date),
-                        r.isCustom ? 'Custom Bill' : 'Normal Bill',
                         r.guestName,
-                        r.phone,
-                        r.email || '',
-                        r.company || '',
-                        r.guestGst || '',
-                        r.address || '',
-                        r.idProof || '',
-                        r.originalRoomNumber || r.roomNumber,
-                        r.roomNumber,
-                        r.roomDescription,
-                        r.days,
-                        r.actualRoomTotal,
-                        r.billedRoomTotal,
-                        r.foodTotal,
-                        r.extraCharges,
-                        r.discount,
-                        r.taxableAmount,
-                        `${r.gstPercent}%`,
-                        r.actualGst,
-                        r.internalGst,
-                        r.grandTotal,
-                        r.internalTotal,
+                        r.billNumber,
                         r.paid,
-                        r.balance,
-                        r.payCash,
-                        r.payUpi,
-                        r.payCard,
-                        r.advanceApplied,
-                        r.approvedBy || '',
-                        r.createdBy || '',
+                        r.actualGst,
                       ])
                     )
                   }
@@ -1144,9 +1086,6 @@ export function ReportsTab({ refreshKey }: TabProps) {
                         </TableCell>
                         <TableCell className="text-right text-xs">
                           <div className="font-semibold">{formatINR(r.taxableAmount)}</div>
-                          {r.foodTotal > 0 && (
-                            <div className="text-[10px] text-muted-foreground">Food: {formatINR(r.foodTotal)}</div>
-                          )}
                         </TableCell>
                         <TableCell className="text-right text-xs">
                           <div className="font-bold text-emerald-700 dark:text-emerald-400">
@@ -1342,12 +1281,6 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       <div className="flex justify-between text-violet-700 dark:text-violet-300">
                         <span>Actual Internal Room Tariff (Hotel side)</span>
                         <span>{formatINR(selectedGstBill.actualRoomTotal)}</span>
-                      </div>
-                    )}
-                    {selectedGstBill.foodTotal > 0 && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Food &amp; Restaurant Charges</span>
-                        <span className="font-medium">{formatINR(selectedGstBill.foodTotal)}</span>
                       </div>
                     )}
                     {selectedGstBill.extraCharges > 0 && (

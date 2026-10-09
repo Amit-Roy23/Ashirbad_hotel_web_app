@@ -143,11 +143,22 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
 
   function doExport() {
     exportCSV(
-      'guests.csv',
-      ['Name', 'Phone', 'Company', 'GST', 'Address', 'Total Stays', 'First Seen'],
-      (filtered as unknown as GuestRow[]).map((g) => [
-        g.name, g.phone, g.company || '', g.gst || '', g.address || '', g.bookings.length, formatDate(g.createdAt),
-      ])
+      'guests-report.csv',
+      ['Name', 'Phone Number', 'ID Proof and Number', 'Staying Date (From - To)'],
+      (filtered as unknown as GuestRow[]).map((g) => {
+        const stayDates =
+          g.bookings && g.bookings.length > 0
+            ? g.bookings
+                .map((b) => `${formatDate(b.checkIn)} to ${b.checkOut ? formatDate(b.checkOut) : 'Present'}`)
+                .join('; ')
+            : '—'
+        return [
+          g.name,
+          g.phone,
+          g.idProof ? formatGovIdDisplay(g.idProof) : '—',
+          stayDates,
+        ]
+      })
     )
   }
 

@@ -1507,21 +1507,6 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       )
     }
   }
-  if (checkout !== false && includeFood !== true) {
-    const pendingCount = await prisma.foodOrder.count({
-      where: {
-        OR: [{ bookingId: booking.id }, { roomId: booking.roomId }],
-        status: { notIn: ['PAID', 'ADDED_TO_BILL', 'CANCELLED'] },
-      },
-    })
-    if (pendingCount > 0) {
-      return NextResponse.json(
-        { error: `${pendingCount} pending room-service order(s) exist. Include food in this bill or settle them in Restaurant before checkout.` },
-        { status: 400 }
-      )
-    }
-  }
-
   const settings = await getSettingsMap()
   const billDays = parseInt(String(days)) || booking.days
   const actualRoomTotal = booking.ratePerDay * billDays
@@ -1566,25 +1551,6 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
     user = approverUser
   }
 
-  let foodTotal = 0
-  let pendingOrders: { id: string }[] = []
-  if (includeFood === true) {
-    const explicitIds = Array.isArray(foodOrderIds) && foodOrderIds.length > 0 ? foodOrderIds.map(String) : []
-    const orders = await prisma.foodOrder.findMany({
-      where: {
-        OR: [
-          ...(explicitIds.length > 0 ? [{ id: { in: explicitIds } }] : []),
-          { bookingId: booking.id },
-          { roomId: booking.roomId },
-        ],
-        status: { notIn: ['PAID', 'ADDED_TO_BILL', 'CANCELLED'] },
-      },
-      select: { id: true, total: true },
-    })
-    pendingOrders = orders.map((o) => ({ id: o.id }))
-    foodTotal = orders.reduce((s, o) => s + (o.total || 0), 0)
-  }
-
   const extra = num(extraCharges)
   const disc = num(discount)
 
@@ -1597,15 +1563,15 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
 
   const gstPct = gstPercent !== undefined && gstPercent !== null && gstPercent !== '' ? num(gstPercent) : defaultLodgingGst(settings.gstPercent)
 
-  // Full customer-facing calculation
-  const taxable = Math.max(0, billedRoom + foodTotal + extra - disc)
+  // Full customer-facing lodging calculation (food bill is completely separate)
+  const taxable = Math.max(0, billedRoom + extra - disc)
   const billedGst = Math.round(taxable * gstPct) / 100
   const grandTotal = Math.max(0, Math.round((taxable + billedGst) * 100) / 100)
   const advanceApplied = Math.min(booking.advance || 0, grandTotal)
   const payableNow = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
 
-  // Hotel internal accounting calculation
-  const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
+  // Hotel internal accounting calculation (lodging only)
+  const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
   // Internal total = actual tariff + the GST actually charged on the invoice (on the custom amount for corporate bills)
   const internalGst = billedGst
   const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
@@ -1648,7 +1614,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         actualGst: billedGst,
         internalGst,
         internalTotal,
-        foodTotal,
+        foodTotal: 0,
         extraCharges: extra,
         discount: disc,
         grandTotal,
@@ -1690,13 +1656,6 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       })
     }
 
-    if (pendingOrders.length > 0) {
-      await tx.foodOrder.updateMany({
-        where: { id: { in: pendingOrders.map((o) => o.id) } },
-        data: { status: 'ADDED_TO_BILL' },
-      })
-    }
-
     const ledgerEntries = buildBillLedgerEntries({
       billId: createdBill.id,
       billNumber,
@@ -1706,7 +1665,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       days: billDays,
       ratePerDay: booking.ratePerDay,
       actualRoomTotal,
-      foodTotal,
+      foodTotal: 0,
       extraCharges: extra,
       discount: disc,
       gstPercent: gstPct,
@@ -1898,15 +1857,15 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     user = { id: approver.id, name: approver.name, role: approver.role }
   }
 
-  // Taxable and GST calculation based on customer-facing amount
-  const taxable = Math.max(0, newBilledRoom + bill.foodTotal + extra - disc)
+  // Taxable and GST calculation based on customer-facing amount (lodging only, food is separate)
+  const taxable = Math.max(0, newBilledRoom + extra - disc)
   const newBilledGst = Math.round(taxable * newGstPercent) / 100
   const newGrandTotal = Math.max(0, Math.round((taxable + newBilledGst) * 100) / 100)
   const advanceApplied = Math.min(bill.booking.advance || 0, newGrandTotal)
   const payableNow = Math.max(0, Math.round((newGrandTotal - advanceApplied) * 100) / 100)
 
-  // Internal accounting calculation
-  const internalTaxable = Math.max(0, actualRoomTotal + bill.foodTotal + extra - disc)
+  // Internal accounting calculation (lodging only)
+  const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
   // Internal total = actual tariff + the GST actually charged on the invoice (on the custom amount for corporate bills)
   const internalGst = newBilledGst
   const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
@@ -3352,27 +3311,24 @@ async function getReports(req: NextRequest) {
       (!!b.roomDescription && b.roomDescription !== b.booking.room.type) ||
       (!!b.roomNumber && b.roomNumber !== b.booking.room.number) ||
       b.isCorporate
-    const taxableAmount = Math.max(0, b.billedRoomTotal + b.foodTotal + b.extraCharges - b.discount)
-    const rawPaid = b.advanceApplied + b.payCash + b.payUpi + b.payCard
-    const isCompleted = b.status === 'FINAL' || b.booking?.status === 'COMPLETED'
-    const paid = isCompleted ? b.grandTotal : rawPaid
-    const balance = isCompleted ? 0 : Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
-    const effectiveCash = (isCompleted && rawPaid < b.grandTotal)
-      ? Math.max(0, Math.round((b.grandTotal - b.advanceApplied - b.payUpi - b.payCard) * 100) / 100)
-      : b.payCash
+    const taxableAmount = Math.max(0, b.billedRoomTotal + b.extraCharges - b.discount)
+    const rawPaid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0)
+    const paid = Math.round(rawPaid * 100) / 100
+    const balance = Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
+    const effectiveCash = b.payCash || 0
 
     const internalGst =
       b.internalGst !== undefined && b.internalGst > 0
         ? b.internalGst
         : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
         ? b.actualGst
-        : Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100
+        : Math.round(Math.max(0, b.actualRoomTotal + b.extraCharges - b.discount) * b.gstPercent) / 100
     const internalTotal =
       b.internalTotal !== undefined && b.internalTotal > 0
         ? b.internalTotal
         : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
         ? b.grandTotal
-        : Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) + internalGst
+        : Math.max(0, b.actualRoomTotal + b.extraCharges - b.discount) + internalGst
 
     return {
       id: b.id,
