@@ -2687,6 +2687,73 @@ async function getReports(req: NextRequest) {
       (!!b.roomNumber && b.roomNumber !== b.booking.room.number)
   )
 
+  const gstBillsList = bills.filter(
+    (b) => (b.actualGst !== undefined && b.actualGst > 0) || (b.gstPercent !== undefined && b.gstPercent > 0) || (b.internalGst !== undefined && b.internalGst > 0)
+  )
+
+  const gstRows = gstBillsList.map((b) => {
+    const isCustom =
+      Math.abs(b.billedRoomTotal - b.actualRoomTotal) > 0.01 ||
+      (!!b.roomDescription && b.roomDescription !== b.booking.room.type) ||
+      (!!b.roomNumber && b.roomNumber !== b.booking.room.number) ||
+      b.isCorporate
+    const taxableAmount = Math.max(0, b.billedRoomTotal + b.foodTotal + b.extraCharges - b.discount)
+    const paid = b.advanceApplied + b.payCash + b.payUpi + b.payCard
+    const balance = Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
+    const internalGst =
+      b.internalGst !== undefined && b.internalGst > 0
+        ? b.internalGst
+        : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
+        ? b.actualGst
+        : Math.round(Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) * b.gstPercent) / 100
+    const internalTotal =
+      b.internalTotal !== undefined && b.internalTotal > 0
+        ? b.internalTotal
+        : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
+        ? b.grandTotal
+        : Math.max(0, b.actualRoomTotal + b.foodTotal + b.extraCharges - b.discount) + internalGst
+
+    return {
+      id: b.id,
+      billNumber: b.billNumber,
+      date: b.createdAt,
+      guestName: b.booking.guest.name,
+      phone: b.booking.guest.phone,
+      email: b.booking.guest.email || null,
+      company: b.corporateName || b.booking.guest.company || null,
+      guestGst: b.gstNumber || b.booking.guest.gst || null,
+      address: b.booking.guest.address || null,
+      idProof: b.booking.guest.idProof || null,
+      originalRoomNumber: b.booking.room.number,
+      roomNumber: b.roomNumber || b.booking.room.number,
+      roomDescription: b.roomDescription || b.booking.room.type || 'Non-AC',
+      days: b.days,
+      actualRoomTotal: b.actualRoomTotal,
+      billedRoomTotal: b.billedRoomTotal,
+      foodTotal: b.foodTotal,
+      extraCharges: b.extraCharges,
+      discount: b.discount,
+      taxableAmount,
+      gstPercent: b.gstPercent,
+      actualGst: b.actualGst,
+      internalGst,
+      grandTotal: b.grandTotal,
+      internalTotal,
+      isCustom,
+      payCash: b.payCash,
+      payUpi: b.payUpi,
+      payCard: b.payCard,
+      advanceApplied: b.advanceApplied,
+      paid,
+      balance,
+      approvedBy: b.approvedBy || null,
+      createdBy: b.createdBy || null,
+      status: b.status,
+      notes: b.notes || null,
+      booking: b.booking,
+    }
+  })
+
   return NextResponse.json({
     range: { from: fromStr, to: toStr, days: daysDiff },
     occupancy: {
@@ -2723,6 +2790,7 @@ async function getReports(req: NextRequest) {
         billNumber: b.billNumber,
         date: b.createdAt,
         guestName: b.booking.guest.name,
+        originalRoomNumber: b.booking.room.number,
         roomNumber: b.roomNumber || b.booking.room.number,
         roomDescription: b.roomDescription || b.booking.room.type || 'Non-AC',
         actualRoomTotal: b.actualRoomTotal,
@@ -2779,6 +2847,16 @@ async function getReports(req: NextRequest) {
     outstanding: {
       total: outstandingRows.reduce((s, r) => s + r.balance, 0),
       rows: outstandingRows,
+    },
+    gstBills: {
+      count: gstRows.length,
+      normalCount: gstRows.filter((r) => !r.isCustom).length,
+      customCount: gstRows.filter((r) => r.isCustom).length,
+      totalGstAmount: Math.round(gstRows.reduce((s, r) => s + r.actualGst, 0) * 100) / 100,
+      totalTaxableAmount: Math.round(gstRows.reduce((s, r) => s + r.taxableAmount, 0) * 100) / 100,
+      totalGrandTotal: Math.round(gstRows.reduce((s, r) => s + r.grandTotal, 0) * 100) / 100,
+      totalInternalGst: Math.round(gstRows.reduce((s, r) => s + r.internalGst, 0) * 100) / 100,
+      rows: gstRows,
     },
     bookings: {
       rows: bookings.map((b) => ({

@@ -569,6 +569,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                   <TableRow>
                     <SortableTh label="Invoice" sortKey="billNumber" sort={sortBills} onToggle={toggleSortBills} />
                     <TableHead>Guest</TableHead>
+                    <TableHead>Original Room</TableHead>
                     <TableHead>Room</TableHead>
                     <TableHead>Billed Amount</TableHead>
                     <TableHead>Settlement</TableHead>
@@ -579,7 +580,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 <TableBody>
                   {pagedBills.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                      <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                         No checkout invoices found.
                       </TableCell>
                     </TableRow>
@@ -587,6 +588,9 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                   {pagedBills.map((b) => {
                     const isPaid = balanceOf(b) <= 0.01
                     const checkoutPaid = (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0)
+                    const originalRoomNo = b.booking?.room?.number || b.roomNumber
+                    const displayedRoomNo = b.roomNumber || b.booking?.room?.number
+                    const isCustomRoom = Boolean(b.roomNumber && b.booking?.room?.number && b.roomNumber !== b.booking?.room?.number)
                     return (
                       <TableRow key={b.id}>
                         <TableCell className="py-2.5">
@@ -595,7 +599,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                             <Badge variant="outline" className="h-4 border-emerald-400 px-1 text-[9px] text-emerald-700 dark:text-emerald-300">
                               FINAL
                             </Badge>
-                            {(b.billedRoomTotal !== b.actualRoomTotal || (b.roomNumber && b.roomNumber !== b.booking?.room?.number)) && (
+                            {(b.billedRoomTotal !== b.actualRoomTotal || isCustomRoom) && (
                               <Badge variant="outline" className="h-4 border-violet-400 px-1 text-[9px] text-violet-700 dark:text-violet-300">
                                 CUSTOM
                               </Badge>
@@ -607,8 +611,14 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                           <div className="text-xs sm:text-sm font-medium">{b.booking?.guest?.name || 'Guest'}</div>
                           <div className="text-[11px] text-muted-foreground">{b.booking?.guest?.phone}</div>
                         </TableCell>
-                        <TableCell className="py-2.5 font-semibold text-xs">
-                          Room {b.roomNumber || b.booking?.room?.number}
+                        <TableCell className="py-2.5 font-semibold text-xs text-muted-foreground">
+                          Room {originalRoomNo || '—'}
+                        </TableCell>
+                        <TableCell className={`py-2.5 font-semibold text-xs ${isCustomRoom ? 'text-violet-700 dark:text-violet-300 font-bold' : ''}`}>
+                          Room {displayedRoomNo || '—'}
+                          {isCustomRoom && (
+                            <div className="text-[10px] font-normal text-violet-600 dark:text-violet-400">(Custom)</div>
+                          )}
                         </TableCell>
                         <TableCell className="py-2.5">
                           <div className="font-bold text-xs sm:text-sm">{formatINR(b.grandTotal)}</div>
