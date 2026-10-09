@@ -13,9 +13,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
-import { apiAs, formatINR, formatDate, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
+import { triggerPrintFoodBill } from '@/lib/print-invoice'
+import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
-import { Loader2, Info, ShieldCheck } from 'lucide-react'
+import { Loader2, Info, ShieldCheck, Utensils, Printer, Receipt, ShoppingBag } from 'lucide-react'
 
 interface Guest {
   id: string
@@ -29,6 +31,24 @@ interface Room {
   id: string
   number: string
   type?: string
+}
+
+interface OrderItem {
+  id: string
+  name: string
+  price: number
+  quantity: number
+}
+
+interface FoodOrder {
+  id: string
+  bookingId?: string | null
+  total: number
+  status: string
+  notes?: string
+  items: OrderItem[]
+  room?: { id: string; number: string } | null
+  createdAt: string
 }
 
 interface Booking {
@@ -98,7 +118,9 @@ export function GenerateBillDialog({
   const [gstPercent, setGstPercent] = useState(normalizeLodgingGst(defaultGstPercent))
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
-  const [includeFood, setIncludeFood] = useState(false)
+  const [includeFood, setIncludeFood] = useState(true)
+  const [foodOrdersList, setFoodOrdersList] = useState<FoodOrder[]>([])
+  const [settings, setSettings] = useState<Record<string, string>>({})
   const [payCash, setPayCash] = useState('0')
   const [payUpi, setPayUpi] = useState('0')
   const [payCard, setPayCard] = useState('0')
@@ -112,13 +134,7 @@ export function GenerateBillDialog({
     if (open && booking) {
       const initDays = booking.days || 1
       const initRoom = booking.ratePerDay * initDays
-      const initFood = (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
-      const initTaxable = initRoom + initFood
-      const gst = parseFloat(normalizeLodgingGst(defaultGstPercent)) || 0
-      const initGrand = Math.round((initTaxable + (initTaxable * gst) / 100) * 100) / 100
-      const initAdv = Math.min(booking.advance || 0, initGrand)
-      const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
-
+      
       setDays(String(initDays))
       setCustomMode(false)
       setCustomTotal('')
@@ -127,15 +143,41 @@ export function GenerateBillDialog({
       setGstPercent(normalizeLodgingGst(defaultGstPercent))
       setExtraCharges('0')
       setDiscount('0')
-      // Pending room-service must land on this bill; checkout is refused if it would be left behind
-      setIncludeFood((booking.foodOrders || []).some((o) => o.total > 0))
-      setPayCash(String(initPayable))
-      setPayUpi('0')
-      setPayCard('0')
+      // Fooding bill toggle is default ON
+      setIncludeFood(true)
       setCorporateName(booking.guest?.company || '')
       setGstNumber(booking.guest?.gst || '')
       setManagerPin('')
       setError('')
+
+      // Fetch food orders and settings to provide rich fooding bill details
+      Promise.all([
+        api<FoodOrder[]>('/api/orders').catch(() => []),
+        api<Record<string, string>>('/api/settings').catch(() => ({})),
+      ]).then(([allOrders, sets]) => {
+        setSettings(sets)
+        const relevant = (allOrders || []).filter(
+          (o) =>
+            o.bookingId === booking.id ||
+            (o.room && (o.room.id === booking.room?.id || o.room.number === booking.room?.number))
+        )
+        setFoodOrdersList(relevant)
+
+        // Compute initial payable with food included by default
+        const foodSum = relevant.length > 0
+          ? relevant.reduce((s, o) => s + o.total, 0)
+          : (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
+
+        const gst = parseFloat(normalizeLodgingGst(defaultGstPercent)) || 0
+        const initTaxable = initRoom + foodSum
+        const initGrand = Math.round((initTaxable + (initTaxable * gst) / 100) * 100) / 100
+        const initAdv = Math.min(booking.advance || 0, initGrand)
+        const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
+
+        setPayCash(String(initPayable))
+        setPayUpi('0')
+        setPayCard('0')
+      })
     }
   }, [open, booking, defaultGstPercent])
 
@@ -146,7 +188,12 @@ export function GenerateBillDialog({
     const billDays = num(days) || 1
     const actualRoomTotal = booking.ratePerDay * billDays
     const billedRoom = customMode && num(customTotal) > 0 ? num(customTotal) : actualRoomTotal
-    const foodTotal = includeFood && booking.foodOrders ? booking.foodOrders.reduce((s, o) => s + o.total, 0) : 0
+
+    const ordersSum = foodOrdersList.length > 0
+      ? foodOrdersList.reduce((s, o) => s + o.total, 0)
+      : (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
+
+    const foodTotal = includeFood ? ordersSum : 0
     const extra = num(extraCharges)
     const disc = num(discount)
 
@@ -171,6 +218,7 @@ export function GenerateBillDialog({
       billDays,
       actualRoomTotal,
       billedRoom,
+      ordersSum,
       foodTotal,
       taxable,
       gstAmount,
@@ -184,7 +232,34 @@ export function GenerateBillDialog({
       balance,
       adjustment,
     }
-  }, [booking, days, customMode, customTotal, includeFood, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
+  }, [booking, days, customMode, customTotal, includeFood, foodOrdersList, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
+
+  function handlePrintFoodBill() {
+    if (!booking) return
+    const ordersToPrint = foodOrdersList.length > 0 ? foodOrdersList : []
+    const totalAmount = calc?.foodTotal || ordersToPrint.reduce((s, o) => s + o.total, 0)
+    
+    if (ordersToPrint.length === 0 && totalAmount <= 0) {
+      toast({
+        title: 'No Food Orders',
+        description: `Room ${booking.room?.number || ''} has no room service food orders recorded.`,
+      })
+      return
+    }
+
+    const allItems = ordersToPrint.flatMap((o) => o.items || [])
+    const aggregatedOrder: FoodOrder = {
+      id: ordersToPrint[0]?.id || `FOOD-ROOM-${booking.room?.number || '0'}`,
+      total: totalAmount > 0 ? totalAmount : 0,
+      status: 'COMPLETED',
+      items: allItems.length > 0 ? allItems : [{ id: '1', name: 'Room Service Dining', price: totalAmount, quantity: 1 }],
+      room: { id: booking.room?.id || '', number: booking.room?.number || '' },
+      createdAt: ordersToPrint[0]?.createdAt || new Date().toISOString(),
+      notes: ordersToPrint.map((o) => o.notes).filter(Boolean).join('; ') || undefined,
+    }
+
+    triggerPrintFoodBill(aggregatedOrder, settings)
+  }
 
   function autoBalance(method: 'CASH' | 'UPI' | 'CARD') {
     if (!calc) return
@@ -371,17 +446,35 @@ export function GenerateBillDialog({
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-semibold text-foreground">
-                    Fooding Bill {calc.foodTotal > 0 && `(${formatINR(calc.foodTotal)})`}
+                    Fooding Bill {calc.ordersSum > 0 ? `(${formatINR(calc.ordersSum)})` : ''}
                   </Label>
-                  {calc.foodTotal > 0 && (
-                    <span className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">Room Service</span>
-                  )}
+                  <span className="text-[10px] text-amber-700 dark:text-amber-400 font-semibold">
+                    {includeFood ? 'ON' : 'OFF'}
+                  </span>
                 </div>
                 <div className="flex h-9 items-center justify-between rounded-md border px-2.5 bg-card">
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-xs text-muted-foreground font-medium">
                     {includeFood ? 'Include in Bill' : 'Separate'}
                   </span>
-                  <Switch checked={includeFood} onCheckedChange={setIncludeFood} className="scale-75" />
+                  <Switch
+                    checked={includeFood}
+                    onCheckedChange={(checked) => {
+                      setIncludeFood(checked)
+                      // Auto-update cash balance to new payable
+                      if (calc) {
+                        const nextFood = checked ? (calc.ordersSum || 0) : 0
+                        const nextTaxable = Math.max(0, calc.billedRoom + nextFood + num(extraCharges) - num(discount))
+                        const nextGst = Math.round(nextTaxable * num(gstPercent)) / 100
+                        const nextGrand = Math.max(0, Math.round((nextTaxable + nextGst) * 100) / 100)
+                        const nextAdv = Math.min(booking.advance || 0, nextGrand)
+                        const nextPayable = Math.max(0, Math.round((nextGrand - nextAdv) * 100) / 100)
+                        setPayCash(String(nextPayable))
+                        setPayUpi('0')
+                        setPayCard('0')
+                      }
+                    }}
+                    className="scale-75"
+                  />
                 </div>
               </div>
               <div className="space-y-1.5">
@@ -476,17 +569,53 @@ export function GenerateBillDialog({
             <Separator />
 
             {/* Breakdown summary */}
-            <div className="space-y-1.5 rounded-lg bg-muted/50 p-3 text-xs">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Room ({customMode ? 'custom billed' : 'actual'})</span>
-                <span className="font-medium">{formatINR(calc.billedRoom)}</span>
+            <div className="space-y-2 rounded-lg bg-muted/50 p-3 text-xs">
+              {/* Lodging details */}
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">
+                  Room ({customMode ? 'custom billed' : 'actual'} · {num(days)}n × {formatINR(booking.ratePerDay)})
+                </span>
+                <span className="font-semibold text-foreground">{formatINR(calc.billedRoom)}</span>
               </div>
-              {calc.foodTotal > 0 && includeFood && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Food charges</span>
-                  <span className="font-medium">{formatINR(calc.foodTotal)}</span>
+
+              {/* Fooding Bill Details - Shows when toggle is ON, Hides when toggle is OFF */}
+              {includeFood && (
+                <div className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Utensils className="h-3.5 w-3.5 text-amber-600" />
+                      Fooding Bill (Room Service)
+                    </span>
+                    <span className="font-bold text-amber-800 dark:text-amber-300">
+                      {formatINR(calc.foodTotal)}
+                    </span>
+                  </div>
+
+                  {/* Food order item breakdown */}
+                  {foodOrdersList.length > 0 ? (
+                    <div className="space-y-1 pt-1 border-t border-amber-500/20 text-[11px] text-muted-foreground">
+                      {foodOrdersList.map((order, idx) => (
+                        <div key={order.id || idx} className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <span className="font-medium text-foreground">Order #{order.id?.slice(-4) || idx + 1}:</span>{' '}
+                            {order.items && order.items.length > 0
+                              ? order.items.map((it) => `${it.name} x${it.quantity}`).join(', ')
+                              : `${order.items?.length || 1} item(s)`}
+                          </div>
+                          <span className="font-mono font-medium ml-2">{formatINR(order.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground italic">
+                      {calc.foodTotal > 0
+                        ? `Attached dining charges: ${formatINR(calc.foodTotal)}`
+                        : 'No active room dining orders recorded'}
+                    </p>
+                  )}
                 </div>
               )}
+
               {num(extraCharges) > 0 && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Extra charges</span>
@@ -566,14 +695,38 @@ export function GenerateBillDialog({
                 Collect the full amount ({formatINR(calc.balance)} outstanding) to generate and print the bill.
               </p>
             )}
-            <Button
-              className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs"
-              onClick={generateBill}
-              disabled={saving || calc.balance > 0.01}
-            >
-              {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-              Generate Bill &amp; Check Out
-            </Button>
+
+            {/* Bottom Action Buttons: Dual buttons when Fooding is ON, Single button when Fooding is OFF */}
+            {includeFood ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 border-amber-500/60 text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 font-semibold text-xs gap-1.5"
+                  onClick={handlePrintFoodBill}
+                >
+                  <Utensils className="h-3.5 w-3.5 text-amber-600" />
+                  Fooding Bill Generate
+                </Button>
+                <Button
+                  className="h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs gap-1.5"
+                  onClick={generateBill}
+                  disabled={saving || calc.balance > 0.01}
+                >
+                  {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                  Generate Bill &amp; Check Out
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs"
+                onClick={generateBill}
+                disabled={saving || calc.balance > 0.01}
+              >
+                {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                Generate Bill &amp; Check Out
+              </Button>
+            )}
           </div>
         )}
       </DialogContent>
