@@ -158,8 +158,11 @@ export function GenerateBillDialog({
         setSettings(sets)
         const relevant = (allOrders || []).filter(
           (o) =>
-            o.bookingId === booking.id ||
-            (o.room && (o.room.id === booking.room?.id || o.room.number === booking.room?.number))
+            o.status !== 'PAID' &&
+            o.status !== 'ADDED_TO_BILL' &&
+            o.status !== 'CANCELLED' &&
+            (o.bookingId === booking.id ||
+              (o.room && (o.room.id === booking.room?.id || o.room.number === booking.room?.number)))
         )
         setFoodOrdersList(relevant)
 
@@ -234,13 +237,8 @@ export function GenerateBillDialog({
     }
   }, [booking, days, customMode, customTotal, includeFood, foodOrdersList, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
 
-  // Automatically keep payment equal to full payable amount when user hasn't split across methods
-  useEffect(() => {
-    if (!calc) return
-    if (num(payUpi) === 0 && num(payCard) === 0) {
-      setPayCash(String(calc.payable))
-    }
-  }, [calc?.payable])
+  // Payment values are maintained directly from user input or 1-click autoBalance actions
+  // (Removed reactive useEffect that was forcefully overriding payCash on every calculation change)
 
   function handlePrintFoodBill() {
     if (!booking) return
@@ -315,10 +313,6 @@ export function GenerateBillDialog({
       setError(`Payment split (₹${calc.paid}) cannot exceed payable amount (₹${calc.payable})`)
       return
     }
-    if (calc.balance > 0.01) {
-      setError(`Full payment required before the bill can be generated or printed. Collect the outstanding ${formatINR(calc.balance)}.`)
-      return
-    }
     setSaving(true)
     setError('')
     try {
@@ -338,6 +332,7 @@ export function GenerateBillDialog({
           payUpi: num(payUpi),
           payCard: num(payCard),
           includeFood,
+          foodOrderIds: foodOrdersList.map((o) => o.id),
           corporateName: corporateName || undefined,
           gstNumber: gstNumber || undefined,
           managerPin: (customMode || isWaivingOverstay) ? managerPin.trim() : undefined,
@@ -466,21 +461,7 @@ export function GenerateBillDialog({
                   </span>
                   <Switch
                     checked={includeFood}
-                    onCheckedChange={(checked) => {
-                      setIncludeFood(checked)
-                      // Auto-update cash balance to new payable
-                      if (calc) {
-                        const nextFood = checked ? (calc.ordersSum || 0) : 0
-                        const nextTaxable = Math.max(0, calc.billedRoom + nextFood + num(extraCharges) - num(discount))
-                        const nextGst = Math.round(nextTaxable * num(gstPercent)) / 100
-                        const nextGrand = Math.max(0, Math.round((nextTaxable + nextGst) * 100) / 100)
-                        const nextAdv = Math.min(booking.advance || 0, nextGrand)
-                        const nextPayable = Math.max(0, Math.round((nextGrand - nextAdv) * 100) / 100)
-                        setPayCash(String(nextPayable))
-                        setPayUpi('0')
-                        setPayCard('0')
-                      }
-                    }}
+                    onCheckedChange={setIncludeFood}
                     className="scale-75"
                   />
                 </div>
@@ -710,8 +691,14 @@ export function GenerateBillDialog({
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
             {calc.balance > 0.01 && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                <span className="font-bold">Full Payment Required:</span> Collect {formatINR(calc.balance)} before generating the bill or checking out.
+              <div className="rounded-md border border-amber-400 bg-amber-50/90 p-2.5 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200 space-y-1">
+                <div className="font-bold flex items-center justify-between">
+                  <span>⚠️ Balance Due: {formatINR(calc.balance)}</span>
+                  <span className="text-[10px] font-normal uppercase tracking-wide bg-amber-200/70 dark:bg-amber-900/60 px-1.5 py-0.5 rounded">Credit / Due</span>
+                </div>
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                  This checkout will record an outstanding due of <strong>{formatINR(calc.balance)}</strong> on {booking.guest?.name}&apos;s profile, and will automatically alert staff on future check-ins.
+                </p>
               </div>
             )}
 
@@ -730,20 +717,20 @@ export function GenerateBillDialog({
                 <Button
                   className="h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs gap-1.5"
                   onClick={generateBill}
-                  disabled={saving || calc.balance > 0.01}
+                  disabled={saving}
                 >
                   {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-                  Generate Bill &amp; Check Out
+                  {calc.balance > 0.01 ? `Check Out (Due: ${formatINR(calc.balance)})` : 'Generate Bill & Check Out'}
                 </Button>
               </div>
             ) : (
               <Button
                 className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs"
                 onClick={generateBill}
-                disabled={saving || calc.balance > 0.01}
+                disabled={saving}
               >
                 {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-                Generate Bill &amp; Check Out
+                {calc.balance > 0.01 ? `Check Out (Due: ${formatINR(calc.balance)})` : 'Generate Bill & Check Out'}
               </Button>
             )}
           </div>

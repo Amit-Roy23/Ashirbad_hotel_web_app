@@ -2,14 +2,9 @@ import { formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
 
 export function triggerPrintInvoice(bill: any, settings: Record<string, string> = {}) {
   if (!bill) return
-  // Lodging invoices are printed only once fully paid
   const received =
     Number(bill.advanceApplied || 0) + Number(bill.payCash || 0) + Number(bill.payUpi || 0) + Number(bill.payCard || 0)
   const due = Math.round((Number(bill.grandTotal || 0) - received) * 100) / 100
-  if (due > 0.01) {
-    alert(`Bill ${bill.billNumber || ''} has ₹${due.toFixed(2)} outstanding. Collect full payment before printing.`)
-    return
-  }
 
   const hotelName = settings.hotelName || 'Ashirbad Lodge'
   const hotelAddress = settings.hotelAddress || 'Station Road, Kolkata'

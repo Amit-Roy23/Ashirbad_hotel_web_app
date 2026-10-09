@@ -162,13 +162,7 @@ export function EditBillDialog({
     }
   }, [bill, billedRoomTotal, gstPercent, extraCharges, discount, payCash, payUpi, payCard])
 
-  // Automatically keep payment equal to full payable amount when user hasn't split across methods
-  useEffect(() => {
-    if (!calc) return
-    if (num(payUpi) === 0 && num(payCard) === 0) {
-      setPayCash(String(calc.payable))
-    }
-  }, [calc?.payable])
+  // Payment values are preserved from database or edited manually by user
 
   const isCustom = useMemo(() => {
     if (!bill || !calc) return false
@@ -219,10 +213,6 @@ export function EditBillDialog({
 
     if (calc.paid > calc.payable + 0.01) {
       setError(`Payment split (₹${calc.paid}) cannot exceed payable amount (₹${calc.payable})`)
-      return
-    }
-    if (calc.balance > 0.01) {
-      setError(`Full payment required: adjust the payment split to cover the outstanding ${formatINR(calc.balance)}.`)
       return
     }
 
@@ -507,14 +497,14 @@ export function EditBillDialog({
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
             {calc.balance > 0.01 && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                <span className="font-bold">Full Payment Required:</span> Settle {formatINR(calc.balance)} outstanding to save changes.
+              <div className="rounded-md border border-amber-400 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+                <span className="font-bold">⚠️ Balance Due:</span> {formatINR(calc.balance)} outstanding will be updated on the invoice and recorded on {bill.booking?.guest?.name}&apos;s profile.
               </div>
             )}
 
-            <Button className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs" onClick={handleSave} disabled={saving || calc.balance > 0.01}>
+            <Button className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs" onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-              Save &amp; Recalculate Bill
+              {calc.balance > 0.01 ? `Save Changes (Due: ${formatINR(calc.balance)})` : 'Save & Recalculate Bill'}
             </Button>
           </div>
         )}

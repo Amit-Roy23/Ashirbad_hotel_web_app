@@ -20,13 +20,44 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
+import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, formatDateTime, toDateStr, doDateRangesOverlap, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
-import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight, Clock, ShieldCheck } from 'lucide-react'
+import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, ShieldCheck, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+
+interface DueItem {
+  billId: string
+  billNumber: string
+  bookingId: string
+  roomNumber: string
+  checkIn: string
+  checkOut: string | null
+  actualCheckOut: string | null
+  checkoutDate: string
+  days: number
+  grandTotal: number
+  paidTotal: number
+  balanceDue: number
+  paymentStatus: string
+  status: string
+  createdAt: string
+}
+
+interface GuestLookupResult {
+  id: string
+  name: string
+  phone: string
+  company?: string | null
+  gst?: string | null
+  address?: string | null
+  idProof?: string | null
+  totalDue?: number
+  dueHistory?: DueItem[]
+}
 
 interface BookingInfo {
   id: string
@@ -73,36 +104,37 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
   const [isCorporate, setIsCorporate] = useState(false)
   const [notes, setNotes] = useState('')
   const [autoFilled, setAutoFilled] = useState(false)
+  const [guestDueInfo, setGuestDueInfo] = useState<{ totalDue: number; dueHistory: DueItem[] } | null>(null)
   const [saving, setSaving] = useState(false)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (open && room) {
-      setBookingMode(initialMode)
-      setPhone('')
-      setName('')
-      setIdType('AADHAAR')
-      setIdNumber('')
-      setCompany('')
-      setGst('')
-      setAddress('')
-      setCheckInDate(todayStr())
-      setCheckOut(addDays(1))
-      setGuestCount('1')
-      setAdvance('')
-      setAdvanceMethod('CASH')
-      setIsCorporate(false)
-      setNotes('')
-      setAutoFilled(false)
-      setError('')
+    if (!open || !room) return
+    setBookingMode(initialMode)
+    setPhone('')
+    setName('')
+    setIdType('AADHAAR')
+    setIdNumber('')
+    setCompany('')
+    setGst('')
+    setAddress('')
+    setCheckInDate(todayStr())
+    setCheckOut(addDays(1))
+    setGuestCount('1')
+    setAdvance('')
+    setAdvanceMethod('CASH')
+    setIsCorporate(false)
+    setNotes('')
+    setAutoFilled(false)
+    setGuestDueInfo(null)
+    setError('')
 
-      api<Record<string, string>>('/api/settings')
-        .then((s) => {
-          if (s?.checkoutTime) setCheckOutTime(s.checkoutTime)
-        })
-        .catch(() => {})
-    }
+    api<Record<string, string>>('/api/settings')
+      .then((s) => {
+        if (s?.checkoutTime) setCheckOutTime(s.checkoutTime)
+      })
+      .catch(() => {})
   }, [open, room, initialMode])
 
   const effectiveCheckIn = bookingMode === 'BOOKING' ? checkInDate : todayStr()
@@ -146,36 +178,90 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     return toDateStr(upcomingBooking.checkIn)
   }, [upcomingBooking])
 
-  // AUTO-FILL: when phone matches an old customer, fetch their details
-  async function lookupGuest(value: string) {
-    const clean = sanitizePhone(value)
+  // Dedicated lookup helpers that instantly clear old due alert when data is changed
+  async function lookupByPhone(val: string) {
+    const clean = sanitizePhone(val)
     setPhone(clean)
-    if (clean.length >= 4) {
-      setSearching(true)
-      try {
-        const guest = await api<{ name: string; company?: string; gst?: string; address?: string; idProof?: string } | null>(
-          `/api/guests?phone=${encodeURIComponent(clean)}`
-        )
-        if (guest) {
-          setName(guest.name)
-          setCompany(guest.company || '')
-          setGst(guest.gst || '')
-          setAddress(guest.address || '')
-          if (guest.idProof) {
-            const parsed = parseGovId(guest.idProof)
-            setIdType(parsed.idType)
-            setIdNumber(parsed.idNumber)
-          }
-          if (guest.company) setIsCorporate(true)
-          setAutoFilled(true)
-        } else {
-          setAutoFilled(false)
+    setGuestDueInfo(null) // immediately clear any old due alert when typing a new phone
+    if (clean.length < 4) {
+      setAutoFilled(false)
+      return
+    }
+    setSearching(true)
+    try {
+      const guest = await api<GuestLookupResult | null>(`/api/guests?phone=${encodeURIComponent(clean)}`)
+      if (guest) {
+        if (!name || autoFilled) setName(guest.name)
+        if (!company || autoFilled) setCompany(guest.company || '')
+        if (!gst || autoFilled) setGst(guest.gst || '')
+        if (!address || autoFilled) setAddress(guest.address || '')
+        if (guest.idProof && (!idNumber || autoFilled)) {
+          const parsed = parseGovId(guest.idProof)
+          setIdType(parsed.idType)
+          setIdNumber(parsed.idNumber)
         }
-      } catch {
-        // ignore lookup errors
-      } finally {
-        setSearching(false)
+        if (guest.company) setIsCorporate(true)
+        setAutoFilled(true)
+
+        if (guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
+          setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
+        } else {
+          setGuestDueInfo(null)
+        }
+      } else {
+        setAutoFilled(false)
+        setGuestDueInfo(null)
       }
+    } catch {
+      setGuestDueInfo(null)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  async function lookupByIdProof(rawId: string) {
+    const cleanId = rawId.trim()
+    if (cleanId.length < 4) {
+      if (!phone) setGuestDueInfo(null)
+      return
+    }
+    try {
+      const guest = await api<GuestLookupResult | null>(`/api/guests?idProof=${encodeURIComponent(cleanId)}`)
+      if (guest) {
+        if (!phone) setPhone(guest.phone)
+        if (!name || autoFilled) setName(guest.name)
+        if (!company || autoFilled) setCompany(guest.company || '')
+        if (!gst || autoFilled) setGst(guest.gst || '')
+        if (!address || autoFilled) setAddress(guest.address || '')
+        if (guest.company) setIsCorporate(true)
+        if (guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
+          setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
+        } else {
+          setGuestDueInfo(null)
+        }
+      } else {
+        if (!phone) setGuestDueInfo(null)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function lookupByName(rawName: string) {
+    const cleanName = rawName.trim()
+    if (cleanName.length < 3) {
+      if (!phone && !idNumber) setGuestDueInfo(null)
+      return
+    }
+    try {
+      const guest = await api<GuestLookupResult | null>(`/api/guests?name=${encodeURIComponent(cleanName)}`)
+      if (guest && guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
+        setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
+      } else {
+        if (!phone && !idNumber) setGuestDueInfo(null)
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -463,7 +549,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 maxLength={10}
                 placeholder="10-digit mobile number"
                 value={phone}
-                onChange={(e) => lookupGuest(e.target.value)}
+                onChange={(e) => lookupByPhone(e.target.value)}
                 className="h-9 pr-10 text-xs"
               />
               {searching && (
@@ -500,9 +586,61 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
               onChange={(e) => {
                 setName(e.target.value)
                 setAutoFilled(false)
+                if (!phone && !idNumber) setGuestDueInfo(null)
+              }}
+              onBlur={(e) => {
+                if (e.target.value.trim().length >= 3 && !phone && !idNumber) {
+                  lookupByName(e.target.value)
+                }
               }}
             />
           </div>
+
+          {/* Outstanding Past Due Alert Banner */}
+          {guestDueInfo && guestDueInfo.totalDue > 0.01 && (
+            <div className="rounded-lg border-2 border-red-500/80 bg-red-50 p-3 dark:border-red-600 dark:bg-red-950/40 text-red-950 dark:text-red-100 space-y-2 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-xs text-red-700 dark:text-red-400">
+                  <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                  <span>OUTSTANDING DUE PAYMENT ALERT!</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="destructive" className="font-bold text-[11px] px-2 py-0.5">
+                    Total Due: {formatINR(guestDueInfo.totalDue)}
+                  </Badge>
+                  <button
+                    type="button"
+                    onClick={() => setGuestDueInfo(null)}
+                    className="text-red-500 hover:text-red-700 dark:text-red-400 p-0.5 rounded-full hover:bg-red-100 dark:hover:bg-red-900/50"
+                    title="Dismiss Alert"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-red-900 dark:text-red-200">
+                This guest has <strong>{guestDueInfo.dueHistory.length} unpaid bill(s)</strong> totaling <strong>{formatINR(guestDueInfo.totalDue)}</strong> from past checkout(s):
+              </p>
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {guestDueInfo.dueHistory.map((due) => (
+                  <div key={due.billId || due.billNumber} className="rounded border border-red-200 bg-white/90 dark:bg-red-900/30 p-2 text-xs flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold text-foreground text-xs">
+                        Room {due.roomNumber} • Invoice #{due.billNumber}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Checked out on: <span className="font-medium text-foreground">{formatDateTime(due.checkoutDate)}</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold text-red-600 dark:text-red-400 text-xs">{formatINR(due.balanceDue)}</div>
+                      <div className="text-[10px] text-muted-foreground">Billed: {formatINR(due.grandTotal)} | Paid: {formatINR(due.paidTotal)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Government ID Proof (Mandatory) */}
           <div className="space-y-2 rounded-lg border bg-muted/30 p-2.5">
@@ -538,11 +676,11 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                   value={idNumber}
                   onChange={(e) => {
                     const raw = e.target.value
-                    if (idType === 'AADHAAR') {
-                      const digits = raw.replace(/\D/g, '').slice(0, 12)
-                      setIdNumber(digits)
-                    } else {
-                      setIdNumber(raw.toUpperCase())
+                    const digits = idType === 'AADHAAR' ? raw.replace(/\D/g, '').slice(0, 12) : raw.toUpperCase()
+                    setIdNumber(digits)
+                    if (!phone) {
+                      setGuestDueInfo(null)
+                      if (digits.length >= 4) lookupByIdProof(digits)
                     }
                   }}
                   className="h-9 text-xs font-mono font-medium uppercase bg-background"
@@ -610,21 +748,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 max="4"
                 value={guestCount}
                 className="h-9 text-xs"
-                onChange={(e) => {
-                  const val = e.target.value
-                  if (val === '') {
-                    setGuestCount('')
-                  } else {
-                    const numVal = parseInt(val)
-                    if (!isNaN(numVal)) {
-                      if (numVal > 4) setGuestCount('4')
-                      else if (numVal < 1) setGuestCount('1')
-                      else setGuestCount(String(numVal))
-                    } else {
-                      setGuestCount(val)
-                    }
-                  }
-                }}
+                onChange={(e) => setGuestCount(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">

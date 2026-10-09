@@ -408,21 +408,7 @@ export function EditAdvanceBookingDialog({
                   min={1}
                   max={4}
                   value={guestCount}
-                  onChange={(e) => {
-                    const val = e.target.value
-                    if (val === '') {
-                      setGuestCount('')
-                    } else {
-                      const numVal = parseInt(val)
-                      if (!isNaN(numVal)) {
-                        if (numVal > 4) setGuestCount('4')
-                        else if (numVal < 1) setGuestCount('1')
-                        else setGuestCount(String(numVal))
-                      } else {
-                        setGuestCount(val)
-                      }
-                    }
-                  }}
+                  onChange={(e) => setGuestCount(e.target.value)}
                   className="h-9 mt-1 text-xs"
                 />
               </div>

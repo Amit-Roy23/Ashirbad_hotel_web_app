@@ -28,15 +28,38 @@ import {
 } from '@/components/ui/select'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, exportCSV, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
-import { Loader2, History, Pencil, Trash2, ShieldCheck } from 'lucide-react'
+import { Loader2, History, Pencil, Trash2, ShieldCheck, AlertTriangle } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { AdminDeleteDialog } from './admin-delete-dialog'
+
+interface DueItem {
+  billId: string
+  billNumber: string
+  bookingId: string
+  roomNumber: string
+  checkIn: string
+  checkOut: string | null
+  actualCheckOut: string | null
+  checkoutDate: string
+  days: number
+  grandTotal: number
+  paidTotal: number
+  balanceDue: number
+  paymentStatus: string
+  status: string
+  createdAt: string
+}
 
 interface Bill {
   id: string
   billNumber: string
   grandTotal: number
+  payCash?: number
+  payUpi?: number
+  payCard?: number
+  advanceApplied?: number
 }
 
 interface Booking {
@@ -62,6 +85,8 @@ interface GuestRow {
   address?: string | null
   idProof?: string | null
   createdAt: string
+  totalDue?: number
+  dueHistory?: DueItem[]
   bookings: Booking[]
 }
 
@@ -207,13 +232,14 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
               <TableHead>Company</TableHead>
               <TableHead>GST</TableHead>
               <SortableTh label="Stays" sortKey="bookings" sort={sort} onToggle={toggle} className="text-center" />
+              <TableHead className="text-right">Outstanding Due</TableHead>
               <TableHead className="text-center">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {(paged as unknown as GuestRow[]).length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                   No guests found.
                 </TableCell>
               </TableRow>
@@ -242,6 +268,15 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
                 <TableCell className="text-sm text-muted-foreground">{g.company || '—'}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.gst || '—'}</TableCell>
                 <TableCell className="text-center">{g.bookings.length}</TableCell>
+                <TableCell className="text-right font-medium">
+                  {g.totalDue && g.totalDue > 0.01 ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700 dark:bg-red-950 dark:text-red-300">
+                      {formatINR(g.totalDue)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">₹0</span>
+                  )}
+                </TableCell>
                 <TableCell className="text-center">
                   <div className="flex justify-center gap-1">
                     <Button
@@ -294,6 +329,42 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
           </DialogHeader>
 
           <div className="max-h-96 space-y-2.5 overflow-y-auto pr-1">
+            {/* Outstanding Past Due Alert in History Dialog */}
+            {viewGuest?.totalDue && viewGuest.totalDue > 0.01 && (
+              <div className="rounded-lg border-2 border-red-500/80 bg-red-50 p-3 dark:border-red-600 dark:bg-red-950/40 text-red-950 dark:text-red-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-red-700 dark:text-red-400">
+                    <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                    <span>OUTSTANDING DUE PAYMENT RECORD</span>
+                  </div>
+                  <Badge variant="destructive" className="font-bold text-[11px] px-2 py-0.5">
+                    Total Due: {formatINR(viewGuest.totalDue)}
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-red-800 dark:text-red-300">
+                  This guest currently has <strong>{viewGuest.dueHistory?.length || 1} unpaid bill(s)</strong> totaling <strong>{formatINR(viewGuest.totalDue)}</strong> from past checkout(s):
+                </p>
+                <div className="space-y-1.5">
+                  {viewGuest.dueHistory?.map((due) => (
+                    <div key={due.billId || due.billNumber} className="rounded border border-red-200 bg-white/90 dark:bg-red-900/30 p-2 text-xs flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-foreground text-xs">
+                          Room {due.roomNumber} • Invoice #{due.billNumber}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">
+                          Checked out on: <span className="font-medium text-foreground">{formatDateTime(due.checkoutDate)}</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-red-600 dark:text-red-400 text-xs">{formatINR(due.balanceDue)}</div>
+                        <div className="text-[10px] text-muted-foreground">Billed: {formatINR(due.grandTotal)} | Paid: {formatINR(due.paidTotal)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {(viewGuest?.bookings.length || 0) === 0 ? (
               <div className="py-8 text-center text-sm text-muted-foreground">
                 No past or active bookings recorded for this guest.
