@@ -30,13 +30,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-<<<<<<< HEAD
 import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
-=======
-import { api, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
->>>>>>> b0fbec83338d50431b3c860a255c2c0ef7ec79a6
 import {
   Loader2,
   Download,
@@ -50,7 +46,6 @@ import {
   TrendingDown,
   AlertCircle,
   FileText,
-<<<<<<< HEAD
   Trash2,
   Printer,
   Eye,
@@ -63,8 +58,6 @@ import {
   XCircle,
   ShieldCheck,
   CreditCard,
-=======
->>>>>>> b0fbec83338d50431b3c860a255c2c0ef7ec79a6
 } from 'lucide-react'
 
 export interface GstBillRow {
@@ -419,11 +412,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                   <TableBody>
                     {data.invoices.rows.length === 0 && (
                       <TableRow>
-<<<<<<< HEAD
                         <TableCell colSpan={12} className="py-6 text-center text-sm text-muted-foreground">
-=======
-                        <TableCell colSpan={10} className="py-6 text-center text-sm text-muted-foreground">
->>>>>>> b0fbec83338d50431b3c860a255c2c0ef7ec79a6
                           No invoices in this range.
                         </TableCell>
                       </TableRow>
@@ -1183,15 +1172,6 @@ export function ReportsTab({ refreshKey }: TabProps) {
                               onClick={() => triggerPrintInvoice(r, settings)}
                             >
                               <Printer className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0 text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/30"
-                              title="Delete Bill"
-                              onClick={() => r.id && deleteReportItem('/api/bills', r.id, `GST Bill ${r.billNumber}`)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           </div>
                         </TableCell>
