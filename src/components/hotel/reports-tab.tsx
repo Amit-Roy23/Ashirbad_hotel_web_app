@@ -44,6 +44,7 @@ import {
   UtensilsCrossed,
   UsersRound as StaffIcon,
   TrendingDown,
+  TrendingUp,
   AlertCircle,
   FileText,
   Trash2,
@@ -212,21 +213,25 @@ function StatCard({
   label,
   value,
   sub,
+  iconClassName,
+  valueClassName,
 }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
   value: string
   sub?: string
+  iconClassName?: string
+  valueClassName?: string
 }) {
   return (
     <Card>
       <CardContent className="flex items-center gap-3 p-4">
         <div className="rounded-full bg-muted p-2.5">
-          <Icon className="h-5 w-5 text-emerald-700 dark:text-emerald-400" />
+          <Icon className={iconClassName || 'h-5 w-5 text-emerald-700 dark:text-emerald-400'} />
         </div>
         <div className="min-w-0">
           <p className="text-xs text-muted-foreground">{label}</p>
-          <p className="truncate text-lg font-bold">{value}</p>
+          <p className={`truncate text-lg font-bold ${valueClassName || ''}`}>{value}</p>
           {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
         </div>
       </CardContent>
@@ -325,35 +330,51 @@ export function ReportsTab({ refreshKey }: TabProps) {
         </CardContent>
       </Card>
 
-      {data && (
-        <>
-          {/* Summary stat cards */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard
-              icon={BedDouble}
-              label="Occupancy (now)"
-              value={`${data.occupancy.occupancyPercent}%`}
-              sub={`${data.occupancy.occupiedNow}/${data.occupancy.totalRooms} rooms`}
-            />
-            <StatCard
-              icon={Banknote}
-              label="Collections"
-              value={formatINR(data.collections.total)}
-              sub={`Cash ${formatINR(data.collections.cash)} · UPI ${formatINR(data.collections.upi)} · Card ${formatINR(data.collections.card)}`}
-            />
-            <StatCard
-              icon={FileText}
-              label="Revenue (internal)"
-              value={formatINR(data.revenue.grandTotal)}
-              sub={`Actual Room: ${formatINR(data.revenue.actualRoomRevenue)} · Billed: ${formatINR(data.revenue.billedRoomRevenue)}`}
-            />
-            <StatCard
-              icon={TrendingDown}
-              label="Expenses"
-              value={formatINR(data.expenses.total)}
-              sub={`${data.expenses.rows.length} entries`}
-            />
-          </div>
+      {data && (() => {
+          const netProfit = (data.revenue.grandTotal || 0) - (data.expenses.total || 0)
+          const isProfit = netProfit >= 0
+          const margin = data.revenue.grandTotal > 0
+            ? ((netProfit / data.revenue.grandTotal) * 100).toFixed(1)
+            : '0.0'
+
+          return (
+            <>
+              {/* Summary stat cards */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                <StatCard
+                  icon={BedDouble}
+                  label="Occupancy (now)"
+                  value={`${data.occupancy.occupancyPercent}%`}
+                  sub={`${data.occupancy.occupiedNow}/${data.occupancy.totalRooms} rooms`}
+                />
+                <StatCard
+                  icon={Banknote}
+                  label="Collections"
+                  value={formatINR(data.collections.total)}
+                  sub={`Cash ${formatINR(data.collections.cash)} · UPI ${formatINR(data.collections.upi)} · Card ${formatINR(data.collections.card)}`}
+                />
+                <StatCard
+                  icon={FileText}
+                  label="Revenue (internal)"
+                  value={formatINR(data.revenue.grandTotal)}
+                  sub={`Actual Room: ${formatINR(data.revenue.actualRoomRevenue)} · Billed: ${formatINR(data.revenue.billedRoomRevenue)}`}
+                />
+                <StatCard
+                  icon={TrendingDown}
+                  iconClassName="h-5 w-5 text-rose-600 dark:text-rose-400"
+                  label="Expenses"
+                  value={formatINR(data.expenses.total)}
+                  sub={`${data.expenses.rows.length} entries`}
+                />
+                <StatCard
+                  icon={isProfit ? TrendingUp : TrendingDown}
+                  iconClassName={isProfit ? 'h-5 w-5 text-emerald-600 dark:text-emerald-400' : 'h-5 w-5 text-rose-600 dark:text-rose-400'}
+                  valueClassName={isProfit ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
+                  label="Net Profit"
+                  value={formatINR(netProfit)}
+                  sub={`${isProfit ? '+' : ''}${margin}% net margin`}
+                />
+              </div>
 
           <Tabs defaultValue="invoices">
             <TabsList className="flex w-full flex-wrap gap-1 sm:w-auto">
@@ -1201,7 +1222,8 @@ export function ReportsTab({ refreshKey }: TabProps) {
             </TabsContent>
           </Tabs>
         </>
-      )}
+      )
+    })()}
 
       {/* ===== Guest & GST Bill Details Dialog ===== */}
       <Dialog open={!!selectedGstBill} onOpenChange={(open) => !open && setSelectedGstBill(null)}>
