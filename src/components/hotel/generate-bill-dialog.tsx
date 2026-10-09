@@ -234,6 +234,14 @@ export function GenerateBillDialog({
     }
   }, [booking, days, customMode, customTotal, includeFood, foodOrdersList, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
 
+  // Automatically keep payment equal to full payable amount when user hasn't split across methods
+  useEffect(() => {
+    if (!calc) return
+    if (num(payUpi) === 0 && num(payCard) === 0) {
+      setPayCash(String(calc.payable))
+    }
+  }, [calc?.payable])
+
   function handlePrintFoodBill() {
     if (!booking) return
     const ordersToPrint = foodOrdersList.length > 0 ? foodOrdersList : []
@@ -681,6 +689,17 @@ export function GenerateBillDialog({
                   <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CARD')}>
                     All Card
                   </Button>
+                  {calc.balance > 0.01 && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7 px-2 text-[11px] font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950 dark:text-emerald-200"
+                      onClick={() => setPayCash(String(Math.round((num(payCash) + calc.balance) * 100) / 100))}
+                    >
+                      + Settle in Cash
+                    </Button>
+                  )}
                 </div>
                 <span className={calc.balance > 0.01 ? 'font-bold text-amber-600 text-xs' : 'font-bold text-emerald-700 dark:text-emerald-400 text-xs'}>
                   {calc.balance > 0.01 ? `Outstanding: ${formatINR(calc.balance)}` : '✓ Fully paid'}
@@ -691,9 +710,9 @@ export function GenerateBillDialog({
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
             {calc.balance > 0.01 && (
-              <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                Collect the full amount ({formatINR(calc.balance)} outstanding) to generate and print the bill.
-              </p>
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                <span className="font-bold">Full Payment Required:</span> Collect {formatINR(calc.balance)} before generating the bill or checking out.
+              </div>
             )}
 
             {/* Bottom Action Buttons: Dual buttons when Fooding is ON, Single button when Fooding is OFF */}

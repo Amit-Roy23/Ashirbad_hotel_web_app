@@ -3172,8 +3172,14 @@ async function getReports(req: NextRequest) {
       (!!b.roomNumber && b.roomNumber !== b.booking.room.number) ||
       b.isCorporate
     const taxableAmount = Math.max(0, b.billedRoomTotal + b.foodTotal + b.extraCharges - b.discount)
-    const paid = b.advanceApplied + b.payCash + b.payUpi + b.payCard
-    const balance = Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
+    const rawPaid = b.advanceApplied + b.payCash + b.payUpi + b.payCard
+    const isCompleted = b.status === 'FINAL' || b.booking?.status === 'COMPLETED'
+    const paid = isCompleted ? b.grandTotal : rawPaid
+    const balance = isCompleted ? 0 : Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
+    const effectiveCash = (isCompleted && rawPaid < b.grandTotal)
+      ? Math.max(0, Math.round((b.grandTotal - b.advanceApplied - b.payUpi - b.payCard) * 100) / 100)
+      : b.payCash
+
     const internalGst =
       b.internalGst !== undefined && b.internalGst > 0
         ? b.internalGst
@@ -3214,7 +3220,7 @@ async function getReports(req: NextRequest) {
       grandTotal: b.grandTotal,
       internalTotal,
       isCustom,
-      payCash: b.payCash,
+      payCash: effectiveCash,
       payUpi: b.payUpi,
       payCard: b.payCard,
       advanceApplied: b.advanceApplied,
