@@ -17,15 +17,31 @@ export function istDateStr(d: Date | string | null | undefined): string {
 }
 
 /**
- * Creates a Date in IST (UTC+05:30) given a 'YYYY-MM-DD' date string and 'HH:mm' or 'HH:mm:ss' time.
+ * Creates a Date in IST (UTC+05:30) given a 'YYYY-MM-DD' or 'DD-MM-YYYY' date string and 'HH:mm' or 'HH:mm:ss' time.
  */
 export function makeIST(dateStr: string, hhmm = '08:00'): Date {
-  const cleanDate = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr.trim()
-  let cleanTime = hhmm.trim() || '08:00'
+  if (!dateStr || typeof dateStr !== 'string') return new Date()
+  let cleanDate = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr.trim()
+
+  // Handle DD-MM-YYYY, DD/MM/YYYY, DD.MM.YYYY
+  const dmyMatch = cleanDate.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/)
+  if (dmyMatch) {
+    const [, d, m, y] = dmyMatch
+    cleanDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+
+  let cleanTime = String(hhmm || '08:00').replace(/^T/i, '').trim()
+  cleanTime = cleanTime.replace(/(Z|[+-]\d{2}:?\d{2})$/i, '')
+  if (!cleanTime) cleanTime = '08:00'
   if (cleanTime.length === 5) {
     cleanTime += ':00'
   }
-  return new Date(`${cleanDate}T${cleanTime}+05:30`)
+  const result = new Date(`${cleanDate}T${cleanTime}+05:30`)
+  if (isNaN(result.getTime())) {
+    const fallback = new Date(dateStr)
+    return isNaN(fallback.getTime()) ? new Date() : fallback
+  }
+  return result
 }
 
 /**

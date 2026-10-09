@@ -166,9 +166,16 @@ function hasExplicitZone(s: string): boolean {
 
 function parseDateInput(value: unknown, fallbackTime = '08:00'): Date | null {
   if (value === undefined || value === null || value === '') return null
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? new Date() : value
+  }
   const s = String(value).trim()
   if (!s) return null
-  if (hasExplicitZone(s)) return new Date(s)
+  if (hasExplicitZone(s)) {
+    const d = new Date(s)
+    if (!isNaN(d.getTime())) return d
+  }
+  const cleanFallback = String(fallbackTime || '08:00').replace(/^T/i, '').trim() || '08:00'
   if (s.includes('T')) {
     const [d, t] = s.split('T')
     return makeIST(d, t.replace('Z', '').slice(0, 8))
@@ -177,7 +184,7 @@ function parseDateInput(value: unknown, fallbackTime = '08:00'): Date | null {
     const [d, t] = s.split(' ')
     return makeIST(d, t.slice(0, 8))
   }
-  return makeIST(s, fallbackTime)
+  return makeIST(s, cleanFallback)
 }
 
 /**
@@ -2318,7 +2325,7 @@ async function createStaffPayment(body: Record<string, unknown>, user: RequestUs
 
   const amt = num(amount)
   const payMethod = method ? String(method) : 'CASH'
-  const paymentDate = (parseDateInput(date, 'T12:00:00') as Date) || new Date()
+  const paymentDate = (parseDateInput(date, '12:00') as Date) || new Date()
   const paymentType = type ? String(type) : 'SALARY'
   const category = paymentType === 'ADVANCE' ? 'STAFF_ADVANCE' : 'SALARY'
 
@@ -2428,7 +2435,7 @@ async function createLedgerEntry(body: Record<string, unknown>, user: RequestUse
       method: method ? String(method) : 'CASH',
       vendor: vendor ? String(vendor) : null,
       source: 'MANUAL',
-      date: (parseDateInput(date, 'T12:00:00') as Date) || new Date(),
+      date: (parseDateInput(date, '12:00') as Date) || new Date(),
     },
   })
   await logAudit(type === 'INCOME' ? 'LEDGER_INCOME' : 'EXPENSE', 'LedgerEntry', entry.id, `${type} ₹${amount} — ${description}`, user)
@@ -2511,7 +2518,7 @@ async function updateLedgerEntry(body: Record<string, unknown>, user: RequestUse
       ...(amount !== undefined && { amount: num(amount) }),
       ...(method !== undefined && { method: String(method) }),
       ...(vendor !== undefined && { vendor: vendor ? String(vendor) : null }),
-      ...(date !== undefined && { date: (parseDateInput(date, 'T12:00:00') as Date) || existing.date }),
+      ...(date !== undefined && { date: (parseDateInput(date, '12:00') as Date) || existing.date }),
     },
   })
   if (link.kind === 'STAFF_PAYMENT') {
