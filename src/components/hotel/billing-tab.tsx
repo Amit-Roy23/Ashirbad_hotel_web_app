@@ -867,7 +867,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
         open={!!selected}
         onOpenChange={(o) => !o && setSelected(null)}
         booking={selected}
-        defaultGstPercent={settings.gstPercent || '12'}
+        defaultGstPercent={settings.gstPercent}
         onSuccess={(bill) => {
           setLastBill(bill as unknown as Bill)
           load()

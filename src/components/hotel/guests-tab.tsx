@@ -152,9 +152,10 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
         body: JSON.stringify({
           phone: editGuest.phone,
           name: editName,
-          company: editCompany || undefined,
-          gst: editGst || undefined,
-          address: editAddress || undefined,
+          // Send empty strings (not undefined) so a cleared field is actually cleared
+          company: editCompany.trim(),
+          gst: editGst.trim(),
+          address: editAddress.trim(),
         }),
       })
       setEditGuest(null)

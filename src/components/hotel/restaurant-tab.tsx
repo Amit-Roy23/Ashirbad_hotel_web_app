@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -87,8 +87,17 @@ interface Guest {
   phone: string
 }
 
-export function RestaurantTab({ refreshKey, onDataChanged }: { refreshKey: number; onDataChanged: () => void }) {
+export function RestaurantTab({
+  refreshKey,
+  onDataChanged,
+  initialFilter,
+}: {
+  refreshKey: number
+  onDataChanged: () => void
+  initialFilter?: string
+}) {
   const [activeTab, setActiveTab] = useState('order')
+  const pendingRoomRef = useRef<string | undefined>(initialFilter)
   const [rawMenu, setRawMenu] = useState<MenuItem[]>([])
   const [bookings, setBookings] = useState<Booking[]>([])
   const [orders, setOrders] = useState<FoodOrder[]>([])
@@ -128,13 +137,23 @@ export function RestaurantTab({ refreshKey, onDataChanged }: { refreshKey: numbe
       setBookings(bookingData)
       setOrders(orderData)
       setSettings(settingsData)
-      if (bookingData.length > 0 && !selectedBookingId) {
-        setSelectedBookingId(bookingData[0].id)
+      // Opened from a room ("New Order"): pre-select that room's in-house guest, once
+      const wanted = pendingRoomRef.current
+        ? bookingData.find((b) => b.room?.number === pendingRoomRef.current)
+        : undefined
+      pendingRoomRef.current = undefined
+      if (wanted) {
+        setOrderType('ROOM')
+        setActiveTab('order')
       }
+      // Keep the selection only while that guest is still in-house (checked-out stays cannot take orders)
+      setSelectedBookingId((cur) =>
+        wanted ? wanted.id : cur && bookingData.some((b) => b.id === cur) ? cur : bookingData[0]?.id || ''
+      )
     } finally {
       setLoading(false)
     }
-  }, [selectedBookingId])
+  }, [])
 
   useEffect(() => {
     load()
