@@ -323,13 +323,42 @@ export function BanquetBookingDialog({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 px-6 py-4">
-          {/* Section 1: Event & Venue Details */}
+          {/* Section 1: Event & Venue Details with Venue Rent Toggle */}
           <div className="rounded-xl border bg-card p-4 shadow-xs">
-            <div className="mb-3.5 flex items-center gap-2 border-b pb-2.5">
-              <Building2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
-                1. Venue &amp; Event Schedule
-              </h3>
+            <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2 border-b pb-2.5">
+              <div className="flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+                  1. Venue &amp; Event Schedule
+                </h3>
+              </div>
+
+              {/* Venue Rent Toggle */}
+              <div className="flex items-center gap-2.5">
+                <Badge
+                  variant={includeVenueRent ? 'default' : 'outline'}
+                  className={
+                    includeVenueRent
+                      ? 'bg-emerald-600 hover:bg-emerald-600 text-white text-[10px]'
+                      : 'text-muted-foreground text-[10px]'
+                  }
+                >
+                  {includeVenueRent ? `Venue Rent: ${formatINR(numHallRent)}` : 'Venue Rent: OFF (₹0)'}
+                </Badge>
+                <div className="flex items-center gap-1.5 border-l pl-2.5">
+                  <Switch
+                    id="venue-rent-toggle"
+                    checked={includeVenueRent}
+                    onCheckedChange={setIncludeVenueRent}
+                  />
+                  <Label
+                    htmlFor="venue-rent-toggle"
+                    className="cursor-pointer text-xs font-medium text-foreground select-none"
+                  >
+                    {includeVenueRent ? 'Rent Included' : 'Rent Excluded'}
+                  </Label>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -431,7 +460,7 @@ export function BanquetBookingDialog({
               </div>
 
               {/* Custom Occasion Name if selected */}
-              {eventName === 'Other' ? (
+              {eventName === 'Other' && (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-foreground">
                     Custom Occasion Name <span className="text-destructive">*</span>
@@ -444,13 +473,37 @@ export function BanquetBookingDialog({
                     required
                   />
                 </div>
-              ) : (
-                <div className="hidden lg:block">
-                  <div className="h-full rounded-lg bg-muted/40 p-2 text-[11px] text-muted-foreground flex items-center justify-center text-center">
-                    <span>Selected Hall: <strong className="text-foreground">{selectedHallObj?.name || '—'}</strong></span>
-                  </div>
-                </div>
               )}
+
+              {/* Hall / Venue Rent Field */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium text-foreground">
+                    Hall / Venue Rent (₹) {includeVenueRent && <span className="text-destructive">*</span>}
+                  </Label>
+                  {selectedHallObj && (
+                    <span className="text-[10px] text-muted-foreground">
+                      Base: {formatINR(selectedHallObj.baseRate)}
+                    </span>
+                  )}
+                </div>
+                {includeVenueRent ? (
+                  <Input
+                    type="number"
+                    min="0"
+                    value={hallRent}
+                    onChange={(e) => setHallRent(e.target.value)}
+                    placeholder="e.g. 25000"
+                    className="h-9 text-xs font-mono font-bold text-foreground"
+                    required={includeVenueRent}
+                  />
+                ) : (
+                  <div className="flex h-9 items-center justify-between rounded-md border border-dashed bg-muted/40 px-3 text-xs text-muted-foreground">
+                    <span>Rent Excluded</span>
+                    <span className="font-mono font-bold">₹0.00</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -548,94 +601,9 @@ export function BanquetBookingDialog({
             </div>
           </div>
 
-          {/* Section 3: Catering & Venue Pricing Breakdown with Toggle On/Off */}
+          {/* Section 3: Catering, Decor & Service Add-ons */}
           <div className="space-y-3.5">
-            {/* 3A. Venue / Hall Rent Card with Toggle */}
-            <div
-              className={`rounded-xl border transition-all ${
-                includeVenueRent
-                  ? 'border-emerald-500/30 bg-emerald-500/5 shadow-xs'
-                  : 'border-border bg-muted/20 opacity-80'
-              }`}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <Building2
-                    className={`h-4 w-4 ${
-                      includeVenueRent ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
-                    }`}
-                  />
-                  <div>
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
-                      Venue &amp; Hall Rent
-                    </h3>
-                    <p className="text-[11px] text-muted-foreground">
-                      {includeVenueRent
-                        ? 'Venue hire charges active and added to grand total'
-                        : 'Venue rent turned off (₹0 / Excluded from bill)'}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <Badge
-                    variant={includeVenueRent ? 'default' : 'outline'}
-                    className={
-                      includeVenueRent
-                        ? 'bg-emerald-600 hover:bg-emerald-600 text-white text-[10px]'
-                        : 'text-muted-foreground text-[10px]'
-                    }
-                  >
-                    {includeVenueRent ? `Active · ${formatINR(numHallRent)}` : 'OFF / ₹0'}
-                  </Badge>
-                  <div className="flex items-center gap-1.5 border-l pl-3">
-                    <Switch
-                      id="venue-rent-toggle"
-                      checked={includeVenueRent}
-                      onCheckedChange={setIncludeVenueRent}
-                    />
-                    <Label
-                      htmlFor="venue-rent-toggle"
-                      className="cursor-pointer text-xs font-medium text-foreground select-none"
-                    >
-                      {includeVenueRent ? 'Included' : 'Excluded'}
-                    </Label>
-                  </div>
-                </div>
-              </div>
-
-              {includeVenueRent ? (
-                <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs font-medium text-foreground">
-                      Hall / Venue Rent (₹) <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      type="number"
-                      min="0"
-                      value={hallRent}
-                      onChange={(e) => setHallRent(e.target.value)}
-                      placeholder="e.g. 25000"
-                      className="h-9 text-xs font-mono font-bold text-foreground"
-                      required={includeVenueRent}
-                    />
-                  </div>
-                  <div className="flex items-center rounded-lg border bg-background/60 p-3 text-xs text-muted-foreground">
-                    <span>
-                      Standard base rate for <strong>{selectedHallObj?.name || 'Selected Hall'}</strong> is{' '}
-                      <strong>{formatINR(selectedHallObj?.baseRate || 0)}</strong>.
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="px-4 py-3 text-xs text-muted-foreground italic bg-muted/30 flex items-center justify-between">
-                  <span>Venue rent is turned off (charged at ₹0). Turn switch ON to specify hall hire charges.</span>
-                  <Badge variant="outline" className="text-[10px] text-muted-foreground">₹0.00</Badge>
-                </div>
-              )}
-            </div>
-
-            {/* 3B. Catering & Food Package Card with Toggle */}
+            {/* Catering & Food Package Card with Toggle */}
             <div
               className={`rounded-xl border transition-all ${
                 includeCatering
