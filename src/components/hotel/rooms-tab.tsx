@@ -1480,7 +1480,15 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         booking={billBooking}
         defaultGstPercent={settings.gstPercent}
         onSuccess={(bill) => {
-          setLastBill(bill)
+          if (Number(bill.gstPercent) > 0) {
+            setLastBill(bill)
+          } else {
+            toast({
+              variant: 'success',
+              title: 'Check Out Complete',
+              description: `Room checked out. Invoice ${bill.billNumber} (0% GST) saved directly to Invoices.`,
+            })
+          }
           load()
           onDataChanged()
         }}

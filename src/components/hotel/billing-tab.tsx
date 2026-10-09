@@ -31,6 +31,7 @@ import { PrintableInvoice } from './printable-invoice'
 import { PrintableAdvanceReceipt } from './printable-advance-receipt'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, payableNow } from '@/lib/hotel-utils'
+import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
 import {
   Loader2,
@@ -869,7 +870,15 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
         booking={selected}
         defaultGstPercent={settings.gstPercent}
         onSuccess={(bill) => {
-          setLastBill(bill as unknown as Bill)
+          if (Number(bill.gstPercent) > 0) {
+            setLastBill(bill as unknown as Bill)
+          } else {
+            toast({
+              variant: 'success',
+              title: 'Check Out Complete',
+              description: `Room checked out. Invoice ${bill.billNumber} (0% GST) saved directly to Invoices.`,
+            })
+          }
           load()
           onDataChanged()
         }}

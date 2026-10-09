@@ -1141,7 +1141,15 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
         booking={billBooking}
         defaultGstPercent={hotelSettings.gstPercent}
         onSuccess={(bill) => {
-          setLastBill(bill)
+          if (Number(bill.gstPercent) > 0) {
+            setLastBill(bill)
+          } else {
+            toast({
+              variant: 'success',
+              title: 'Check Out Complete',
+              description: `Room checked out. Invoice ${bill.billNumber} (0% GST) saved directly to Invoices.`,
+            })
+          }
           load()
           onDataChanged()
         }}
