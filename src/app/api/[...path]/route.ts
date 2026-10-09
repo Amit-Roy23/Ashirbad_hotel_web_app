@@ -2639,7 +2639,7 @@ async function getStats() {
   const startToday = makeIST(istDateStr(now), '00:00')
   const endToday = makeIST(istDateStr(now), '23:59:59')
 
-  const [rooms, activeBookings, bookedFuture, todayBills, todayLedger, pendingFood, allBills] = await Promise.all([
+  const [rooms, activeBookings, bookedFuture, todayBills, todayPaidOrders, todayLedger, pendingFood, allBills] = await Promise.all([
     prisma.room.findMany({ select: { status: true, housekeeping: true, rate: true } }),
     prisma.booking.findMany({
       where: { status: { in: ['ACTIVE', 'BOOKED'] } },
@@ -2664,6 +2664,10 @@ async function getStats() {
         payCard: true,
       },
     }),
+    prisma.foodOrder.findMany({
+      where: { createdAt: { gte: startToday, lte: endToday }, status: 'PAID' },
+      select: { total: true },
+    }),
     prisma.ledgerEntry.findMany({
       where: { date: { gte: startToday, lte: endToday } },
       select: { type: true, category: true, amount: true, method: true, refId: true },
@@ -2686,7 +2690,8 @@ async function getStats() {
   const booked = rooms.filter((r) => r.status === 'BOOKED').length
   const maintenance = rooms.filter((r) => r.status === 'MAINTENANCE').length
   const dirtyRooms = rooms.filter((r) => r.housekeeping === 'DIRTY').length
-  const todayRevenue = todayBills.reduce((s, b) => s + billInternal(b).total, 0)
+  const todayDirectFoodRevenue = todayPaidOrders.reduce((s, o) => s + (o.total || 0), 0)
+  const todayRevenue = Math.round((todayBills.reduce((s, b) => s + billInternal(b).total, 0) + todayDirectFoodRevenue) * 100) / 100
 
   const billedBookingIds = new Set(allBills.map((b) => b.bookingId))
   const income = todayLedger
@@ -3276,18 +3281,56 @@ async function getReports(req: NextRequest) {
     if (e.type !== 'INCOME' || e.category !== 'ADVANCE') continue
     const row = dayRow(e.date)
     if (e.method === 'CASH') row.cash += e.amount
-    if (e.method === 'UPI') row.upi += e.amount
-    if (e.method === 'CARD') row.card += e.amount
+    else if (e.method === 'UPI') row.upi += e.amount
+    else if (e.method === 'CARD') row.card += e.amount
+    else row.cash += e.amount
     row.advances += e.amount
+  }
+  const orderMethod = new Map<string, string>()
+  for (const e of ledger) {
+    if (e.category === 'FOOD' && e.refId) {
+      orderMethod.set(e.refId, e.method)
+    }
   }
   for (const o of orders) {
     if (o.status !== 'PAID') continue
-    dayRow(o.createdAt).directFood += o.total
+    const row = dayRow(o.createdAt)
+    row.directFood += o.total
+    const m = (orderMethod.get(o.id) || 'CASH').toUpperCase()
+    if (m === 'UPI') row.upi += o.total
+    else if (m === 'CARD') row.card += o.total
+    else row.cash += o.total
   }
   const collectionsDaily = [...daily.values()]
     .filter((r) => r.date >= fromStr && r.date <= toStr)
-    .map((r) => ({ ...r, total: Math.round((r.bills + r.directFood + r.advances) * 100) / 100 }))
+    .map((r) => {
+      const cash = Math.round(r.cash * 100) / 100
+      const upi = Math.round(r.upi * 100) / 100
+      const card = Math.round(r.card * 100) / 100
+      const billsTotal = Math.round(r.bills * 100) / 100
+      const directFood = Math.round(r.directFood * 100) / 100
+      const advances = Math.round(r.advances * 100) / 100
+      const total = Math.round((cash + upi + card) * 100) / 100
+      return {
+        ...r,
+        cash,
+        upi,
+        card,
+        bills: billsTotal,
+        directFood,
+        advances,
+        total,
+      }
+    })
     .sort((a, b) => b.date.localeCompare(a.date))
+
+  const totalCash = Math.round(collectionsDaily.reduce((s, r) => s + r.cash, 0) * 100) / 100
+  const totalUpi = Math.round(collectionsDaily.reduce((s, r) => s + r.upi, 0) * 100) / 100
+  const totalCard = Math.round(collectionsDaily.reduce((s, r) => s + r.card, 0) * 100) / 100
+  const totalBills = Math.round(collectionsDaily.reduce((s, r) => s + r.bills, 0) * 100) / 100
+  const totalDirectFood = Math.round(collectionsDaily.reduce((s, r) => s + r.directFood, 0) * 100) / 100
+  const totalAdvances = Math.round(collectionsDaily.reduce((s, r) => s + r.advances, 0) * 100) / 100
+  const totalCollections = Math.round((totalCash + totalUpi + totalCard) * 100) / 100
 
   const expenseByCategory: Record<string, number> = {}
   for (const e of ledger.filter((x) => x.type === 'EXPENSE')) {
@@ -3311,7 +3354,7 @@ async function getReports(req: NextRequest) {
       (!!b.roomDescription && b.roomDescription !== b.booking.room.type) ||
       (!!b.roomNumber && b.roomNumber !== b.booking.room.number) ||
       b.isCorporate
-    const taxableAmount = Math.max(0, b.billedRoomTotal + b.extraCharges - b.discount)
+    const taxableAmount = Math.max(0, b.billedRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount)
     const rawPaid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0)
     const paid = Math.round(rawPaid * 100) / 100
     const balance = Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
@@ -3322,13 +3365,13 @@ async function getReports(req: NextRequest) {
         ? b.internalGst
         : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
         ? b.actualGst
-        : Math.round(Math.max(0, b.actualRoomTotal + b.extraCharges - b.discount) * b.gstPercent) / 100
+        : Math.round(Math.max(0, b.actualRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount) * b.gstPercent) / 100
     const internalTotal =
       b.internalTotal !== undefined && b.internalTotal > 0
         ? b.internalTotal
         : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
         ? b.grandTotal
-        : Math.max(0, b.actualRoomTotal + b.extraCharges - b.discount) + internalGst
+        : Math.max(0, b.actualRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount) + internalGst
 
     return {
       id: b.id,
@@ -3371,6 +3414,10 @@ async function getReports(req: NextRequest) {
     }
   })
 
+  const foodDirectTotal = Math.round(orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0) * 100) / 100
+  const roomInternalRevenue = Math.round(bills.reduce((s, b) => s + billInternal(b).total, 0) * 100) / 100
+  const totalInternalRevenue = Math.round((roomInternalRevenue + foodDirectTotal) * 100) / 100
+
   return NextResponse.json({
     range: { from: fromStr, to: toStr, days: daysDiff },
     occupancy: {
@@ -3383,22 +3430,23 @@ async function getReports(req: NextRequest) {
       inHouseGuests: activeBookings.length,
     },
     collections: {
-      cash: bills.reduce((s, b) => s + b.payCash, 0) + ledger.filter((e) => e.type === 'INCOME' && e.method === 'CASH' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      upi: bills.reduce((s, b) => s + b.payUpi, 0) + ledger.filter((e) => e.type === 'INCOME' && e.method === 'UPI' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      card: bills.reduce((s, b) => s + b.payCard, 0) + ledger.filter((e) => e.type === 'INCOME' && e.method === 'CARD' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      directFood: orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0),
-      advances: ledger.filter((e) => e.type === 'INCOME' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      total: bills.reduce((s, b) => s + b.payCash + b.payUpi + b.payCard, 0) + orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0) + ledger.filter((e) => e.type === 'INCOME' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
+      cash: totalCash,
+      upi: totalUpi,
+      card: totalCard,
+      bills: totalBills,
+      directFood: totalDirectFood,
+      advances: totalAdvances,
+      total: totalCollections,
     },
     collectionsDaily,
     revenue: {
-      actualRoomRevenue: bills.reduce((s, b) => s + b.actualRoomTotal, 0),
-      billedRoomRevenue: bills.reduce((s, b) => s + b.billedRoomTotal, 0),
-      gst: bills.reduce((s, b) => s + billInternal(b).gst, 0),
-      foodRoomPosted: bills.reduce((s, b) => s + b.foodTotal, 0),
-      foodDirect: orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0),
-      discounts: bills.reduce((s, b) => s + b.discount, 0),
-      grandTotal: bills.reduce((s, b) => s + billInternal(b).total, 0),
+      actualRoomRevenue: Math.round(bills.reduce((s, b) => s + b.actualRoomTotal, 0) * 100) / 100,
+      billedRoomRevenue: Math.round(bills.reduce((s, b) => s + b.billedRoomTotal, 0) * 100) / 100,
+      gst: Math.round(bills.reduce((s, b) => s + billInternal(b).gst, 0) * 100) / 100,
+      foodRoomPosted: Math.round(bills.reduce((s, b) => s + b.foodTotal, 0) * 100) / 100,
+      foodDirect: foodDirectTotal,
+      discounts: Math.round(bills.reduce((s, b) => s + b.discount, 0) * 100) / 100,
+      grandTotal: totalInternalRevenue,
     },
     invoices: {
       count: bills.length,

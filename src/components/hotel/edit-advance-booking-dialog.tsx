@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { apiAs, formatINR, todayStr, addDays, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
+import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { RoomDatePicker } from './room-date-picker'
 import { Loader2, Edit3, Banknote, Calendar, User, FileText, CheckCircle2, ShieldCheck } from 'lucide-react'
@@ -118,20 +119,14 @@ export function EditAdvanceBookingDialog({
   function handleCheckInChange(val: string) {
     setCheckIn(val)
     if (val && checkOut) {
-      const d1 = new Date(val).getTime()
-      const d2 = new Date(checkOut).getTime()
-      const diff = Math.max(1, Math.ceil((d2 - d1) / (1000 * 60 * 60 * 24)))
-      setDays(String(diff))
+      setDays(String(calcNights(val, checkOut)))
     }
   }
 
   function handleCheckOutChange(val: string) {
     setCheckOut(val)
     if (checkIn && val) {
-      const d1 = new Date(checkIn).getTime()
-      const d2 = new Date(val).getTime()
-      const diff = Math.max(1, Math.ceil((d2 - d1) / (1000 * 60 * 60 * 24)))
-      setDays(String(diff))
+      setDays(String(calcNights(checkIn, val)))
     }
   }
 

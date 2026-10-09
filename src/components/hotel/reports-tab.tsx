@@ -112,7 +112,7 @@ interface ReportData {
     bookingsCount: number
     inHouseGuests: number
   }
-  collections: { cash: number; upi: number; card: number; directFood: number; advances: number; total: number }
+  collections: { cash: number; upi: number; card: number; bills: number; directFood: number; advances: number; total: number }
   collectionsDaily: DayCollection[]
   revenue: {
     actualRoomRevenue: number
@@ -357,7 +357,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                   icon={FileText}
                   label="Revenue (internal)"
                   value={formatINR(data.revenue.grandTotal)}
-                  sub={`Actual Room: ${formatINR(data.revenue.actualRoomRevenue)} · Billed: ${formatINR(data.revenue.billedRoomRevenue)}`}
+                  sub={`Room: ${formatINR(data.revenue.actualRoomRevenue)} · Direct Food: ${formatINR(data.revenue.foodDirect)} · GST: ${formatINR(data.revenue.gst)}`}
                 />
                 <StatCard
                   icon={TrendingDown}
@@ -511,7 +511,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       cash: data.collections.cash,
                       upi: data.collections.upi,
                       card: data.collections.card,
-                      bills: data.collections.total - data.collections.directFood - data.collections.advances,
+                      bills: data.collections.bills,
                       directFood: data.collections.directFood,
                       advances: data.collections.advances,
                       total: data.collections.total,
