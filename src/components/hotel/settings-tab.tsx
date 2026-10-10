@@ -274,21 +274,31 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
                   onChange={(e) => setSettings({ ...settings, restaurantAddress: e.target.value })}
                 />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 col-span-2 sm:col-span-1">
                 <Label htmlFor="s-rphone">Restaurant Phone</Label>
                 <Input
                   id="s-rphone"
                   value={settings.restaurantPhone || ''}
+                  placeholder="+91 90000 00000"
                   onChange={(e) => setSettings({ ...settings, restaurantPhone: e.target.value })}
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="s-rgstin">GSTIN / FSSAI No.</Label>
+              <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                <Label htmlFor="s-rgstin">Restaurant GSTIN</Label>
                 <Input
                   id="s-rgstin"
                   value={settings.restaurantGstin || ''}
                   onChange={(e) => setSettings({ ...settings, restaurantGstin: e.target.value })}
-                  placeholder="e.g. FSSAI / GST No"
+                  placeholder="e.g. 19AAAAA0000A1Z5"
+                />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label htmlFor="s-rfssai">FSSAI License No.</Label>
+                <Input
+                  id="s-rfssai"
+                  value={settings.restaurantFssai || ''}
+                  onChange={(e) => setSettings({ ...settings, restaurantFssai: e.target.value })}
+                  placeholder="e.g. 12821013000123 (14-digit FSSAI Number)"
                 />
               </div>
             </div>

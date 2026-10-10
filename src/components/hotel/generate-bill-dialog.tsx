@@ -166,10 +166,12 @@ export function GenerateBillDialog({
         )
         setFoodOrdersList(relevant)
 
-        // Compute initial payable for lodging only (food is separate)
+        // Compute initial payable including lodging + food bill
         const gst = parseFloat(normalizeLodgingGst(defaultGstPercent)) || 0
         const initTaxable = initRoom
-        const initGrand = Math.round((initTaxable + (initTaxable * gst) / 100) * 100) / 100
+        const initGst = Math.round(((initTaxable * gst) / 100) * 100) / 100
+        const initFood = relevant.reduce((s, o) => s + o.total, 0)
+        const initGrand = Math.round((initTaxable + initGst + initFood) * 100) / 100
         const initAdv = Math.min(booking.advance || 0, initGrand)
         const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
 
@@ -192,20 +194,21 @@ export function GenerateBillDialog({
       ? foodOrdersList.reduce((s, o) => s + o.total, 0)
       : (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
 
+    const foodTotal = includeFood ? ordersSum : 0
     const extra = num(extraCharges)
     const disc = num(discount)
 
-    // Customer-facing full lodging total (food bill is completely separate)
+    // Customer-facing full total: Lodging + GST on Lodging + Fooding Bill
     const taxable = Math.max(0, billedRoom + extra - disc)
     const gstAmount = Math.round(taxable * num(gstPercent)) / 100
-    const grandTotal = Math.max(0, Math.round((taxable + gstAmount) * 100) / 100)
+    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + foodTotal) * 100) / 100)
     const advanceApplied = Math.min(booking.advance || 0, grandTotal)
     const payable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
 
-    // Hotel internal accounting lodging total
+    // Hotel internal accounting lodging + food total
     const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
     const internalGst = gstAmount
-    const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
+    const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst + foodTotal) * 100) / 100)
 
     const paid = num(payCash) + num(payUpi) + num(payCard)
     const balance = Math.max(0, Math.round((payable - paid) * 100) / 100)
@@ -216,7 +219,7 @@ export function GenerateBillDialog({
       actualRoomTotal,
       billedRoom,
       ordersSum,
-      foodTotal: ordersSum,
+      foodTotal,
       taxable,
       gstAmount,
       grandTotal,
@@ -229,7 +232,7 @@ export function GenerateBillDialog({
       balance,
       adjustment,
     }
-  }, [booking, days, customMode, customTotal, foodOrdersList, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
+  }, [booking, days, customMode, customTotal, includeFood, foodOrdersList, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
 
   // Payment values are maintained directly from user input or 1-click autoBalance actions
   // (Removed reactive useEffect that was forcefully overriding payCash on every calculation change)
@@ -455,7 +458,17 @@ export function GenerateBillDialog({
                   </span>
                   <Switch
                     checked={includeFood}
-                    onCheckedChange={setIncludeFood}
+                    onCheckedChange={(checked) => {
+                      setIncludeFood(checked)
+                      const currentOrdersSum = foodOrdersList.length > 0
+                        ? foodOrdersList.reduce((s, o) => s + o.total, 0)
+                        : (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
+                      const diff = checked ? currentOrdersSum : -currentOrdersSum
+                      if (num(payUpi) === 0 && num(payCard) === 0 && calc) {
+                        const newPayable = Math.max(0, Math.round((calc.payable + diff) * 100) / 100)
+                        setPayCash(String(newPayable))
+                      }
+                    }}
                     className="scale-75"
                   />
                 </div>
@@ -567,7 +580,7 @@ export function GenerateBillDialog({
                   <div className="flex items-center justify-between">
                     <span className="font-semibold text-foreground flex items-center gap-1.5">
                       <Utensils className="h-3.5 w-3.5 text-amber-600" />
-                      Fooding Bill (Separate Orders)
+                      Fooding Bill ({calc.ordersSum > 0 ? 'Room Dining' : 'No Orders'})
                     </span>
                     <span className="font-bold text-amber-800 dark:text-amber-300">
                       {formatINR(calc.ordersSum)}
@@ -589,7 +602,7 @@ export function GenerateBillDialog({
                         </div>
                       ))}
                       <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 italic pt-0.5">
-                        * Note: Food bill is separate and not included in lodging checkout amount.
+                        * Food bill ({formatINR(calc.ordersSum)}) is included in the lodging checkout total.
                       </p>
                     </div>
                   ) : (
@@ -616,6 +629,12 @@ export function GenerateBillDialog({
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">GST ({num(gstPercent)}%)</span>
                   <span className="font-medium">{formatINR(calc.gstAmount)}</span>
+                </div>
+              )}
+              {calc.foodTotal > 0 && (
+                <div className="flex justify-between text-amber-800 dark:text-amber-300">
+                  <span>Fooding Bill</span>
+                  <span className="font-medium">+{formatINR(calc.foodTotal)}</span>
                 </div>
               )}
               <Separator />

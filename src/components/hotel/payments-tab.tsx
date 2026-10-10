@@ -220,7 +220,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
       (filtered as unknown as PaymentRow[]).map((r) => [
         formatDateTime(r.date), r.source, r.ref, r.guest, r.detail, formatINR(r.cash), formatINR(r.upi), formatINR(r.card), formatINR(r.amount),
       ]),
-      `Total Collection: ${formatINR(summary.total)} (${filtered.length} entries)`
+      `Total Collection: ${formatINR(totals.total)} (${filtered.length} entries)`
     )
   }
 

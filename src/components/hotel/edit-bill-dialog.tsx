@@ -128,16 +128,16 @@ export function EditBillDialog({
     const disc = num(discount)
     const foodTotal = bill.foodTotal || 0
 
-    const taxable = Math.max(0, customerAmount + foodTotal + extra - disc)
+    const taxable = Math.max(0, customerAmount + extra - disc)
     const gstAmount = Math.round(taxable * gstRate) / 100
-    const grandTotal = Math.max(0, Math.round((taxable + gstAmount) * 100) / 100)
+    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + foodTotal) * 100) / 100)
     const advanceApplied = Math.min(bill.booking?.advance || 0, grandTotal)
     const payable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
 
-    const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
+    const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
     // Internal GST = the GST charged on the invoice (custom amount for corporate bills)
     const internalGst = gstAmount
-    const internalTotal = Math.round((internalTaxable + internalGst) * 100) / 100
+    const internalTotal = Math.round((internalTaxable + internalGst + foodTotal) * 100) / 100
 
     const paid = num(payCash) + num(payUpi) + num(payCard)
     const balance = Math.max(0, Math.round((payable - paid) * 100) / 100)

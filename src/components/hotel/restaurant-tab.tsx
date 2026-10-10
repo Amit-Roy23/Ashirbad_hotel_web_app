@@ -1175,7 +1175,10 @@ export function RestaurantTab({
                     <p className="text-xs text-muted-foreground">Ph: {settings.restaurantPhone || settings.hotelPhone}</p>
                   )}
                   {(settings.restaurantGstin || settings.hotelGstin) && (
-                    <p className="text-xs text-muted-foreground">GSTIN / FSSAI: {settings.restaurantGstin || settings.hotelGstin}</p>
+                    <p className="text-xs text-muted-foreground">GSTIN: {settings.restaurantGstin || settings.hotelGstin}</p>
+                  )}
+                  {settings.restaurantFssai && (
+                    <p className="text-xs text-muted-foreground">FSSAI No: {settings.restaurantFssai}</p>
                   )}
                   <p className="mt-1.5 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
                     KITCHEN ORDER TICKET &amp; RECEIPT

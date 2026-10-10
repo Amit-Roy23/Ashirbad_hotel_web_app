@@ -265,9 +265,11 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
 export function triggerPrintFoodBill(order: any, settings: Record<string, string> = {}) {
   if (!order) return
 
-  const hotelName = settings.hotelName || 'Ashirbad Lodge'
-  const hotelAddress = settings.hotelAddress || 'Station Road, Kolkata'
-  const hotelPhone = settings.hotelPhone || '+91 90000 00000'
+  const restaurantName = settings.restaurantName || settings.hotelName || 'Ashirbad Restaurant'
+  const restaurantAddress = settings.restaurantAddress || settings.hotelAddress || 'Station Road, Kolkata'
+  const restaurantPhone = settings.restaurantPhone || settings.hotelPhone || '+91 90000 00000'
+  const restaurantGstin = settings.restaurantGstin || settings.hotelGstin || ''
+  const restaurantFssai = settings.restaurantFssai || ''
 
   const itemsHtml = (order.items || [])
     .map(
@@ -300,8 +302,10 @@ export function triggerPrintFoodBill(order: any, settings: Record<string, string
 <body>
   <div class="bill-card">
     <div class="text-center">
-      <h2 style="font-size: 18px; margin-bottom: 2px;">${escapeHtml(hotelName)}</h2>
-      <p style="font-size: 11px; color: #4b5563;">${escapeHtml(hotelAddress)} • Ph: ${escapeHtml(hotelPhone)}</p>
+      <h2 style="font-size: 18px; margin-bottom: 2px;">${escapeHtml(restaurantName)}</h2>
+      <p style="font-size: 11px; color: #4b5563;">${escapeHtml(restaurantAddress)} • Ph: ${escapeHtml(restaurantPhone)}</p>
+      ${restaurantGstin ? `<p style="font-size: 11px; color: #4b5563; font-weight:600;">GSTIN: ${escapeHtml(restaurantGstin)}</p>` : ''}
+      ${restaurantFssai ? `<p style="font-size: 11px; color: #4b5563; font-weight:600;">FSSAI Lic No: ${escapeHtml(restaurantFssai)}</p>` : ''}
       <div style="margin-top:6px; font-weight:700; font-size:12px; letter-spacing:0.5px; color:#047857;">
         RESTAURANT & KITCHEN RECEIPT
       </div>

@@ -656,6 +656,67 @@ export async function updateBanquetBooking(
   return updatedRows[0]
 }
 
+export interface CancelBanquetBookingInput {
+  id: string
+  reason?: string
+  refundAmount?: number
+  refundMethod?: string
+  refundNote?: string
+}
+
+export async function cancelBanquetBooking(input: CancelBanquetBookingInput, userName?: string) {
+  const { id, reason, refundAmount, refundMethod, refundNote } = input
+  const existingRows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', id)
+  const existing = existingRows?.[0]
+  if (!existing) throw new BanquetError('Banquet booking not found')
+
+  if (existing.status === 'CANCELLED') {
+    throw new BanquetError('This banquet booking is already cancelled')
+  }
+
+  const billRows = await prisma.$queryRawUnsafe<any[]>('SELECT "id", "billNumber" FROM "BanquetBill" WHERE "banquetBookingId" = $1', id)
+  if (billRows.length > 0) {
+    throw new BanquetError(`Cannot cancel an invoiced banquet booking (${billRows[0].billNumber}). Delete the invoice first.`)
+  }
+
+  const cancelDate = new Date()
+  const reasonStr = reason ? reason.trim() : 'Cancelled by customer/staff'
+  const cancelTimestamp = cancelDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })
+  const refundAmt = refundAmount !== undefined && refundAmount !== null ? Number(refundAmount) : 0
+  const refundMethodStr = refundMethod || 'CASH'
+  const refundNoteStr = refundNote ? refundNote.trim() : ''
+
+  const cancelLog = `[CANCELLED on ${cancelTimestamp} by ${userName || 'Staff'} | Reason: ${reasonStr}${refundAmt > 0 ? ` | Refund: ₹${refundAmt} via ${refundMethodStr}` : ''}${refundNoteStr ? ` | Note: ${refundNoteStr}` : ''}${Number(existing.advancePaid) > 0 ? ` | Orig Advance: ₹${existing.advancePaid}` : ''}]`
+  const updatedNotes = existing.notes ? `${existing.notes}\n${cancelLog}` : cancelLog
+
+  const now = new Date()
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBooking" SET "status" = $2, "notes" = $3, "updatedAt" = $4 WHERE "id" = $1',
+    id,
+    'CANCELLED',
+    updatedNotes,
+    now
+  )
+
+  // Record advance refund in financial ledger if money was refunded
+  if (refundAmt > 0) {
+    await prisma.ledgerEntry.create({
+      data: {
+        type: 'EXPENSE',
+        category: 'REFUND',
+        description: `Banquet Advance Refund - ${existing.eventName} (${existing.bookingNumber}) to ${existing.customerName}${refundNoteStr ? ` [${refundNoteStr}]` : ''}`,
+        amount: refundAmt,
+        method: refundMethodStr,
+        source: 'AUTO',
+        refId: id,
+      },
+    })
+  }
+
+  const updatedRows = await getBanquetBookings({ search: existing.bookingNumber })
+  return updatedRows[0]
+}
+
 export async function deleteBanquetBooking(id: string) {
   // Invoices cascade with the booking in the DB; their ledger rows and the advance must go too
   const billRows = await prisma.$queryRawUnsafe<{ id: string }[]>('SELECT "id" FROM "BanquetBill" WHERE "banquetBookingId" = $1', id)
