@@ -602,7 +602,7 @@ export function GenerateBillDialog({
                         </div>
                       ))}
                       <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 italic pt-0.5">
-                        * Food bill ({formatINR(calc.ordersSum)}) is included in the lodging checkout total.
+                        * Food bill ({formatINR(calc.ordersSum)}) is settled at checkout. The final lodging bill invoice will show room stay charges only.
                       </p>
                     </div>
                   ) : (

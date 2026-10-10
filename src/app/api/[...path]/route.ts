@@ -1586,31 +1586,44 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
     foodTotal = uniqueOrders.reduce((sum, o) => sum + o.total, 0)
   }
 
-  // Full customer-facing calculation: Room + Extra - Disc + GST (on lodging) + Fooding Bill
+  // Full lodging stay calculation (Room + Extra - Disc + GST on lodging)
+  // Food amount is settled as separate restaurant dining revenue and not added to final lodging bill invoice
   const taxable = Math.max(0, billedRoom + extra - disc)
   const billedGst = Math.round(taxable * gstPct) / 100
-  const grandTotal = Math.max(0, Math.round((taxable + billedGst + foodTotal) * 100) / 100)
+  const grandTotal = Math.max(0, Math.round((taxable + billedGst) * 100) / 100)
   const advanceApplied = Math.min(booking.advance || 0, grandTotal)
-  const payableNow = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
+  const lodgingPayable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
+  const totalPayableNow = Math.max(0, Math.round((lodgingPayable + foodTotal) * 100) / 100)
 
-  // Hotel internal accounting calculation
+  // Hotel internal accounting calculation (lodging only)
   const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
-  // Internal total = actual tariff + the GST actually charged on the invoice + food bill
   const internalGst = billedGst
-  const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst + foodTotal) * 100) / 100)
+  const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
 
   const cash = num(payCash)
   const upi = num(payUpi)
   const card = num(payCard)
   const paidTotal = cash + upi + card
-  if (paidTotal > payableNow + 0.01) {
+  if (paidTotal > totalPayableNow + 0.01) {
     return NextResponse.json(
-      { error: `Payment split (₹${paidTotal}) cannot exceed payable amount (₹${payableNow})` },
+      { error: `Payment split (₹${paidTotal}) cannot exceed payable amount (₹${totalPayableNow})` },
       { status: 400 }
     )
   }
-  // Lodging bills can be created with full, partial, or zero payment (balance due recorded)
-  const balanceDue = Math.max(0, Math.round((payableNow - paidTotal) * 100) / 100)
+
+  // Distribute collected checkout payment between Food dining orders and Lodging bill
+  const foodCollected = Math.min(foodTotal, paidTotal)
+  let remFood = foodCollected
+  const foodCash = Math.min(cash, remFood)
+  remFood -= foodCash
+  const foodUpi = Math.min(upi, remFood)
+  remFood -= foodUpi
+  const foodCard = Math.min(card, remFood)
+  remFood -= foodCard
+
+  const lodgingCash = Math.max(0, Math.round((cash - foodCash) * 100) / 100)
+  const lodgingUpi = Math.max(0, Math.round((upi - foodUpi) * 100) / 100)
+  const lodgingCard = Math.max(0, Math.round((card - foodCard) * 100) / 100)
 
   const prefix = settings.invoicePrefix || 'INV'
   const counter = parseInt(settings.invoiceCounter) || 1
@@ -1637,13 +1650,13 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         actualGst: billedGst,
         internalGst,
         internalTotal,
-        foodTotal,
+        foodTotal: 0, // Food is settled separately; not added to the lodging invoice total
         extraCharges: extra,
         discount: disc,
         grandTotal,
-        payCash: cash,
-        payUpi: upi,
-        payCard: card,
+        payCash: lodgingCash,
+        payUpi: lodgingUpi,
+        payCard: lodgingCard,
         advanceApplied,
         isCorporate: isCustom || !!booking.isCorporate,
         corporateName: corporateName ? String(corporateName) : booking.guest.company || null,
@@ -1658,8 +1671,32 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
     if (foodTotal > 0 && foodOrderIdsToUpdate.length > 0) {
       await tx.foodOrder.updateMany({
         where: { id: { in: foodOrderIdsToUpdate } },
-        data: { status: 'ADDED_TO_BILL' },
+        data: { status: 'PAID' },
       })
+
+      if (foodCollected > 0) {
+        const foodMethod =
+          foodCash > 0 && foodUpi === 0 && foodCard === 0
+            ? 'CASH'
+            : foodUpi > 0 && foodCash === 0 && foodCard === 0
+              ? 'UPI'
+              : foodCard > 0 && foodCash === 0 && foodUpi === 0
+                ? 'CARD'
+                : 'SPLIT'
+
+        await tx.ledgerEntry.create({
+          data: {
+            date: new Date(),
+            type: 'INCOME',
+            category: 'FOOD',
+            description: `Room Dining / Fooding bill settled at checkout - Room ${booking.room.number} - ${booking.guest.name}`,
+            amount: foodCollected,
+            method: foodMethod,
+            source: 'AUTO',
+            refId: createdBill.id,
+          },
+        })
+      }
     }
 
     await tx.auditLog.create({
@@ -1667,7 +1704,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         action: body.status === 'DRAFT' ? 'BILL_DRAFT_CREATED' : 'BILL_FINALIZED',
         entity: 'Bill',
         entityId: createdBill.id,
-        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Amount: ₹${actualRoomTotal}, Billed Amount: ₹${billedRoom}, Food Total: ₹${foodTotal}, GST: ${gstPct}% (₹${billedGst}), Grand Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
+        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Tariff: ₹${actualRoomTotal}, Billed Room: ₹${billedRoom}, Food Settled: ₹${foodCollected}, GST: ${gstPct}% (₹${billedGst}), Lodging Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
         userName: user.name || 'Staff',
         userRole: user.role || 'RECEPTION',
       },
@@ -1695,7 +1732,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       days: billDays,
       ratePerDay: booking.ratePerDay,
       actualRoomTotal,
-      foodTotal,
+      foodTotal: 0,
       extraCharges: extra,
       discount: disc,
       gstPercent: gstPct,
