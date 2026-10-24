@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, formatDateTime, toDateStr, doDateRangesOverlap, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
-import { calcNights } from '@/lib/stay'
+import { calcNights, maxGuestsFor } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { runWithAdminPin } from '@/lib/admin-pin'
 import { CompanyInput } from './company-input'
@@ -308,8 +308,9 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
       setError('Number of guests must be at least 1')
       return
     }
-    if (count > 4) {
-      setError('Maximum 4 guests allowed per room')
+    const maxGuests = maxGuestsFor(room?.capacity)
+    if (count > maxGuests) {
+      setError(`Maximum ${maxGuests} guests allowed in this room`)
       return
     }
     setSaving(true)
@@ -762,12 +763,12 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="gcount" className="text-xs font-semibold text-foreground">Guests (Max 4) *</Label>
+              <Label htmlFor="gcount" className="text-xs font-semibold text-foreground">Guests (Max {maxGuestsFor(room?.capacity)}) *</Label>
               <Input
                 id="gcount"
                 type="number"
                 min="1"
-                max="4"
+                max={maxGuestsFor(room?.capacity)}
                 value={guestCount}
                 className="h-9 text-xs"
                 onChange={(e) => setGuestCount(e.target.value)}

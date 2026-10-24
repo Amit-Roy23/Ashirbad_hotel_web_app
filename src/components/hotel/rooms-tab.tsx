@@ -95,7 +95,28 @@ interface Room {
   bookings: Booking[]
 }
 
-const TYPES = ['Non-AC', 'AC', 'Deluxe AC', 'Suite']
+const TYPES = [
+  'Single Bed',
+  'Single Bed (AC)',
+  'Single Bed (Non-Attached)',
+  'Double Bed',
+  'Double Bed (AC)',
+  'Double Bed (Non-Attached)',
+  'Triple Bed',
+  'Triple Bed (AC)',
+  'Six Bed',
+]
+
+/** Ground floor first, then 1, 2, 3 ... */
+function compareFloors(a: string, b: string) {
+  const rank = (f: string) => (/^\d+$/.test(f) ? Number(f) : /^g/i.test(f) ? -1 : 1000)
+  return rank(a) - rank(b) || a.localeCompare(b)
+}
+
+/** "1" -> "Floor 1", "Ground" -> "Ground Floor" */
+function floorLabel(f: string) {
+  return /^\d+$/.test(f) ? `Floor ${f}` : `${f} Floor`
+}
 
 interface TabProps {
   refreshKey: number
@@ -124,7 +145,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   const [deleteError, setDeleteError] = useState('')
   const [newNumber, setNewNumber] = useState('')
   const [newFloor, setNewFloor] = useState('1')
-  const [newType, setNewType] = useState('Non-AC')
+  const [newType, setNewType] = useState(TYPES[0])
   const [newRate, setNewRate] = useState('800')
   const [newCapacity, setNewCapacity] = useState('2')
   const [billBooking, setBillBooking] = useState<any | null>(null)
@@ -187,7 +208,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     load()
   }, [load, refreshKey])
 
-  const floors = useMemo(() => [...new Set(rooms.map((r) => r.floor || r.number.charAt(0)))].sort(), [rooms])
+  const floors = useMemo(() => [...new Set(rooms.map((r) => r.floor || r.number.charAt(0)))].sort(compareFloors), [rooms])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -225,13 +246,15 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     return counts
   }, [rooms])
 
+  // [floor, rooms][] with Ground floor first (an object would list "1", "2" before "Ground")
   const grouped = useMemo(() => {
-    return filtered.reduce<Record<string, Room[]>>((acc, room) => {
+    const byFloor = new Map<string, Room[]>()
+    for (const room of filtered) {
       const f = room.floor || room.number.charAt(0)
-      if (!acc[f]) acc[f] = []
-      acc[f].push(room)
-      return acc
-    }, {})
+      if (!byFloor.has(f)) byFloor.set(f, [])
+      byFloor.get(f)!.push(room)
+    }
+    return [...byFloor.entries()].sort(([a], [b]) => compareFloors(a, b))
   }, [filtered])
 
   function resetFilters() {
@@ -357,11 +380,11 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     const cleanNum = newNumber.replace(/\D/g, '').trim()
     if (!cleanNum) return
     const cap = parseInt(newCapacity) || 2
-    if (cap < 1 || cap > 4) {
+    if (cap < 1 || cap > 10) {
       toast({
         variant: 'destructive',
         title: 'Invalid Capacity',
-        description: 'Room capacity must be between 1 and 4 guests.',
+        description: 'Room capacity must be between 1 and 10 guests.',
       })
       return
     }
@@ -466,7 +489,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         onSearch={setSearch}
         searchPlaceholder="Room number, type, guest…"
         filters={[
-          { key: 'floor', label: 'Floor', options: floors.map((f) => ({ value: f, label: `Floor ${f}` })) },
+          { key: 'floor', label: 'Floor', options: floors.map((f) => ({ value: f, label: floorLabel(f) })) },
           { key: 'type', label: 'Type', options: [...new Set(rooms.map((r) => r.type))].map((t) => ({ value: t, label: t })) },
           {
             key: 'status',
@@ -508,9 +531,9 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
       )}
 
       {viewMode === 'grid' ? (
-        Object.entries(grouped).map(([f, floorRooms]) => (
+        grouped.map(([f, floorRooms]) => (
           <div key={f}>
-            <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Floor {f}</h3>
+            <h3 className="mb-2 text-sm font-semibold text-muted-foreground">{floorLabel(f)}</h3>
             <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-10 2xl:grid-cols-12">
               {floorRooms.map((room) => {
                 const opState = getRoomOperationalState(room)
@@ -550,7 +573,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                         <BedDouble className="h-3.5 w-3.5 text-slate-600 dark:text-muted-foreground" aria-hidden />
                       )}
                     </div>
-                    <p className="mt-0.5 truncate text-[10px] text-slate-700 dark:text-muted-foreground">{room.type}</p>
+                    <p className="mt-0.5 truncate text-[10px] text-slate-700 dark:text-muted-foreground" title={room.type}>{room.type}</p>
                     {opState.displayStatus === 'OCCUPIED' && opState.activeBooking ? (
                       <div className="mt-1">
                         <p className="truncate text-[10px] font-bold text-red-800 dark:text-red-300">
@@ -1399,7 +1422,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {TYPES.map((t) => (
+                              {(TYPES.includes(viewRoom.type) ? TYPES : [viewRoom.type, ...TYPES]).map((t) => (
                                 <SelectItem key={t} value={t}>
                                   {t}
                                 </SelectItem>
@@ -1477,8 +1500,8 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="add-cap">Capacity (Max 4)</Label>
-              <Input id="add-cap" type="number" min="1" max="4" value={newCapacity} onChange={(e) => setNewCapacity(e.target.value)} />
+              <Label htmlFor="add-cap">Capacity (beds / guests)</Label>
+              <Input id="add-cap" type="number" min="1" max="10" value={newCapacity} onChange={(e) => setNewCapacity(e.target.value)} />
             </div>
             <Button className="w-full" disabled={busy || !newNumber.trim()} onClick={addRoom}>
               Add Room

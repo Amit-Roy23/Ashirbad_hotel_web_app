@@ -116,3 +116,8 @@ export function nextAutoExtensionAt(
   if (isNaN(checkOutDate.getTime())) return null
   return new Date(checkOutDate.getTime() + (graceMinutes || 0) * 60 * 1000)
 }
+
+/** Most guests a room may take: 4, or the room's capacity when that is larger (e.g. a six-bed room) */
+export function maxGuestsFor(capacity?: number | null): number {
+  return Math.max(4, Math.floor(Number(capacity) || 0))
+}

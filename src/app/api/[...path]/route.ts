@@ -7,6 +7,7 @@ import {
   istDateStr,
   computeOverstay,
   nextAutoExtensionAt,
+  maxGuestsFor,
 } from '@/lib/stay'
 import {
   getBanquetHalls,
@@ -957,14 +958,15 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     )
   }
   const parsedGuestCount = parseInt(String(guestCount)) || 1
-  if (parsedGuestCount < 1 || parsedGuestCount > 4) {
+  const room = await prisma.room.findUnique({ where: { id: String(roomId) } })
+  if (!room) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
+  const maxGuests = maxGuestsFor(room.capacity)
+  if (parsedGuestCount < 1 || parsedGuestCount > maxGuests) {
     return NextResponse.json(
-      { error: 'Maximum 4 guests allowed per room (must be between 1 and 4)' },
+      { error: `Maximum ${maxGuests} guests allowed in Room ${room.number} (must be between 1 and ${maxGuests})` },
       { status: 400 }
     )
   }
-  const room = await prisma.room.findUnique({ where: { id: String(roomId) } })
-  if (!room) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
 
   const settings = await getSettingsMap()
   const defCheckoutTime = settings.checkoutTime || '08:00'
@@ -1583,9 +1585,10 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     if (advance !== undefined) updateData.advance = num(advance)
     if (guestCount !== undefined) {
       const parsedGuestCount = parseInt(String(guestCount)) || 1
-      if (parsedGuestCount < 1 || parsedGuestCount > 4) {
+      const maxGuests = maxGuestsFor(booking.room.capacity)
+      if (parsedGuestCount < 1 || parsedGuestCount > maxGuests) {
         return NextResponse.json(
-          { error: 'Maximum 4 guests allowed per room (must be between 1 and 4)' },
+          { error: `Maximum ${maxGuests} guests allowed in Room ${booking.room.number} (must be between 1 and ${maxGuests})` },
           { status: 400 }
         )
       }

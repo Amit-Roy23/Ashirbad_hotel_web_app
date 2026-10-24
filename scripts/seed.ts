@@ -5,28 +5,42 @@ const prisma = new PrismaClient()
 async function main() {
   console.log('🌱 Starting database seeding...')
 
-  // 1. Seed 30 rooms (Floors 1-3)
+  // 1. Seed the hotel's rooms (client list: Ground floor 101-103, 1st floor 201-212, 2nd floor 301-316)
   const roomCount = await prisma.room.count()
   if (roomCount === 0) {
-    const roomData: { number: string; type: string; capacity: number; rate: number }[] = []
-    for (let floor = 1; floor <= 3; floor++) {
-      for (let i = 1; i <= 10; i++) {
-        const num = `${floor}${String(i).padStart(2, '0')}`
-        let type = 'Non-AC'
-        let rate = 800
-        let capacity = 2
-        if (i >= 9) {
-          type = 'Deluxe AC'
-          rate = 1500
-          capacity = 3
-        } else if (i >= 6) {
-          type = 'AC'
-          rate = 1200
-          capacity = 2
-        }
-        roomData.push({ number: num, type, capacity, rate })
-      }
-    }
+    const roomData: { number: string; floor: string; type: string; capacity: number; rate: number; status?: string; notes?: string }[] = [
+      { number: '101', floor: 'Ground', type: 'Double Bed', capacity: 2, rate: 700 },
+      { number: '102', floor: 'Ground', type: 'Double Bed', capacity: 2, rate: 800 },
+      { number: '103', floor: 'Ground', type: 'Triple Bed (AC)', capacity: 3, rate: 1200 },
+      { number: '201', floor: '1', type: 'Double Bed (AC)', capacity: 2, rate: 1000 },
+      { number: '202', floor: '1', type: 'Single Bed', capacity: 1, rate: 500 },
+      { number: '203', floor: '1', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '204', floor: '1', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '205', floor: '1', type: 'Single Bed', capacity: 1, rate: 500 },
+      { number: '206', floor: '1', type: 'Single Bed', capacity: 1, rate: 500 },
+      { number: '207', floor: '1', type: 'Single Bed', capacity: 1, rate: 500 },
+      { number: '208', floor: '1', type: 'Triple Bed (AC)', capacity: 3, rate: 1200 },
+      { number: '209', floor: '1', type: 'Double Bed (AC)', capacity: 2, rate: 1000 },
+      { number: '210', floor: '1', type: 'Double Bed (AC)', capacity: 2, rate: 1000 },
+      { number: '211', floor: '1', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '212', floor: '1', type: 'Single Bed (Non-Attached)', capacity: 1, rate: 300 },
+      { number: '301', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '302', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '303', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '304', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '305', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '306', floor: '2', type: 'Six Bed', capacity: 6, rate: 1500 },
+      { number: '307', floor: '2', type: 'Double Bed (AC)', capacity: 2, rate: 1000 },
+      { number: '308', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 800 },
+      { number: '309', floor: '2', type: 'Triple Bed (AC)', capacity: 3, rate: 1500 },
+      { number: '310', floor: '2', type: 'Triple Bed (AC)', capacity: 3, rate: 1500 },
+      { number: '311', floor: '2', type: 'Single Bed (AC)', capacity: 1, rate: 900 },
+      { number: '312', floor: '2', type: 'Double Bed (AC)', capacity: 2, rate: 1000 },
+      { number: '313', floor: '2', type: 'Single Bed (Non-Attached)', capacity: 1, rate: 300 },
+      { number: '314', floor: '2', type: 'Double Bed (Non-Attached)', capacity: 2, rate: 500 },
+      { number: '315', floor: '2', type: 'Blocked', capacity: 1, rate: 0, status: 'MAINTENANCE', notes: 'Blocked - not available for guests' },
+      { number: '316', floor: '2', type: 'Double Bed (Non-Attached)', capacity: 2, rate: 500 },
+    ]
     await prisma.room.createMany({ data: roomData })
     console.log(`✓ Seeded ${roomData.length} rooms`)
   } else {
