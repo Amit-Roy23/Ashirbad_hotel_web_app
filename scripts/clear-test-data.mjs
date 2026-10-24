@@ -1,10 +1,11 @@
 /**
  * Clears test data and keeps the setup (same as scripts/clear-test-data.sql).
  *
- * Keeps: users / admin PINs, settings, rooms, banquet halls, menu, staff list, expense categories.
+ * Keeps: users / admin PINs, settings, rooms, banquet halls, menu, staff list, expense categories,
+ *        inventory item list.
  * Deletes: guests, bookings, bills, food orders, payments & expenses, salary payments,
- *          banquet bookings & bills, audit trail. Resets rooms to Vacant + Clean and the
- *          invoice number to 1.
+ *          banquet bookings & bills, inventory stock entries, audit trail. Resets rooms to
+ *          Vacant + Clean, inventory stock to 0 and the invoice number to 1.
  *
  *   DATABASE_URL=... node scripts/clear-test-data.mjs            # preview only, changes nothing
  *   DATABASE_URL=... node scripts/clear-test-data.mjs --confirm  # really delete
@@ -34,7 +35,18 @@ const count = async (table) => {
   return rows[0].n
 }
 
+const tableExists = async (table) => {
+  const rows = await prisma.$queryRawUnsafe(`SELECT to_regclass('"${table}"') IS NOT NULL AS ok`)
+  return rows[0].ok
+}
+
 async function main() {
+  const hasInventory = await tableExists('InventoryMovement')
+  if (hasInventory) {
+    CLEAR.splice(CLEAR.indexOf('AuditLog'), 0, 'InventoryMovement')
+    KEEP.push('InventoryItem')
+  }
+
   const host = (process.env.DATABASE_URL || '').replace(/^.*@/, '').replace(/[/?].*$/, '')
   console.log(`Database: ${host || '(DATABASE_URL not set)'}\n`)
 
@@ -55,8 +67,9 @@ async function main() {
     ),
     prisma.$executeRawUnsafe(`UPDATE "BanquetHall" SET "status" = 'AVAILABLE' WHERE "status" <> 'MAINTENANCE'`),
     prisma.$executeRawUnsafe(`UPDATE "Setting" SET "value" = '1' WHERE "key" = 'invoiceCounter'`),
+    ...(hasInventory ? [prisma.$executeRawUnsafe(`UPDATE "InventoryItem" SET "stock" = 0, "avgCost" = 0`)] : []),
   ])
-  console.log('\nDone. Test data cleared; rooms are Vacant and Clean; next invoice is number 1.')
+  console.log('\nDone. Test data cleared; rooms are Vacant and Clean; inventory stock is 0; next invoice is number 1.')
 }
 
 main()

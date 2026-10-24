@@ -392,3 +392,48 @@ model BanquetBill {
   @@index([createdAt])
   @@index([status])
 }
+
+// ============ INVENTORY ============
+model InventoryItem {
+  id           String              @id @default(cuid())
+  name         String              @unique
+  category     String              @default("Housekeeping & Linen")
+  unit         String              @default("pcs") // pcs | kg | ltr | pack | box | bottle | roll | ...
+  stock        Float               @default(0) // current quantity in stock, only changed through movements
+  reorderLevel Float               @default(0) // at or below this the item is "Low stock"
+  avgCost      Float               @default(0) // weighted average purchase cost per unit
+  location     String?             // store room, kitchen, ...
+  notes        String?
+  active       Boolean             @default(true) // false = archived (kept for history)
+  movements    InventoryMovement[]
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @default(now()) @updatedAt
+
+  @@index([category])
+  @@index([active])
+}
+
+model InventoryMovement {
+  id              String        @id @default(cuid())
+  itemId          String
+  type            String        // OPENING | PURCHASE | ISSUE | WASTAGE | ADJUSTMENT
+  quantity        Float         // signed change in stock: + in, - out
+  balanceAfter    Float         // stock right after this entry
+  unitCost        Float         @default(0)
+  totalCost       Float         @default(0) // purchase amount, or value used / wasted / adjusted at average cost
+  vendor          String?
+  reference       String?       // supplier bill / challan number
+  department      String?       // where it was used (Housekeeping, Kitchen, Room ...)
+  roomNumber      String?
+  method          String?       // payment mode of a purchase
+  expenseRecorded Boolean       @default(false) // purchase also written to Expenses (ledger, category INVENTORY)
+  note            String?
+  createdBy       String?
+  date            DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  item            InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@index([date])
+  @@index([type])
+}

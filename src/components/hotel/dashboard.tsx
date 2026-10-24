@@ -54,6 +54,7 @@ import {
   Clock,
   Utensils,
   Receipt,
+  Boxes,
 } from 'lucide-react'
 
 interface Guest {
@@ -110,6 +111,7 @@ interface OverstayRow {
 }
 
 interface Stats {
+  lowStockItems?: number
   totalRooms: number
   vacant: number
   occupied: number
@@ -480,6 +482,21 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                         Maintenance <b className="text-foreground">{stats?.maintenance}</b>
                       </span>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate({ tab: 'inventory' })}
+                      className={`flex items-center gap-2 rounded-md text-xs ${
+                        (stats?.lowStockItems || 0) > 0
+                          ? 'bg-red-50 px-2 py-1 font-semibold text-red-700 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                      title="Open Inventory"
+                    >
+                      <Boxes className="h-4 w-4" />
+                      <span>
+                        Low stock <b className={(stats?.lowStockItems || 0) > 0 ? '' : 'text-foreground'}>{stats?.lowStockItems ?? 0}</b>
+                      </span>
+                    </button>
                   </CardContent>
                 </Card>
               </div>
