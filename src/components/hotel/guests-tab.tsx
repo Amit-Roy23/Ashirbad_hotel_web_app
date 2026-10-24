@@ -19,17 +19,48 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, exportCSV, toDateStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, toDateStr, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { triggerPrintGuestDetails } from '@/lib/print-invoice'
-import { Loader2, History, Pencil, Trash2, Printer } from 'lucide-react'
+import { Loader2, History, Pencil, Trash2, ShieldCheck, AlertTriangle, Printer } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { AdminDeleteDialog } from './admin-delete-dialog'
+
+interface DueItem {
+  billId: string
+  billNumber: string
+  bookingId: string
+  roomNumber: string
+  checkIn: string
+  checkOut: string | null
+  actualCheckOut: string | null
+  checkoutDate: string
+  days: number
+  grandTotal: number
+  paidTotal: number
+  balanceDue: number
+  paymentStatus: string
+  status: string
+  createdAt: string
+}
 
 interface Bill {
   id: string
   billNumber: string
   grandTotal: number
+  payCash?: number
+  payUpi?: number
+  payCard?: number
+  advanceApplied?: number
 }
 
 interface Booking {
@@ -56,6 +87,8 @@ interface GuestRow {
   address?: string | null
   idProof?: string | null
   createdAt: string
+  totalDue?: number
+  dueHistory?: DueItem[]
   bookings: Booking[]
 }
 
@@ -76,10 +109,13 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const [viewGuest, setViewGuest] = useState<GuestRow | null>(null)
   const [editGuest, setEditGuest] = useState<GuestRow | null>(null)
   const [editName, setEditName] = useState('')
+  const [editIdType, setEditIdType] = useState<GovIdType>('AADHAAR')
+  const [editIdNumber, setEditIdNumber] = useState('')
   const [editCompany, setEditCompany] = useState('')
   const [editGst, setEditGst] = useState('')
   const [editAddress, setEditAddress] = useState('')
   const [busy, setBusy] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<GuestRow | null>(null)
 
   useEffect(() => {
     if (initialFilter) setSearch(initialFilter)
@@ -129,47 +165,80 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'createdAt')
   const { paged, controls } = usePagination(sorted as unknown as GuestRow[], 10)
 
+  const guestExportHeaders = [
+    'Guest Name',
+    'Phone Number',
+    'Gov ID Proof Number',
+    'How Much Paid',
+    'Date to Stay (From - To)',
+  ]
+
+  function getGuestRowsData() {
+    return (filtered as unknown as GuestRow[]).map((g) => {
+      let totalPaid = 0
+      for (const b of g.bookings || []) {
+        if (b.bills && b.bills.length > 0) {
+          for (const bill of b.bills) {
+            totalPaid +=
+              (Number(bill.advanceApplied) || 0) +
+              (Number(bill.payCash) || 0) +
+              (Number(bill.payUpi) || 0) +
+              (Number(bill.payCard) || 0)
+          }
+        } else if (b.advance) {
+          totalPaid += Number(b.advance) || 0
+        }
+      }
+      totalPaid = Math.round(totalPaid * 100) / 100
+
+      const stayDates =
+        g.bookings && g.bookings.length > 0
+          ? g.bookings
+              .map((b) => `${formatDate(b.checkIn)} to ${b.checkOut ? formatDate(b.checkOut) : 'Present'}`)
+              .join('; ')
+          : '—'
+
+      return [
+        g.name,
+        g.phone,
+        g.idProof ? formatGovIdDisplay(g.idProof) : '—',
+        totalPaid,
+        stayDates,
+      ]
+    })
+  }
+
   function doExport() {
-    exportCSV(
-      'guests.csv',
-      ['Name', 'Phone', 'Company', 'GST', 'Address', 'Total Stays', 'First Seen'],
-      (filtered as unknown as GuestRow[]).map((g) => [
-        g.name, g.phone, g.company || '', g.gst || '', g.address || '', g.bookings.length, formatDate(g.createdAt),
-      ])
-    )
+    exportCSV('guests-report.csv', guestExportHeaders, getGuestRowsData())
+  }
+
+  function doPrint() {
+    printTableReport('Guests Directory Report', guestExportHeaders, getGuestRowsData(), `${filtered.length} guests recorded`)
   }
 
   function openEdit(g: GuestRow) {
     setEditGuest(g)
     setEditName(g.name)
+    if (g.idProof) {
+      const parsed = parseGovId(g.idProof)
+      setEditIdType(parsed.idType)
+      setEditIdNumber(parsed.idNumber)
+    } else {
+      setEditIdType('AADHAAR')
+      setEditIdNumber('')
+    }
     setEditCompany(g.company || '')
     setEditGst(g.gst || '')
     setEditAddress(g.address || '')
   }
 
-  async function deleteGuest(g: GuestRow) {
-    if (!confirm(`Are you sure you want to delete guest profile ${g.name} (${g.phone})?`)) return
-    setBusy(true)
-    try {
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        `/api/guests?id=${g.id}`,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        await load()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Could not delete guest')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function saveEdit() {
     if (!editGuest) return
+    const idCheck = editIdNumber.trim() ? validateGovId(editIdType, editIdNumber) : null
+    if (idCheck && !idCheck.valid) {
+      alert(idCheck.error || 'Invalid ID proof')
+      return
+    }
     setBusy(true)
     try {
       await apiAs('/api/guests', getCachedUser(), {
@@ -177,6 +246,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
         body: JSON.stringify({
           phone: editGuest.phone,
           name: editName,
+          idProof: idCheck ? idCheck.formatted : editIdNumber.trim() ? editIdNumber : undefined,
           // Send empty strings (not undefined) so a cleared field is actually cleared
           company: editCompany.trim(),
           gst: editGst.trim(),
@@ -219,6 +289,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
           setTo('')
         }}
         onExport={doExport}
+        onPrint={doPrint}
       >
         <div className="flex items-center gap-1.5">
           <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="Stay from date" />
@@ -233,16 +304,18 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
             <TableRow>
               <SortableTh label="Name" sortKey="name" sort={sort} onToggle={toggle} />
               <TableHead>Phone</TableHead>
+              <TableHead>ID Proof</TableHead>
               <TableHead>Company</TableHead>
               <TableHead>GST</TableHead>
               <SortableTh label="Stays" sortKey="bookings" sort={sort} onToggle={toggle} className="text-center" />
+              <TableHead className="text-right">Outstanding Due</TableHead>
               <TableHead className="text-center">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {(paged as unknown as GuestRow[]).length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                   No guests found.
                 </TableCell>
               </TableRow>
@@ -258,9 +331,28 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
                   )}
                 </TableCell>
                 <TableCell>{g.phone}</TableCell>
+                <TableCell>
+                  {g.idProof ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 text-xs font-mono font-medium text-foreground">
+                      <ShieldCheck className="h-3 w-3 text-emerald-600 shrink-0" />
+                      {formatGovIdDisplay(g.idProof)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
+                </TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.company || '—'}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.gst || '—'}</TableCell>
                 <TableCell className="text-center">{g.bookings.length}</TableCell>
+                <TableCell className="text-right font-medium">
+                  {g.totalDue && g.totalDue > 0.01 ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700 dark:bg-red-950 dark:text-red-300">
+                      {formatINR(g.totalDue)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">₹0</span>
+                  )}
+                </TableCell>
                 <TableCell className="text-center">
                   <div className="flex justify-center gap-1">
                     <Button
@@ -278,7 +370,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
                       size="sm"
                       variant="ghost"
                       className="h-7 gap-1 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                      onClick={() => deleteGuest(g)}
+                      onClick={() => setDeleteTarget(g)}
                     >
                       <Trash2 className="h-3 w-3" /> Delete
                     </Button>
@@ -305,6 +397,7 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
             </DialogTitle>
             <DialogDescription>
               {viewGuest?.phone}
+              {viewGuest?.idProof ? ` · ${formatGovIdDisplay(viewGuest.idProof)}` : ''}
               {viewGuest?.company ? ` · ${viewGuest.company}` : ''}
               {viewGuest?.gst ? ` · GSTIN ${viewGuest.gst}` : ''}
               {viewGuest?.address ? ` · ${viewGuest.address}` : ''}
@@ -320,6 +413,42 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
           </Button>
 
           <div className="max-h-96 space-y-2.5 overflow-y-auto pr-1">
+            {/* Outstanding Past Due Alert in History Dialog */}
+            {viewGuest?.totalDue && viewGuest.totalDue > 0.01 && (
+              <div className="rounded-lg border-2 border-red-500/80 bg-red-50 p-3 dark:border-red-600 dark:bg-red-950/40 text-red-950 dark:text-red-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-red-700 dark:text-red-400">
+                    <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                    <span>OUTSTANDING DUE PAYMENT RECORD</span>
+                  </div>
+                  <Badge variant="destructive" className="font-bold text-[11px] px-2 py-0.5">
+                    Total Due: {formatINR(viewGuest.totalDue)}
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-red-800 dark:text-red-300">
+                  This guest currently has <strong>{viewGuest.dueHistory?.length || 1} unpaid bill(s)</strong> totaling <strong>{formatINR(viewGuest.totalDue)}</strong> from past checkout(s):
+                </p>
+                <div className="space-y-1.5">
+                  {viewGuest.dueHistory?.map((due) => (
+                    <div key={due.billId || due.billNumber} className="rounded border border-red-200 bg-white/90 dark:bg-red-900/30 p-2 text-xs flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-foreground text-xs">
+                          Room {due.roomNumber} • Invoice #{due.billNumber}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">
+                          Checked out on: <span className="font-medium text-foreground">{formatDateTime(due.checkoutDate)}</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-red-600 dark:text-red-400 text-xs">{formatINR(due.balanceDue)}</div>
+                        <div className="text-[10px] text-muted-foreground">Billed: {formatINR(due.grandTotal)} | Paid: {formatINR(due.paidTotal)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {(viewGuest?.bookings.length || 0) === 0 ? (
               <div className="py-8 text-center text-sm text-muted-foreground">
                 No past or active bookings recorded for this guest.
@@ -391,6 +520,39 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
               <Label htmlFor="g-name">Name</Label>
               <Input id="g-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
             </div>
+            <div className="space-y-2 rounded-lg border bg-muted/30 p-2.5">
+              <Label className="text-xs font-semibold flex items-center gap-1.5">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                Govt. ID Proof
+              </Label>
+              <div className="grid grid-cols-1 gap-2">
+                <Select value={editIdType} onValueChange={(val: GovIdType) => setEditIdType(val)}>
+                  <SelectTrigger className="h-8 text-xs bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GOV_ID_TYPES.map((t) => (
+                      <SelectItem key={t.value} value={t.value} className="text-xs">
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  placeholder={GOV_ID_TYPES.find((t) => t.value === editIdType)?.placeholder || 'ID Number'}
+                  value={editIdNumber}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    if (editIdType === 'AADHAAR') {
+                      setEditIdNumber(raw.replace(/\D/g, '').slice(0, 12))
+                    } else {
+                      setEditIdNumber(raw.toUpperCase())
+                    }
+                  }}
+                  className="h-8 text-xs font-mono uppercase bg-background"
+                />
+              </div>
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="g-company">Company</Label>
               <Input id="g-company" value={editCompany} onChange={(e) => setEditCompany(e.target.value)} />
@@ -409,6 +571,28 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title="Delete Guest Profile"
+        itemType="Guest"
+        itemName={deleteTarget ? `${deleteTarget.name} (${deleteTarget.phone})` : ''}
+        warningNotice="Deleting this guest profile requires an Admin PIN or Password."
+        onConfirm={async (adminPin) => {
+          if (!deleteTarget) return
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            `/api/guests?id=${deleteTarget.id}`,
+            getCachedUser(),
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          await load()
+        }}
+      />
     </div>
   )
 }

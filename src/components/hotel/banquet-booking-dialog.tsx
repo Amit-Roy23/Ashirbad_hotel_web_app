@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { apiAs, formatINR, todayStr } from '@/lib/hotel-utils'
+import { apiAs, formatINR, todayStr, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking } from '@/types/banquet'
@@ -41,6 +41,7 @@ import {
   Tag,
   Wallet,
   FileText,
+  ShieldCheck,
 } from 'lucide-react'
 
 interface BanquetBookingDialogProps {
@@ -82,10 +83,16 @@ export function BanquetBookingDialog({
   const [busy, setBusy] = useState(false)
   const isEditing = !!booking
 
+  // Toggles for Venue Pricing and Catering
+  const [includeVenueRent, setIncludeVenueRent] = useState(true)
+  const [includeCatering, setIncludeCatering] = useState(true)
+
   // Form State
   const [hallId, setHallId] = useState('')
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
+  const [idType, setIdType] = useState<GovIdType>('AADHAAR')
+  const [idNumber, setIdNumber] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
   const [companyName, setCompanyName] = useState('')
@@ -127,9 +134,18 @@ export function BanquetBookingDialog({
       setEventDate(booking.eventDate ? booking.eventDate.slice(0, 10) : todayStr())
       setSlot(booking.slot || 'EVENING')
       setGuestCount(String(booking.guestCount || 100))
-      setHallRent(String(booking.hallRent || 0))
-      setFoodRatePerPlate(String(booking.foodRatePerPlate || 0))
-      setFoodPackageName(booking.foodPackageName || 'Standard Buffet')
+
+      const hasRent = booking.hallRent !== null && booking.hallRent !== undefined ? Number(booking.hallRent) > 0 : true
+      setIncludeVenueRent(hasRent)
+      setHallRent(String(booking.hallRent ?? (hasRent ? 25000 : 0)))
+
+      const hasFood =
+        (booking.foodTotal !== null && booking.foodTotal !== undefined && Number(booking.foodTotal) > 0) ||
+        (booking.foodRatePerPlate !== null && booking.foodRatePerPlate !== undefined && Number(booking.foodRatePerPlate) > 0)
+      setIncludeCatering(hasFood)
+      setFoodRatePerPlate(String(booking.foodRatePerPlate ?? (hasFood ? 650 : 0)))
+      setFoodPackageName(booking.foodPackageName || (hasFood ? 'Standard Buffet' : ''))
+
       setDecorCharges(String(booking.decorCharges || 0))
       setDecorOn(booking.decorEnabled !== false)
       setExtraCharges(String(booking.extraCharges || 0))
@@ -138,6 +154,8 @@ export function BanquetBookingDialog({
       setStatus(booking.status || 'CONFIRMED')
       setNotes(booking.notes || '')
     } else {
+      setIncludeVenueRent(true)
+      setIncludeCatering(true)
       if (halls.length > 0 && !hallId) {
         const first = halls[0]
         setHallId(first.id)
@@ -146,6 +164,8 @@ export function BanquetBookingDialog({
       }
       setCustomerName('')
       setCustomerPhone('')
+      setIdType('AADHAAR')
+      setIdNumber('')
       setCustomerEmail('')
       setCustomerAddress('')
       setCompanyName('')
@@ -179,11 +199,11 @@ export function BanquetBookingDialog({
     }
   }
 
-  // Live total calculations
+  // Live total calculations with toggle logic
   const numGuests = Math.max(0, parseInt(guestCount) || 0)
-  const numHallRent = Math.max(0, parseFloat(hallRent) || 0)
-  const numFoodPerPlate = Math.max(0, parseFloat(foodRatePerPlate) || 0)
-  const totalFood = numGuests * numFoodPerPlate
+  const numHallRent = includeVenueRent ? Math.max(0, parseFloat(hallRent) || 0) : 0
+  const numFoodPerPlate = includeCatering ? Math.max(0, parseFloat(foodRatePerPlate) || 0) : 0
+  const totalFood = includeCatering ? numGuests * numFoodPerPlate : 0
   // Decor switched off = no decoration for this event, no charge
   const numDecor = decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
   const numExtra = Math.max(0, parseFloat(extraCharges) || 0)
@@ -201,6 +221,16 @@ export function BanquetBookingDialog({
     }
     if (!customerName.trim() || !customerPhone.trim()) {
       toast({ variant: 'destructive', title: 'Required Fields', description: 'Customer Name and Phone Number are required.' })
+      return
+    }
+
+    const idCheck = validateGovId(idType, idNumber)
+    if (!idCheck.valid) {
+      toast({
+        variant: 'destructive',
+        title: 'Gov ID Proof Required',
+        description: idCheck.error || 'Valid Government ID Proof (Aadhaar / PAN / Passport) is mandatory.',
+      })
       return
     }
 
@@ -226,7 +256,7 @@ export function BanquetBookingDialog({
             guestCount: numGuests,
             hallRent: numHallRent,
             foodRatePerPlate: numFoodPerPlate,
-            foodPackageName,
+            foodPackageName: includeCatering ? foodPackageName : '',
             foodTotal: totalFood,
             decorCharges: numDecor,
             decorEnabled: decorOn,
@@ -257,7 +287,7 @@ export function BanquetBookingDialog({
             guestCount: numGuests,
             hallRent: numHallRent,
             foodRatePerPlate: numFoodPerPlate,
-            foodPackageName,
+            foodPackageName: includeCatering ? foodPackageName : '',
             foodTotal: totalFood,
             decorCharges: numDecor,
             decorEnabled: decorOn,
@@ -314,13 +344,42 @@ export function BanquetBookingDialog({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 px-6 py-4">
-          {/* Section 1: Event & Venue Details */}
+          {/* Section 1: Event & Venue Details with Venue Rent Toggle */}
           <div className="rounded-xl border bg-card p-4 shadow-xs">
-            <div className="mb-3.5 flex items-center gap-2 border-b pb-2.5">
-              <Building2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
-                1. Venue &amp; Event Schedule
-              </h3>
+            <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2 border-b pb-2.5">
+              <div className="flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+                  1. Venue &amp; Event Schedule
+                </h3>
+              </div>
+
+              {/* Venue Rent Toggle */}
+              <div className="flex items-center gap-2.5">
+                <Badge
+                  variant={includeVenueRent ? 'default' : 'outline'}
+                  className={
+                    includeVenueRent
+                      ? 'bg-emerald-600 hover:bg-emerald-600 text-white text-[10px]'
+                      : 'text-muted-foreground text-[10px]'
+                  }
+                >
+                  {includeVenueRent ? `Venue Rent: ${formatINR(numHallRent)}` : 'Venue Rent: OFF (₹0)'}
+                </Badge>
+                <div className="flex items-center gap-1.5 border-l pl-2.5">
+                  <Switch
+                    id="venue-rent-toggle"
+                    checked={includeVenueRent}
+                    onCheckedChange={setIncludeVenueRent}
+                  />
+                  <Label
+                    htmlFor="venue-rent-toggle"
+                    className="cursor-pointer text-xs font-medium text-foreground select-none"
+                  >
+                    {includeVenueRent ? 'Rent Included' : 'Rent Excluded'}
+                  </Label>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -422,7 +481,7 @@ export function BanquetBookingDialog({
               </div>
 
               {/* Custom Occasion Name if selected */}
-              {eventName === 'Other' ? (
+              {eventName === 'Other' && (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-foreground">
                     Custom Occasion Name <span className="text-destructive">*</span>
@@ -435,13 +494,37 @@ export function BanquetBookingDialog({
                     required
                   />
                 </div>
-              ) : (
-                <div className="hidden lg:block">
-                  <div className="h-full rounded-lg bg-muted/40 p-2 text-[11px] text-muted-foreground flex items-center justify-center text-center">
-                    <span>Selected Hall: <strong className="text-foreground">{selectedHallObj?.name || '—'}</strong></span>
-                  </div>
-                </div>
               )}
+
+              {/* Hall / Venue Rent Field */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium text-foreground">
+                    Hall / Venue Rent (₹) {includeVenueRent && <span className="text-destructive">*</span>}
+                  </Label>
+                  {selectedHallObj && (
+                    <span className="text-[10px] text-muted-foreground">
+                      Base: {formatINR(selectedHallObj.baseRate)}
+                    </span>
+                  )}
+                </div>
+                {includeVenueRent ? (
+                  <Input
+                    type="number"
+                    min="0"
+                    value={hallRent}
+                    onChange={(e) => setHallRent(e.target.value)}
+                    placeholder="e.g. 25000"
+                    className="h-9 text-xs font-mono font-bold text-foreground"
+                    required={includeVenueRent}
+                  />
+                ) : (
+                  <div className="flex h-9 items-center justify-between rounded-md border border-dashed bg-muted/40 px-3 text-xs text-muted-foreground">
+                    <span>Rent Excluded</span>
+                    <span className="font-mono font-bold">₹0.00</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -536,132 +619,250 @@ export function BanquetBookingDialog({
                   className="h-9 text-xs"
                 />
               </div>
+
+              {/* Government ID Proof (Mandatory) */}
+              <div className="space-y-2 rounded-lg border bg-muted/30 p-3 sm:col-span-2 lg:col-span-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    Host Government ID Proof (Aadhaar / PAN / Passport) <span className="text-destructive">*</span>
+                  </Label>
+                  <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    Mandatory
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                  <div className="space-y-1 sm:col-span-1">
+                    <Select value={idType} onValueChange={(val: GovIdType) => setIdType(val)}>
+                      <SelectTrigger className="h-9 text-xs bg-background">
+                        <SelectValue placeholder="Select ID Type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GOV_ID_TYPES.map((t) => (
+                          <SelectItem key={t.value} value={t.value} className="text-xs">
+                            {t.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1 sm:col-span-2">
+                    <Input
+                      placeholder={GOV_ID_TYPES.find((t) => t.value === idType)?.placeholder || 'Enter ID number'}
+                      value={idNumber}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        if (idType === 'AADHAAR') {
+                          const digits = raw.replace(/\D/g, '').slice(0, 12)
+                          setIdNumber(digits)
+                        } else {
+                          setIdNumber(raw.toUpperCase())
+                        }
+                      }}
+                      className="h-9 text-xs font-mono font-medium uppercase bg-background"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Real-time validation message */}
+                {idNumber.length > 0 && (
+                  <div className="pt-0.5">
+                    {(() => {
+                      const check = validateGovId(idType, idNumber)
+                      if (check.valid) {
+                        return (
+                          <p className="text-[11px] font-medium text-emerald-600 flex items-center gap-1">
+                            ✓ Valid {GOV_ID_TYPES.find((t) => t.value === idType)?.label} ({check.formatted})
+                          </p>
+                        )
+                      }
+                      return (
+                        <p className="text-[11px] font-medium text-amber-600">
+                          {check.error}
+                        </p>
+                      )
+                    })()}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Section 3: Catering & Venue Pricing Breakdown */}
-          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 shadow-xs">
-            <div className="mb-3.5 flex items-center justify-between border-b border-emerald-500/20 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Utensils className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-900 dark:text-emerald-300">
-                  3. Catering &amp; Venue Pricing Details
-                </h3>
-              </div>
-              <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
-                Total Guests: <strong className="font-bold">{numGuests}</strong>
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-              {/* Hall Rent */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Hall / Venue Rent (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={hallRent}
-                  onChange={(e) => setHallRent(e.target.value)}
-                  className="h-9 text-xs font-mono font-medium"
-                />
-              </div>
-
-              {/* Food Package Name */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Catering Package Name
-                </Label>
-                <Input
-                  value={foodPackageName}
-                  onChange={(e) => setFoodPackageName(e.target.value)}
-                  placeholder="e.g. Royal Buffet / Veg Deluxe"
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              {/* Food Rate per Plate */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Food Rate (₹ / Plate)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={foodRatePerPlate}
-                  onChange={(e) => setFoodRatePerPlate(e.target.value)}
-                  className="h-9 text-xs font-mono font-medium"
-                />
-              </div>
-
-              {/* Food Subtotal Calculated */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Catering Total (₹) <span className="text-[10px] text-muted-foreground">({numGuests} × ₹{numFoodPerPlate})</span>
-                </Label>
-                <div className="flex h-9 items-center rounded-md border bg-muted/60 px-3 text-xs font-mono font-bold text-foreground">
-                  {formatINR(totalFood)}
-                </div>
-              </div>
-
-              {/* Decor Charges */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-medium text-foreground">
-                    Stage &amp; Decor Charges (₹)
-                  </Label>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
-                    <Switch checked={decorOn} onCheckedChange={setDecorOn} className="scale-75" aria-label="Decor on or off" />
+          {/* Section 3: Catering, Decor & Service Add-ons */}
+          <div className="space-y-3.5">
+            {/* Catering & Food Package Card with Toggle */}
+            <div
+              className={`rounded-xl border transition-all ${
+                includeCatering
+                  ? 'border-emerald-500/30 bg-emerald-500/5 shadow-xs'
+                  : 'border-border bg-muted/20 opacity-80'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Utensils
+                    className={`h-4 w-4 ${
+                      includeCatering ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
+                    }`}
+                  />
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+                      Catering &amp; Fooding Package
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      {includeCatering
+                        ? `In-house dining for ${numGuests} guest(s) @ ₹${numFoodPerPlate}/plate`
+                        : 'Catering turned off / external catering (₹0)'}
+                    </p>
                   </div>
                 </div>
-                <Input
-                  type="number"
-                  min="0"
-                  value={decorOn ? decorCharges : '0'}
-                  onChange={(e) => setDecorCharges(e.target.value)}
-                  disabled={!decorOn}
-                  className="h-9 text-xs font-mono font-medium"
-                />
+
+                <div className="flex items-center gap-3">
+                  <Badge
+                    variant={includeCatering ? 'default' : 'outline'}
+                    className={
+                      includeCatering
+                        ? 'bg-emerald-600 hover:bg-emerald-600 text-white text-[10px]'
+                        : 'text-muted-foreground text-[10px]'
+                    }
+                  >
+                    {includeCatering ? `Active · ${formatINR(totalFood)}` : 'OFF / No Food'}
+                  </Badge>
+                  <div className="flex items-center gap-1.5 border-l pl-3">
+                    <Switch
+                      id="catering-package-toggle"
+                      checked={includeCatering}
+                      onCheckedChange={setIncludeCatering}
+                    />
+                    <Label
+                      htmlFor="catering-package-toggle"
+                      className="cursor-pointer text-xs font-medium text-foreground select-none"
+                    >
+                      {includeCatering ? 'Included' : 'Excluded'}
+                    </Label>
+                  </div>
+                </div>
               </div>
 
-              {/* Extra / AV Services */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Sound, DJ &amp; AV / Extra (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={extraCharges}
-                  onChange={(e) => setExtraCharges(e.target.value)}
-                  className="h-9 text-xs font-mono font-medium"
-                />
+              {includeCatering ? (
+                <div className="p-4 grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-foreground">
+                      Catering Package Name
+                    </Label>
+                    <Input
+                      value={foodPackageName}
+                      onChange={(e) => setFoodPackageName(e.target.value)}
+                      placeholder="e.g. Royal Buffet / Veg Deluxe"
+                      className="h-9 text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-foreground">
+                      Food Rate (₹ / Plate)
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={foodRatePerPlate}
+                      onChange={(e) => setFoodRatePerPlate(e.target.value)}
+                      placeholder="e.g. 650"
+                      className="h-9 text-xs font-mono font-medium"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-foreground">
+                      Catering Subtotal <span className="text-[10px] text-muted-foreground">({numGuests} × ₹{numFoodPerPlate})</span>
+                    </Label>
+                    <div className="flex h-9 items-center justify-between rounded-md border bg-background/80 px-3 text-xs font-mono font-bold text-foreground">
+                      <span>Total Food:</span>
+                      <span className="text-emerald-700 dark:text-emerald-300">{formatINR(totalFood)}</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-4 py-3 text-xs text-muted-foreground italic bg-muted/30 flex items-center justify-between">
+                  <span>Catering is turned off (total food is ₹0). Client is managing external food or event has no dining package.</span>
+                  <Badge variant="outline" className="text-[10px] text-muted-foreground">₹0.00</Badge>
+                </div>
+              )}
+            </div>
+
+            {/* 3C. Stage Decor, Sound/AV & Discounts */}
+            <div className="rounded-xl border bg-card p-4 shadow-xs">
+              <div className="mb-3.5 flex items-center justify-between border-b pb-2.5">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+                    Decor, AV Services &amp; Discounts
+                  </h3>
+                </div>
               </div>
 
-              {/* Discount */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Discount / Concession (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={discount}
-                  onChange={(e) => setDiscount(e.target.value)}
-                  className="h-9 text-xs font-mono font-semibold text-emerald-600 dark:text-emerald-400"
-                />
-              </div>
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+                {/* Decor Charges */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium text-foreground">
+                      Stage &amp; Decor Charges (₹)
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
+                      <Switch checked={decorOn} onCheckedChange={setDecorOn} className="scale-75" aria-label="Decor on or off" />
+                    </div>
+                  </div>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={decorOn ? decorCharges : '0'}
+                    onChange={(e) => setDecorCharges(e.target.value)}
+                    disabled={!decorOn}
+                    className="h-9 text-xs font-mono font-medium"
+                  />
+                </div>
 
-              {/* Est Grand Total Card */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                  Est. Grand Total (₹)
-                </Label>
-                <div className="flex h-9 items-center justify-between rounded-md border border-emerald-500/40 bg-emerald-500/15 px-3 text-xs font-mono font-bold text-emerald-800 dark:text-emerald-200">
-                  <span>Grand Total:</span>
-                  <span className="text-sm">{formatINR(grandEstimated)}</span>
+                {/* Extra / AV Services */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-foreground">
+                    Sound, DJ &amp; Extra AV (₹)
+                  </Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={extraCharges}
+                    onChange={(e) => setExtraCharges(e.target.value)}
+                    className="h-9 text-xs font-mono font-medium"
+                  />
+                </div>
+
+                {/* Discount */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-foreground">
+                    Discount / Concession (₹)
+                  </Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={discount}
+                    onChange={(e) => setDiscount(e.target.value)}
+                    className="h-9 text-xs font-mono font-semibold text-emerald-600 dark:text-emerald-400"
+                  />
+                </div>
+
+                {/* Est Grand Total Card */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                    Est. Grand Total (₹)
+                  </Label>
+                  <div className="flex h-9 items-center justify-between rounded-md border border-emerald-500/40 bg-emerald-500/15 px-3 text-xs font-mono font-bold text-emerald-800 dark:text-emerald-200">
+                    <span>Grand Total:</span>
+                    <span className="text-sm">{formatINR(grandEstimated)}</span>
+                  </div>
                 </div>
               </div>
             </div>

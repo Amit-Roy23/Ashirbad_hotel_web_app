@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDateTime, formatDate, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDateTime, formatDate, exportCSV, printTableReport } from '@/lib/hotel-utils'
 import { computeGst, normalizeHalfRate, splitGst } from '@/lib/gst'
 import { triggerPrintFoodBill } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
@@ -39,6 +39,7 @@ import {
   SendHorizontal,
   PackageCheck,
 } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 export interface MenuItem {
   id: string
@@ -111,6 +112,7 @@ export function RestaurantTab({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [orderFilter, setOrderFilter] = useState('ALL') // ALL | PENDING | ROOM | DIRECT
   const [printOrder, setPrintOrder] = useState<FoodOrder | null>(null)
+  const [deleteTargetMenuItem, setDeleteTargetMenuItem] = useState<MenuItem | null>(null)
 
   // Order building state (POS)
   const [orderType, setOrderType] = useState<'ROOM' | 'DIRECT'>('ROOM')
@@ -204,7 +206,8 @@ export function RestaurantTab({
 
   const foodGst = useMemo(() => {
     const on = foodGstOn ?? settings.foodGstEnabled === 'true'
-    const applies = orderType === 'DIRECT' && on
+    // Food GST applies to walk-in and room-service orders (room food is a separate fooding bill)
+    const applies = on
     const tax = applies
       ? computeGst(cartTotal, normalizeHalfRate(settings.foodCgst), normalizeHalfRate(settings.foodSgst))
       : { cgst: 0, sgst: 0, total: 0 }
@@ -352,7 +355,7 @@ export function RestaurantTab({
             ? { bookingId: selectedBooking?.id, roomId: selectedBooking?.room.id }
             : {}),
           notes: orderNotes.trim() || undefined,
-          gstEnabled: orderType === 'DIRECT' ? foodGst.on : undefined,
+          gstEnabled: foodGst.on,
           items,
         }),
       })
@@ -427,16 +430,8 @@ export function RestaurantTab({
     }
   }
 
-  async function deleteMenuItem(id: string) {
-    if (!confirm('Delete this menu item?')) return
-    const targetItem = rawMenu.find((m) => m.id === id)
-    setRawMenu((prev) => prev.filter((m) => m.id !== id))
-    try {
-      await api(`/api/menu?id=${id}`, { method: 'DELETE' })
-    } catch (e) {
-      if (targetItem) setRawMenu((prev) => [...prev, targetItem])
-      alert(e instanceof Error ? e.message : 'Failed to delete item')
-    }
+  function deleteMenuItem(item: MenuItem) {
+    setDeleteTargetMenuItem(item)
   }
 
   const pendingOrders = orders.filter((o) => o.status === 'PENDING')
@@ -461,10 +456,12 @@ export function RestaurantTab({
     )
   }
 
+  const orderHeaders = ['Time', 'Type', 'Room / Guest', 'Items', 'Total', 'Status', 'Taken By']
+
   function exportOrders() {
     exportCSV(
       'food-orders.csv',
-      ['Time', 'Type', 'Room / Guest', 'Items', 'Total', 'Status', 'Taken By'],
+      orderHeaders,
       filteredOrders.map((o) => [
         formatDateTime(o.createdAt),
         o.room ? 'Room Service' : 'Direct / Parcel',
@@ -474,6 +471,24 @@ export function RestaurantTab({
         o.status,
         o.createdBy || '',
       ])
+    )
+  }
+
+  function printOrders() {
+    const totalAmount = filteredOrders.reduce((sum, o) => sum + o.total, 0)
+    printTableReport(
+      'Food & Restaurant Orders Report',
+      orderHeaders,
+      filteredOrders.map((o) => [
+        formatDateTime(o.createdAt),
+        o.room ? 'Room Service' : 'Direct / Parcel',
+        o.room ? `Room ${o.room.number} (${o.booking?.guest?.name || '-'})` : 'Direct Takeaway',
+        o.items.map((it) => `${it.name} x${it.quantity}`).join('; '),
+        formatINR(o.total),
+        o.status,
+        o.createdBy || '',
+      ]),
+      `Total Orders: ${filteredOrders.length} · Total Value: ${formatINR(totalAmount)}`
     )
   }
 
@@ -910,8 +925,7 @@ export function RestaurantTab({
                       <span className="font-bold text-foreground">{cartItemCount} item(s)</span>
                     </div>
                     {/* Food bill GST (CGST + SGST) with on/off */}
-                    {orderType === 'DIRECT' ? (
-                      <div className="mt-2 space-y-1 border-t border-emerald-200 pt-2 text-xs dark:border-emerald-900">
+                                          <div className="mt-2 space-y-1 border-t border-emerald-200 pt-2 text-xs dark:border-emerald-900">
                         <div className="flex items-center justify-between">
                           <span className="font-medium text-foreground">GST on food bill</span>
                           <div className="flex items-center gap-1.5">
@@ -936,11 +950,6 @@ export function RestaurantTab({
                           </>
                         )}
                       </div>
-                    ) : (
-                      <p className="mt-2 border-t border-emerald-200 pt-2 text-[11px] text-muted-foreground dark:border-emerald-900">
-                        Room service: CGST / SGST is applied on the room bill at checkout.
-                      </p>
-                    )}
                     <div className="mt-1 flex items-center justify-between font-bold text-base">
                       <span>Total Amount:</span>
                       <span className="text-lg text-emerald-700 dark:text-emerald-400">
@@ -984,9 +993,14 @@ export function RestaurantTab({
                 <SelectItem value="DIRECT">Direct / Takeaway</SelectItem>
               </SelectContent>
             </Select>
-            <Button variant="outline" size="sm" className="ml-auto gap-1" onClick={exportOrders}>
-              <Download className="h-3.5 w-3.5" /> Export
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="outline" size="sm" className="gap-1" onClick={exportOrders}>
+                <Download className="h-3.5 w-3.5" /> Export
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1" onClick={printOrders}>
+                <Printer className="h-3.5 w-3.5" /> Print
+              </Button>
+            </div>
           </div>
 
           {filteredOrders.length === 0 && (
@@ -1175,7 +1189,7 @@ export function RestaurantTab({
                               )}
                             </Button>
                             <Switch checked={item.available} onCheckedChange={() => toggleAvailability(item)} title="Toggle availability" />
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => deleteMenuItem(item.id)}>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => deleteMenuItem(item)}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           </div>
@@ -1212,7 +1226,10 @@ export function RestaurantTab({
                     <p className="text-xs text-muted-foreground">Ph: {settings.restaurantPhone || settings.hotelPhone}</p>
                   )}
                   {(settings.restaurantGstin || settings.hotelGstin) && (
-                    <p className="text-xs text-muted-foreground">GSTIN / FSSAI: {settings.restaurantGstin || settings.hotelGstin}</p>
+                    <p className="text-xs text-muted-foreground">GSTIN: {settings.restaurantGstin || settings.hotelGstin}</p>
+                  )}
+                  {settings.restaurantFssai && (
+                    <p className="text-xs text-muted-foreground">FSSAI No: {settings.restaurantFssai}</p>
                   )}
                   <p className="mt-1.5 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
                     KITCHEN ORDER TICKET &amp; RECEIPT
@@ -1305,6 +1322,23 @@ export function RestaurantTab({
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Menu Item Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetMenuItem}
+        onOpenChange={(open) => !open && setDeleteTargetMenuItem(null)}
+        title="Delete Menu Item"
+        itemType="Menu Item"
+        itemName={deleteTargetMenuItem ? `${deleteTargetMenuItem.name} (${formatINR(deleteTargetMenuItem.price)})` : ''}
+        warningNotice="This will permanently delete this item from the restaurant menu. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetMenuItem) return
+          await api(`/api/menu?id=${deleteTargetMenuItem.id}`, { method: 'DELETE', adminPin })
+          setRawMenu((prev) => prev.filter((m) => m.id !== deleteTargetMenuItem.id))
+          setDeleteTargetMenuItem(null)
+          onDataChanged()
+        }}
+      />
     </div>
   )
 }

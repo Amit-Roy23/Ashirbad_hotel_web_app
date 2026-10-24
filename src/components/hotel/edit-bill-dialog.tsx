@@ -85,7 +85,6 @@ export function EditBillDialog({
   const [roomDescription, setRoomDescription] = useState('')
   const [cgst, setCgst] = useState(2.5)
   const [sgst, setSgst] = useState(2.5)
-  const [adminPin, setAdminPin] = useState('')
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
   const [payCash, setPayCash] = useState('0')
@@ -108,7 +107,6 @@ export function EditBillDialog({
       const split = splitGst(bill)
       setCgst(split.cgstPercent === 0 || split.cgstPercent === 2.5 ? split.cgstPercent : 2.5)
       setSgst(split.sgstPercent === 0 || split.sgstPercent === 2.5 ? split.sgstPercent : 2.5)
-      setAdminPin('')
       setExtraCharges(String(bill.extraCharges || 0))
       setDiscount(String(bill.discount || 0))
       setPayCash(String(bill.payCash || 0))
@@ -136,18 +134,19 @@ export function EditBillDialog({
     const disc = num(discount)
     const foodTotal = bill.foodTotal || 0
 
-    const taxable = Math.max(0, customerAmount + foodTotal + extra - disc)
+    // Food (settled separately) is not taxed; CGST and SGST apply to the room amount
+    const taxable = Math.max(0, customerAmount + extra - disc)
     const tax = computeGst(taxable, cgst, sgst)
     const gstAmount = tax.total
     const previousDue = bill.previousDue || 0
-    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + previousDue) * 100) / 100)
+    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + foodTotal + previousDue) * 100) / 100)
     const advanceApplied = Math.min(bill.booking?.advance || 0, grandTotal)
     const payable = Math.max(0, Math.round((grandTotal - advanceApplied - (bill.carriedForward || 0)) * 100) / 100)
 
-    const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
+    const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
     // Internal GST = the GST charged on the invoice (custom amount for corporate bills)
     const internalGst = gstAmount
-    const internalTotal = Math.round((internalTaxable + internalGst) * 100) / 100
+    const internalTotal = Math.round((internalTaxable + internalGst + foodTotal) * 100) / 100
 
     const paid = num(payCash) + num(payUpi) + num(payCard)
     const balance = Math.max(0, Math.round((payable - paid) * 100) / 100)
@@ -174,6 +173,8 @@ export function EditBillDialog({
       balance,
     }
   }, [bill, billedRoomTotal, cgst, sgst, extraCharges, discount, payCash, payUpi, payCard])
+
+  // Payment values are preserved from database or edited manually by user
 
   const isCustom = useMemo(() => {
     if (!bill || !calc) return false
@@ -220,10 +221,6 @@ export function EditBillDialog({
       setError(`Payment split (₹${calc.paid}) cannot exceed payable amount (₹${calc.payable})`)
       return
     }
-    if (calc.balance > 0.01 && !adminPin.trim()) {
-      setError(`Full payment required: adjust the payment split to cover the outstanding ${formatINR(calc.balance)}, or enter the Admin PIN to leave a balance due.`)
-      return
-    }
 
     setSaving(true)
     setError('')
@@ -239,7 +236,6 @@ export function EditBillDialog({
           roomDescription: roomDescription.trim() || undefined,
           cgstPercent: cgst,
           sgstPercent: sgst,
-          adminPin: adminPin.trim() || undefined,
           extraCharges: num(extraCharges),
           discount: num(discount),
           payCash: num(payCash),
@@ -484,6 +480,17 @@ export function EditBillDialog({
                   <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CARD')}>
                     All Card
                   </Button>
+                  {calc.balance > 0.01 && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7 px-2 text-[11px] font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950 dark:text-emerald-200"
+                      onClick={() => setPayCash(String(Math.round((num(payCash) + calc.balance) * 100) / 100))}
+                    >
+                      + Settle in Cash
+                    </Button>
+                  )}
                 </div>
                 <span className={calc.balance > 0.01 ? 'font-bold text-amber-600 text-xs' : 'font-bold text-emerald-700 dark:text-emerald-400 text-xs'}>
                   {calc.balance > 0.01 ? `Outstanding: ${formatINR(calc.balance)}` : '✓ Fully paid'}
@@ -491,23 +498,18 @@ export function EditBillDialog({
               </div>
             </div>
 
-            {calc.balance > 0.01 && (
-              <Input
-                type="password"
-                inputMode="numeric"
-                placeholder="Admin PIN (allow balance due)"
-                value={adminPin}
-                onChange={(e) => setAdminPin(e.target.value)}
-                autoComplete="off"
-                className="h-9 text-xs"
-              />
-            )}
 
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
+            {calc.balance > 0.01 && (
+              <div className="rounded-md border border-amber-400 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+                <span className="font-bold">⚠️ Balance Due:</span> {formatINR(calc.balance)} outstanding will be updated on the invoice and recorded on {bill.booking?.guest?.name}&apos;s profile.
+              </div>
+            )}
+
             <Button className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs" onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-              Save &amp; Recalculate Bill
+              {calc.balance > 0.01 ? `Save Changes (Due: ${formatINR(calc.balance)})` : 'Save & Recalculate Bill'}
             </Button>
           </div>
         )}

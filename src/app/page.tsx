@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 import { Dashboard } from '@/components/hotel/dashboard'
 import { RoomsTab } from '@/components/hotel/rooms-tab'
@@ -40,6 +40,8 @@ import {
   LogIn,
   LogOut,
   ShieldCheck,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -86,6 +88,48 @@ function Shell() {
   const [moreOpen, setMoreOpen] = useState(false)
   const [hotelName, setHotelName] = useState('Ashirbad Lodge')
   const [navTarget, setNavTarget] = useState<NavTarget | null>(null)
+  const tabsContainerRef = useRef<HTMLDivElement>(null)
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+
+  const checkScroll = useCallback(() => {
+    const el = tabsContainerRef.current
+    if (!el) return
+    const { scrollLeft, scrollWidth, clientWidth } = el
+    setCanScrollLeft(scrollLeft > 4)
+    setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 4)
+  }, [])
+
+  useEffect(() => {
+    const el = tabsContainerRef.current
+    if (!el) return
+    checkScroll()
+    el.addEventListener('scroll', checkScroll, { passive: true })
+    window.addEventListener('resize', checkScroll)
+    return () => {
+      el.removeEventListener('scroll', checkScroll)
+      window.removeEventListener('resize', checkScroll)
+    }
+  }, [checkScroll])
+
+  useEffect(() => {
+    const el = tabsContainerRef.current
+    if (!el) return
+    const activeBtn = el.querySelector(`[data-tab-id="${tab}"]`) as HTMLElement | null
+    if (activeBtn) {
+      activeBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+    }
+  }, [tab])
+
+  const scrollTabs = (direction: 'left' | 'right') => {
+    if (tabsContainerRef.current) {
+      const scrollAmount = 240
+      tabsContainerRef.current.scrollBy({
+        left: direction === 'left' ? -scrollAmount : scrollAmount,
+        behavior: 'smooth',
+      })
+    }
+  }
 
   // Global data refresh signal: any module change triggers refresh of all tabs
   const onDataChanged = useCallback(() => {
@@ -244,26 +288,54 @@ function Shell() {
           </div>
         </div>
 
-        {/* Desktop tabs */}
+        {/* Desktop tabs with scroll arrows */}
         <nav className="hidden border-t sm:block" aria-label="Main navigation">
-          <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 no-scrollbar">
-            {TABS.map((t) => {
-              const Icon = t.icon
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
-                    tab === t.id
-                      ? 'border-emerald-600 text-emerald-700 dark:border-emerald-400 dark:text-emerald-400'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  {t.label}
-                </button>
-              )
-            })}
+          <div className="mx-auto flex max-w-6xl items-center px-2">
+            <button
+              type="button"
+              onClick={() => scrollTabs('left')}
+              disabled={!canScrollLeft}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-20"
+              aria-label="Scroll navigation left"
+              title="Scroll left"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+
+            <div
+              ref={tabsContainerRef}
+              className="flex flex-1 items-center gap-1 overflow-x-auto px-1.5 scroll-smooth no-scrollbar"
+            >
+              {TABS.map((t) => {
+                const Icon = t.icon
+                return (
+                  <button
+                    key={t.id}
+                    data-tab-id={t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
+                      tab === t.id
+                        ? 'border-emerald-600 text-emerald-700 dark:border-emerald-400 dark:text-emerald-400'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {t.label}
+                  </button>
+                )
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => scrollTabs('right')}
+              disabled={!canScrollRight}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-20"
+              aria-label="Scroll navigation right"
+              title="Scroll right"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
         </nav>
       </header>

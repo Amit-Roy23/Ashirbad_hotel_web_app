@@ -13,12 +13,13 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV, printTableReport } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
 import { Banknote, Smartphone, CreditCard, Loader2, Wallet, Trash2, Receipt, Printer } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface PaymentRow {
   id: string
@@ -90,6 +91,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
   const [refInfo, setRefInfo] = useState<Record<string, { phone?: string; room?: string; name?: string }>>({})
   const [loading, setLoading] = useState(true)
   const [lastBill, setLastBill] = useState<Bill | null>(null)
+  const [deleteTargetPayment, setDeleteTargetPayment] = useState<PaymentRow | null>(null)
 
   const [search, setSearch] = useState('')
   const [channel, setChannel] = useState('ALL')
@@ -221,46 +223,31 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'date')
   const { paged, controls } = usePagination(sorted as unknown as PaymentRow[], 10)
 
+  const paymentHeaders = ['Date', 'Source', 'Reference', 'Guest', 'Detail', 'Cash', 'UPI', 'Card', 'Total']
+
   function doExport() {
     exportCSV(
       'payments.csv',
-      ['Date', 'Source', 'Reference', 'Guest', 'Detail', 'Cash', 'UPI', 'Card', 'Total'],
+      paymentHeaders,
       (filtered as unknown as PaymentRow[]).map((r) => [
         formatDateTime(r.date), r.source, r.ref, r.guest, r.detail, r.cash, r.upi, r.card, r.amount,
       ])
     )
   }
 
-  async function handleDeletePayment(row: PaymentRow) {
-    const isAdv = row.source === 'ADVANCE'
-    const isBill = row.source === 'BILL'
-    const isOrder = row.source === 'ORDER'
-    const cleanId = row.id.replace(/^(bill|order|adv)-/, '')
+  function doPrint() {
+    printTableReport(
+      'Payments & Collections Report',
+      paymentHeaders,
+      (filtered as unknown as PaymentRow[]).map((r) => [
+        formatDateTime(r.date), r.source, r.ref, r.guest, r.detail, formatINR(r.cash), formatINR(r.upi), formatINR(r.card), formatINR(r.amount),
+      ]),
+      `Total Collection: ${formatINR(totals.total)} (${filtered.length} entries)`
+    )
+  }
 
-    const label = isBill ? `Bill ${row.ref}` : isOrder ? `Order ${row.ref}` : `Advance (${row.guest})`
-    if (!confirm(`Are you sure you want to delete ${label} (₹${row.amount})?`)) return
-
-    try {
-      const endpoint = isBill
-        ? `/api/bills?id=${cleanId}`
-        : isOrder
-          ? `/api/orders?id=${cleanId}`
-          : `/api/ledger?id=${cleanId}`
-
-      const res = await apiAs<{ success?: boolean; error?: string }>(
-        endpoint,
-        getCachedUser(),
-        { method: 'DELETE' }
-      )
-      if (res && res.error) {
-        alert(res.error)
-      } else {
-        await load()
-        onDataChanged?.()
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Delete failed')
-    }
+  function handleDeletePayment(row: PaymentRow) {
+    setDeleteTargetPayment(row)
   }
 
   function resetFilters() {
@@ -364,6 +351,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
         }}
         onReset={resetFilters}
         onExport={doExport}
+        onPrint={doPrint}
       >
         <div className="flex items-center gap-1.5">
           <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="From date" />
@@ -499,6 +487,39 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Admin PIN Protected Delete Payment Record Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetPayment}
+        onOpenChange={(open) => !open && setDeleteTargetPayment(null)}
+        title="Delete Payment Record"
+        itemType="Payment"
+        itemName={deleteTargetPayment ? `${deleteTargetPayment.source} - ${deleteTargetPayment.ref} (${formatINR(deleteTargetPayment.amount)}) for ${deleteTargetPayment.guest}` : ''}
+        warningNotice="Deleting this payment removes associated invoice or ledger entries. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetPayment) return
+          const isBill = deleteTargetPayment.source === 'BILL'
+          const isOrder = deleteTargetPayment.source === 'ORDER'
+          const cleanId = deleteTargetPayment.id.replace(/^(bill|order|adv)-/, '')
+          const endpoint = isBill
+            ? `/api/bills?id=${cleanId}`
+            : isOrder
+              ? `/api/orders?id=${cleanId}`
+              : `/api/ledger?id=${cleanId}`
+
+          const res = await apiAs<{ success?: boolean; error?: string }>(
+            endpoint,
+            getCachedUser(),
+            { method: 'DELETE', adminPin }
+          )
+          if (res && res.error) {
+            throw new Error(res.error)
+          }
+          setDeleteTargetPayment(null)
+          await load()
+          onDataChanged?.()
+        }}
+      />
     </div>
   )
 }

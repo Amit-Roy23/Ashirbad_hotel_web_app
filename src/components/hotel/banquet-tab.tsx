@@ -30,7 +30,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, todayStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
 import { splitGst } from '@/lib/gst'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
@@ -59,8 +59,10 @@ import {
   Eye,
   CheckCircle2,
   XCircle,
+  Ban,
   Wallet,
 } from 'lucide-react'
+import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface BanquetTabProps {
   refreshKey: number
@@ -87,6 +89,14 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   // Dialog states
   const [bookingDialogOpen, setBookingDialogOpen] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<BanquetBooking | null>(null)
+  const [deleteTargetBanquetBooking, setDeleteTargetBanquetBooking] = useState<BanquetBooking | null>(null)
+  const [deleteTargetBanquetBill, setDeleteTargetBanquetBill] = useState<BanquetBill | null>(null)
+  const [cancelTargetBooking, setCancelTargetBooking] = useState<BanquetBooking | null>(null)
+  const [cancelReason, setCancelReason] = useState('Client requested cancellation')
+  const [cancelRefundAmount, setCancelRefundAmount] = useState('0')
+  const [cancelRefundMethod, setCancelRefundMethod] = useState('CASH')
+  const [cancelRefundNote, setCancelRefundNote] = useState('')
+  const [cancelBusy, setCancelBusy] = useState(false)
 
   const [billDialogOpen, setBillDialogOpen] = useState(false)
   const [billingBooking, setBillingBooking] = useState<BanquetBooking | null>(null)
@@ -174,27 +184,54 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   }
 
   // Delete Handlers
-  async function handleDeleteBooking(b: BanquetBooking) {
-    if (!confirm(`Are you sure you want to delete booking ${b.bookingNumber} (${b.customerName})?`)) return
-    try {
-      await apiAs(`/api/banquet-bookings?id=${b.id}`, getCachedUser(), { method: 'DELETE' })
-      toast({ variant: 'success', title: 'Deleted', description: 'Banquet booking deleted.' })
-      loadData()
-      onDataChanged()
-    } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Could not delete booking' })
-    }
+  function handleDeleteBooking(b: BanquetBooking) {
+    setDeleteTargetBanquetBooking(b)
   }
 
-  async function handleDeleteBill(b: BanquetBill) {
-    if (!confirm(`Are you sure you want to delete banquet invoice ${b.billNumber}?`)) return
+  function handleDeleteBill(b: BanquetBill) {
+    setDeleteTargetBanquetBill(b)
+  }
+
+  // Cancel Booking Handlers
+  function handleOpenCancel(b: BanquetBooking) {
+    setCancelTargetBooking(b)
+    setCancelReason('Client requested cancellation')
+    setCancelRefundAmount(String(b.advancePaid || 0))
+    setCancelRefundMethod('CASH')
+    setCancelRefundNote('')
+  }
+
+  async function handleConfirmCancel() {
+    if (!cancelTargetBooking) return
+    setCancelBusy(true)
     try {
-      await apiAs(`/api/banquet-bills?id=${b.id}`, getCachedUser(), { method: 'DELETE' })
-      toast({ variant: 'success', title: 'Deleted', description: 'Banquet invoice deleted.' })
+      await apiAs('/api/banquet-bookings', getCachedUser(), {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'cancel',
+          id: cancelTargetBooking.id,
+          reason: cancelReason,
+          refundAmount: parseFloat(cancelRefundAmount) || 0,
+          refundMethod: cancelRefundMethod,
+          refundNote: cancelRefundNote,
+        }),
+      })
+      toast({
+        variant: 'success',
+        title: 'Banquet Booking Cancelled',
+        description: `Booking ${cancelTargetBooking.bookingNumber} (${cancelTargetBooking.customerName}) has been cancelled and hall slot freed.`,
+      })
+      setCancelTargetBooking(null)
       loadData()
       onDataChanged()
-    } catch (e) {
-      toast({ variant: 'destructive', title: 'Error', description: e instanceof Error ? e.message : 'Could not delete banquet invoice' })
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Cancellation Failed',
+        description: err instanceof Error ? err.message : 'Could not cancel booking',
+      })
+    } finally {
+      setCancelBusy(false)
     }
   }
 
@@ -436,6 +473,17 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       >
                         <Edit className="mr-1 h-3 w-3" /> Edit
                       </Button>
+                      {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 border-red-200 dark:border-red-900"
+                          onClick={() => handleOpenCancel(b)}
+                          title="Cancel Booking"
+                        >
+                          <Ban className="mr-1 h-3 w-3" /> Cancel
+                        </Button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -483,8 +531,18 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                             setSelectedBooking(b)
                             setBookingDialogOpen(true)
                           }}
+                          title="Edit Booking"
                         >
                           <Edit className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          onClick={() => handleOpenCancel(b)}
+                          title="Cancel Booking"
+                        >
+                          <Ban className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </div>
@@ -541,10 +599,11 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               size="sm"
               variant="outline"
               className="gap-1 text-xs"
-              onClick={() =>
+              onClick={() => {
+                const headers = ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
                 exportCSV(
                   'banquet_bookings.csv',
-                  ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status'],
+                  headers,
                   filteredBookings.map((b) => [
                     b.bookingNumber,
                     formatDate(b.eventDate),
@@ -562,9 +621,41 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     b.paymentStatus,
                   ])
                 )
-              }
+              }}
             >
               <Download className="h-3.5 w-3.5" /> Export
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1 text-xs"
+              onClick={() => {
+                const headers = ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
+                printTableReport(
+                  'Banquet Bookings Report',
+                  headers,
+                  filteredBookings.map((b) => [
+                    b.bookingNumber,
+                    formatDate(b.eventDate),
+                    b.slot,
+                    b.eventName,
+                    b.hall?.name || '',
+                    b.customerName,
+                    b.customerPhone,
+                    b.guestCount,
+                    formatINR(b.hallRent),
+                    formatINR(b.foodTotal),
+                    formatINR(b.totalEstimated),
+                    formatINR(b.advancePaid),
+                    b.status,
+                    b.paymentStatus,
+                  ]),
+                  `${filteredBookings.length} banquet bookings listed`
+                )
+              }}
+            >
+              <Printer className="h-3.5 w-3.5" /> Print
             </Button>
           </div>
 
@@ -593,7 +684,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                   </TableRow>
                 ) : (
                   filteredBookings.map((b) => (
-                    <TableRow key={b.id}>
+                    <TableRow key={b.id} className={b.status === 'CANCELLED' ? 'bg-muted/20 opacity-80' : ''}>
                       <TableCell className="text-xs font-semibold">
                         {b.bookingNumber}
                         <div className="text-[10px] text-muted-foreground">{formatDate(b.createdAt)}</div>
@@ -616,12 +707,26 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                         {formatINR(b.advancePaid)}
                       </TableCell>
                       <TableCell className="text-xs">
-                        <Badge
-                          variant={b.status === 'CONFIRMED' ? 'default' : 'outline'}
-                          className={b.status === 'CONFIRMED' ? 'bg-emerald-600' : ''}
-                        >
-                          {b.status}
-                        </Badge>
+                        {b.status === 'CONFIRMED' && (
+                          <Badge className="bg-emerald-600 text-white font-semibold">CONFIRMED</Badge>
+                        )}
+                        {b.status === 'CANCELLED' && (
+                          <Badge variant="destructive" className="bg-red-500/15 text-red-700 border-red-300 dark:bg-red-950/40 dark:text-red-400 dark:border-red-800 font-semibold">
+                            CANCELLED
+                          </Badge>
+                        )}
+                        {b.status === 'COMPLETED' && (
+                          <Badge variant="secondary" className="font-semibold">COMPLETED</Badge>
+                        )}
+                        {b.status === 'IN_PROGRESS' && (
+                          <Badge className="bg-amber-600 text-white font-semibold">IN PROGRESS</Badge>
+                        )}
+                        {b.status === 'ENQUIRY' && (
+                          <Badge variant="outline" className="text-muted-foreground font-semibold">ENQUIRY</Badge>
+                        )}
+                        {!['CONFIRMED', 'CANCELLED', 'COMPLETED', 'IN_PROGRESS', 'ENQUIRY'].includes(b.status) && (
+                          <Badge variant="outline">{b.status}</Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-1">
@@ -634,7 +739,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                               setEditingBill(null)
                               setBillDialogOpen(true)
                             }}
-                            title={b.status === 'COMPLETED' ? 'Already invoiced — see Billing & Invoices' : 'Generate Final Bill'}
+                            title={b.status === 'COMPLETED' ? 'Already invoiced — see Billing & Invoices' : b.status === 'CANCELLED' ? 'Booking is cancelled' : 'Generate Final Bill'}
                           >
                             <Receipt className="h-3 w-3" /> Bill
                           </Button>
@@ -650,6 +755,17 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                           >
                             <Edit className="h-3.5 w-3.5" />
                           </Button>
+                          {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                              onClick={() => handleOpenCancel(b)}
+                              title="Cancel Booking"
+                            >
+                              <Ban className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -686,10 +802,11 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               size="sm"
               variant="outline"
               className="gap-1 text-xs"
-              onClick={() =>
+              onClick={() => {
+                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'CGST', 'SGST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
                 exportCSV(
                   'banquet_invoices.csv',
-                  ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'CGST', 'SGST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status'],
+                  headers,
                   filteredBills.map((b) => {
                     const paid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0) + (b.payBank || 0)
                     const bal = Math.max(0, b.grandTotal - paid)
@@ -711,9 +828,45 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     ]
                   })
                 )
-              }
+              }}
             >
               <Download className="h-3.5 w-3.5" /> Export CSV
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1 text-xs"
+              onClick={() => {
+                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'CGST', 'SGST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
+                printTableReport(
+                  'Banquet Invoices Report',
+                  headers,
+                  filteredBills.map((b) => {
+                    const paid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0) + (b.payBank || 0)
+                    const bal = Math.max(0, b.grandTotal - paid)
+                    return [
+                      b.billNumber,
+                      formatDateTime(b.createdAt),
+                      b.customerName,
+                      b.customerPhone,
+                      b.eventName,
+                      b.hallName,
+                      formatINR(b.taxableAmount),
+                      formatINR(splitGst({ ...b, actualGst: b.gstAmount }).cgst),
+                      formatINR(splitGst({ ...b, actualGst: b.gstAmount }).sgst),
+                      formatINR(b.grandTotal),
+                      formatINR(b.advanceApplied),
+                      formatINR(paid - b.advanceApplied),
+                      formatINR(bal),
+                      b.paymentStatus,
+                    ]
+                  }),
+                  `${filteredBills.length} banquet invoices listed`
+                )
+              }}
+            >
+              <Printer className="h-3.5 w-3.5" /> Print
             </Button>
           </div>
 
@@ -1011,6 +1164,219 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Cancel Banquet Booking Dialog */}
+      <Dialog open={!!cancelTargetBooking} onOpenChange={(open) => !open && setCancelTargetBooking(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base text-red-600 dark:text-red-400">
+              <XCircle className="h-5 w-5" /> Cancel Banquet Booking
+            </DialogTitle>
+            <DialogDescription>
+              Cancel reservation and release the banquet hall date/slot.
+            </DialogDescription>
+          </DialogHeader>
+
+          {cancelTargetBooking && (
+            <div className="space-y-3 pt-1 text-xs">
+              {/* Booking Summary Card */}
+              <div className="rounded-lg border bg-muted/40 p-3 space-y-1">
+                <div className="flex justify-between items-center font-bold text-sm">
+                  <span>{cancelTargetBooking.eventName}</span>
+                  <Badge variant="outline">{cancelTargetBooking.bookingNumber}</Badge>
+                </div>
+                <p className="text-muted-foreground">
+                  Host: <b>{cancelTargetBooking.customerName}</b> ({cancelTargetBooking.customerPhone})
+                </p>
+                <div className="flex justify-between text-muted-foreground pt-1 border-t border-dashed">
+                  <span>Venue: {cancelTargetBooking.hall?.name} ({cancelTargetBooking.slot})</span>
+                  <span className="font-semibold text-foreground">{formatDate(cancelTargetBooking.eventDate)}</span>
+                </div>
+                <div className="flex justify-between pt-1">
+                  <span>Estimated Total: <b>{formatINR(cancelTargetBooking.totalEstimated)}</b></span>
+                  <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                    Advance Paid: {formatINR(cancelTargetBooking.advancePaid)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Cancellation Reason */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Cancellation Reason *</Label>
+                <div className="grid grid-cols-2 gap-1.5 pb-1">
+                  {[
+                    'Client requested cancellation',
+                    'Date postponed / rescheduled',
+                    'Personal emergency',
+                    'Duplicate / test booking',
+                  ].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className={`text-[11px] px-2 py-1 rounded border text-left truncate transition-colors ${
+                        cancelReason === preset
+                          ? 'border-red-500 bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800 font-medium'
+                          : 'bg-muted/50 hover:bg-muted text-muted-foreground'
+                      }`}
+                      onClick={() => setCancelReason(preset)}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+                <Input
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="Specify reason..."
+                  className="h-8 text-xs"
+                  required
+                />
+              </div>
+
+              {/* Advance Refund Section if advance was paid */}
+              {Number(cancelTargetBooking.advancePaid) > 0 && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold text-amber-900 dark:text-amber-200">
+                      Advance Refund Settlement
+                    </Label>
+                    <span className="text-[11px] font-bold text-amber-800 dark:text-amber-300">
+                      Advance Held: {formatINR(cancelTargetBooking.advancePaid)}
+                    </span>
+                  </div>
+
+                  <div className="flex gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] px-2"
+                      onClick={() => setCancelRefundAmount(String(cancelTargetBooking.advancePaid))}
+                    >
+                      Full Refund ({formatINR(cancelTargetBooking.advancePaid)})
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] px-2"
+                      onClick={() => setCancelRefundAmount(String(Math.round(Number(cancelTargetBooking.advancePaid) / 2)))}
+                    >
+                      50% Refund
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] px-2"
+                      onClick={() => setCancelRefundAmount('0')}
+                    >
+                      No Refund (Forfeited)
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Refund Amount (₹)</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        max={cancelTargetBooking.advancePaid}
+                        value={cancelRefundAmount}
+                        onChange={(e) => setCancelRefundAmount(e.target.value)}
+                        className="h-8 text-xs bg-white dark:bg-slate-900"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Refund Method</Label>
+                      <Select value={cancelRefundMethod} onValueChange={(val) => setCancelRefundMethod(val as any)}>
+                        <SelectTrigger className="h-8 text-xs bg-white dark:bg-slate-900">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="CASH">Cash</SelectItem>
+                          <SelectItem value="UPI">UPI / QR</SelectItem>
+                          <SelectItem value="CARD">Card</SelectItem>
+                          <SelectItem value="BANK">Bank Transfer</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">Refund / Policy Remarks</Label>
+                    <Input
+                      value={cancelRefundNote}
+                      onChange={(e) => setCancelRefundNote(e.target.value)}
+                      placeholder="e.g. Deducted cancellation charge per hotel policy"
+                      className="h-8 text-xs bg-white dark:bg-slate-900"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCancelTargetBooking(null)}
+                  disabled={cancelBusy}
+                >
+                  Keep Booking
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleConfirmCancel}
+                  disabled={cancelBusy || !cancelReason.trim()}
+                  className="gap-1 font-semibold"
+                >
+                  {cancelBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  Confirm Cancellation
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Admin PIN Protected Delete Banquet Booking Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetBanquetBooking}
+        onOpenChange={(open) => !open && setDeleteTargetBanquetBooking(null)}
+        title="Delete Banquet Booking"
+        itemType="Banquet Booking"
+        itemName={deleteTargetBanquetBooking ? `Booking ${deleteTargetBanquetBooking.bookingNumber} (${deleteTargetBanquetBooking.customerName}) - ${deleteTargetBanquetBooking.eventName}` : ''}
+        warningNotice="Deleting this booking permanently deletes related bills and ledger records. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetBanquetBooking) return
+          await apiAs(`/api/banquet-bookings?id=${deleteTargetBanquetBooking.id}`, getCachedUser(), { method: 'DELETE', adminPin })
+          toast({ variant: 'success', title: 'Deleted', description: 'Banquet booking deleted.' })
+          setDeleteTargetBanquetBooking(null)
+          loadData()
+          onDataChanged()
+        }}
+      />
+
+      {/* Admin PIN Protected Delete Banquet Invoice Dialog */}
+      <AdminDeleteDialog
+        open={!!deleteTargetBanquetBill}
+        onOpenChange={(open) => !open && setDeleteTargetBanquetBill(null)}
+        title="Delete Banquet Invoice"
+        itemType="Banquet Invoice"
+        itemName={deleteTargetBanquetBill ? `Invoice ${deleteTargetBanquetBill.billNumber} (${formatINR(deleteTargetBanquetBill.grandTotal)}) for ${deleteTargetBanquetBill.customerName}` : ''}
+        warningNotice="Deleting a banquet invoice deletes associated income ledger records. Admin PIN is required."
+        onConfirm={async (adminPin) => {
+          if (!deleteTargetBanquetBill) return
+          await apiAs(`/api/banquet-bills?id=${deleteTargetBanquetBill.id}`, getCachedUser(), { method: 'DELETE', adminPin })
+          toast({ variant: 'success', title: 'Deleted', description: 'Banquet invoice deleted.' })
+          setDeleteTargetBanquetBill(null)
+          loadData()
+          onDataChanged()
+        }}
+      />
     </div>
   )
 }

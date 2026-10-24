@@ -17,8 +17,10 @@ import { api, apiAs, formatINR, formatDate } from '@/lib/hotel-utils'
 import { computeGst, normalizeHalfRate } from '@/lib/gst'
 import { GstPicker } from './gst-picker'
 import { CompanyInput } from './company-input'
+import { triggerPrintFoodBill } from '@/lib/print-invoice'
+import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
-import { Loader2, Info, ShieldCheck } from 'lucide-react'
+import { Loader2, Info, ShieldCheck, Utensils, Printer, Receipt, ShoppingBag } from 'lucide-react'
 
 interface Guest {
   id: string
@@ -26,13 +28,30 @@ interface Guest {
   phone: string
   company?: string | null
   gst?: string | null
-  address?: string | null
 }
 
 interface Room {
   id: string
   number: string
   type?: string
+}
+
+interface OrderItem {
+  id: string
+  name: string
+  price: number
+  quantity: number
+}
+
+interface FoodOrder {
+  id: string
+  bookingId?: string | null
+  total: number
+  status: string
+  notes?: string
+  items: OrderItem[]
+  room?: { id: string; number: string } | null
+  createdAt: string
 }
 
 interface Booking {
@@ -104,14 +123,17 @@ export function GenerateBillDialog({
   const [customTotal, setCustomTotal] = useState('')
   const [roomNumber, setRoomNumber] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
-  const [cgst, setCgst] = useState(2.5)
-  const [sgst, setSgst] = useState(2.5)
+  // GST is CGST + SGST, each 0% or 2.5% (defaults from Settings)
+  const [cgst, setCgst] = useState(Number(defaultGstPercent) === 0 ? 0 : 2.5)
+  const [sgst, setSgst] = useState(Number(defaultGstPercent) === 0 ? 0 : 2.5)
+  // Unpaid balance of the guest's earlier bills — added to this bill
   const [previousDue, setPreviousDue] = useState(0)
   const [previousDueBills, setPreviousDueBills] = useState<{ billNumber: string; balance: number }[]>([])
-  const [adminPin, setAdminPin] = useState('')
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
-  const [includeFood, setIncludeFood] = useState(false)
+  const [includeFood, setIncludeFood] = useState(true)
+  const [foodOrdersList, setFoodOrdersList] = useState<FoodOrder[]>([])
+  const [settings, setSettings] = useState<Record<string, string>>({})
   const [payCash, setPayCash] = useState('0')
   const [payUpi, setPayUpi] = useState('0')
   const [payCard, setPayCard] = useState('0')
@@ -125,56 +147,67 @@ export function GenerateBillDialog({
     if (open && booking) {
       const initDays = booking.days || 1
       const initRoom = booking.ratePerDay * initDays
-      const initFood = (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
-      const initTaxable = initRoom + initFood
-      // Default CGST / SGST until Settings load (legacy combined default split in halves)
-      const half = Number(defaultGstPercent) === 0 ? 0 : 2.5
-      const initGrand = Math.round((initTaxable + computeGst(initTaxable, half, half).total) * 100) / 100
-      const initAdv = Math.min(booking.advance || 0, initGrand)
-      const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
-
+      
       setDays(String(initDays))
       setCustomMode(false)
       setCustomTotal('')
       setRoomNumber(booking.room?.number || '')
       setRoomDescription(booking.room?.type || 'Non-AC')
+      const half = Number(defaultGstPercent) === 0 ? 0 : 2.5
       setCgst(half)
       setSgst(half)
       setPreviousDue(0)
       setPreviousDueBills([])
-      setAdminPin('')
       setExtraCharges('0')
       setDiscount('0')
-      // Pending room-service must land on this bill; checkout is refused if it would be left behind
-      setIncludeFood((booking.foodOrders || []).some((o) => o.total > 0))
-      setPayCash(String(initPayable))
-      setPayUpi('0')
-      setPayCard('0')
+      // Fooding bill toggle is default ON
+      setIncludeFood(true)
       setCorporateName(booking.guest?.company || '')
       setGstNumber(booking.guest?.gst || '')
       setManagerPin('')
       setError('')
 
-      // Lodging CGST / SGST from Settings, and dues from the guest's earlier bills (added to this bill)
+      // Fetch food orders and settings to provide rich fooding bill details
       Promise.all([
+        api<FoodOrder[]>('/api/orders').catch(() => []),
         api<Record<string, string>>('/api/settings').catch(() => ({}) as Record<string, string>),
         booking.guest?.phone
           ? api<{ outstanding?: number; outstandingBills?: { billNumber: string; balance: number }[] } | null>(
               `/api/guests?phone=${encodeURIComponent(booking.guest.phone)}`
             ).catch(() => null)
           : Promise.resolve(null),
-      ]).then(([s, g]) => {
-        const off = s.lodgingGstEnabled === 'false'
-        const c = off ? 0 : normalizeHalfRate(s.lodgingCgst, half)
-        const sg = off ? 0 : normalizeHalfRate(s.lodgingSgst, half)
+      ]).then(([allOrders, sets, guestInfo]) => {
+        setSettings(sets)
+        // Lodging CGST / SGST from Settings (0/0 when lodging GST is switched off)
+        const off = sets.lodgingGstEnabled === 'false'
+        const c = off ? 0 : normalizeHalfRate(sets.lodgingCgst, half)
+        const sg = off ? 0 : normalizeHalfRate(sets.lodgingSgst, half)
         setCgst(c)
         setSgst(sg)
-        const due = Math.max(0, Number(g?.outstanding || 0))
+        const due = Math.max(0, Number(guestInfo?.outstanding || 0))
         setPreviousDue(due)
-        setPreviousDueBills(g?.outstandingBills || [])
-        const tax = computeGst(initTaxable, c, sg).total
-        const grand = Math.round((initTaxable + tax + due) * 100) / 100
-        setPayCash(String(Math.max(0, Math.round((grand - Math.min(booking.advance || 0, grand)) * 100) / 100)))
+        setPreviousDueBills(guestInfo?.outstandingBills || [])
+        const relevant = (allOrders || []).filter(
+          (o) =>
+            o.status !== 'PAID' &&
+            o.status !== 'ADDED_TO_BILL' &&
+            o.status !== 'CANCELLED' &&
+            (o.bookingId === booking.id ||
+              (o.room && (o.room.id === booking.room?.id || o.room.number === booking.room?.number)))
+        )
+        setFoodOrdersList(relevant)
+
+        // Compute initial payable including lodging + food bill
+        const initTaxable = initRoom
+        const initGst = computeGst(initTaxable, c, sg).total
+        const initFood = relevant.reduce((s, o) => s + o.total, 0)
+        const initGrand = Math.round((initTaxable + initGst + initFood + due) * 100) / 100
+        const initAdv = Math.min(booking.advance || 0, initGrand)
+        const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
+
+        setPayCash(String(initPayable))
+        setPayUpi('0')
+        setPayCard('0')
       })
     }
   }, [open, booking, defaultGstPercent])
@@ -186,24 +219,28 @@ export function GenerateBillDialog({
     const billDays = num(days) || 1
     const actualRoomTotal = booking.ratePerDay * billDays
     const billedRoom = customMode && num(customTotal) > 0 ? num(customTotal) : actualRoomTotal
-    const foodTotal = includeFood && booking.foodOrders ? booking.foodOrders.reduce((s, o) => s + o.total, 0) : 0
+
+    const ordersSum = foodOrdersList.length > 0
+      ? foodOrdersList.reduce((s, o) => s + o.total, 0)
+      : (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
+
+    const foodTotal = includeFood ? ordersSum : 0
     const extra = num(extraCharges)
     const disc = num(discount)
 
-    // Customer-facing full total
-    const taxable = Math.max(0, billedRoom + foodTotal + extra - disc)
+    // Customer-facing full total: Lodging + GST on Lodging + Fooding Bill
+    const taxable = Math.max(0, billedRoom + extra - disc)
     const tax = computeGst(taxable, cgst, sgst)
     const gstAmount = tax.total
     // Earlier unpaid bills are added on top (already taxed, so no GST on them)
-    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + previousDue) * 100) / 100)
+    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + foodTotal + previousDue) * 100) / 100)
     const advanceApplied = Math.min(booking.advance || 0, grandTotal)
     const payable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
 
-    // Hotel internal accounting total
-    const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
-    // Internal GST = the GST charged on the invoice (custom amount for corporate bills)
+    // Hotel internal accounting lodging + food total
+    const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
     const internalGst = gstAmount
-    const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
+    const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst + foodTotal) * 100) / 100)
 
     const paid = num(payCash) + num(payUpi) + num(payCard)
     const balance = Math.max(0, Math.round((payable - paid) * 100) / 100)
@@ -213,6 +250,7 @@ export function GenerateBillDialog({
       billDays,
       actualRoomTotal,
       billedRoom,
+      ordersSum,
       foodTotal,
       taxable,
       gstAmount,
@@ -228,7 +266,37 @@ export function GenerateBillDialog({
       balance,
       adjustment,
     }
-  }, [booking, days, customMode, customTotal, includeFood, extraCharges, discount, cgst, sgst, previousDue, payCash, payUpi, payCard])
+  }, [booking, days, customMode, customTotal, includeFood, foodOrdersList, extraCharges, discount, cgst, sgst, previousDue, payCash, payUpi, payCard])
+
+  // Payment values are maintained directly from user input or 1-click autoBalance actions
+  // (Removed reactive useEffect that was forcefully overriding payCash on every calculation change)
+
+  function handlePrintFoodBill() {
+    if (!booking) return
+    const ordersToPrint = foodOrdersList.length > 0 ? foodOrdersList : []
+    const totalAmount = calc?.foodTotal || ordersToPrint.reduce((s, o) => s + o.total, 0)
+    
+    if (ordersToPrint.length === 0 && totalAmount <= 0) {
+      toast({
+        title: 'No Food Orders',
+        description: `Room ${booking.room?.number || ''} has no room service food orders recorded.`,
+      })
+      return
+    }
+
+    const allItems = ordersToPrint.flatMap((o) => o.items || [])
+    const aggregatedOrder: FoodOrder = {
+      id: ordersToPrint[0]?.id || `FOOD-ROOM-${booking.room?.number || '0'}`,
+      total: totalAmount > 0 ? totalAmount : 0,
+      status: 'COMPLETED',
+      items: allItems.length > 0 ? allItems : [{ id: '1', name: 'Room Service Dining', price: totalAmount, quantity: 1 }],
+      room: { id: booking.room?.id || '', number: booking.room?.number || '' },
+      createdAt: ordersToPrint[0]?.createdAt || new Date().toISOString(),
+      notes: ordersToPrint.map((o) => o.notes).filter(Boolean).join('; ') || undefined,
+    }
+
+    triggerPrintFoodBill(aggregatedOrder, settings)
+  }
 
   function autoBalance(method: 'CASH' | 'UPI' | 'CARD') {
     if (!calc) return
@@ -276,10 +344,6 @@ export function GenerateBillDialog({
       setError(`Payment split (₹${calc.paid}) cannot exceed payable amount (₹${calc.payable})`)
       return
     }
-    if (calc.balance > 0.01 && !adminPin.trim()) {
-      setError(`Full payment required. Collect the outstanding ${formatINR(calc.balance)}, or enter the Admin PIN to check out with a balance due.`)
-      return
-    }
     setSaving(true)
     setError('')
     try {
@@ -300,10 +364,10 @@ export function GenerateBillDialog({
           payUpi: num(payUpi),
           payCard: num(payCard),
           includeFood,
+          foodOrderIds: foodOrdersList.map((o) => o.id),
           corporateName: corporateName || undefined,
           gstNumber: gstNumber || undefined,
           managerPin: (customMode || isWaivingOverstay) ? managerPin.trim() : undefined,
-          adminPin: calc.balance > 0.01 ? adminPin.trim() : undefined,
           checkout: true,
         }),
       })
@@ -417,17 +481,31 @@ export function GenerateBillDialog({
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-semibold text-foreground">
-                    Fooding Bill {calc.foodTotal > 0 && `(${formatINR(calc.foodTotal)})`}
+                    Fooding Bill {calc.ordersSum > 0 ? `(${formatINR(calc.ordersSum)})` : ''}
                   </Label>
-                  {calc.foodTotal > 0 && (
-                    <span className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">Room Service</span>
-                  )}
+                  <span className="text-[10px] text-amber-700 dark:text-amber-400 font-semibold">
+                    {includeFood ? 'ON' : 'OFF'}
+                  </span>
                 </div>
                 <div className="flex h-9 items-center justify-between rounded-md border px-2.5 bg-card">
-                  <span className="text-xs text-muted-foreground">
-                    {includeFood ? 'Include in Bill' : 'Separate'}
+                  <span className="text-xs text-muted-foreground font-medium">
+                    {includeFood ? 'Show Details' : 'Hidden'}
                   </span>
-                  <Switch checked={includeFood} onCheckedChange={setIncludeFood} className="scale-75" />
+                  <Switch
+                    checked={includeFood}
+                    onCheckedChange={(checked) => {
+                      setIncludeFood(checked)
+                      const currentOrdersSum = foodOrdersList.length > 0
+                        ? foodOrdersList.reduce((s, o) => s + o.total, 0)
+                        : (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
+                      const diff = checked ? currentOrdersSum : -currentOrdersSum
+                      if (num(payUpi) === 0 && num(payCard) === 0 && calc) {
+                        const newPayable = Math.max(0, Math.round((calc.payable + diff) * 100) / 100)
+                        setPayCash(String(newPayable))
+                      }
+                    }}
+                    className="scale-75"
+                  />
                 </div>
               </div>
               <div className="space-y-1.5">
@@ -514,17 +592,54 @@ export function GenerateBillDialog({
             <Separator />
 
             {/* Breakdown summary */}
-            <div className="space-y-1.5 rounded-lg bg-muted/50 p-3 text-xs">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Room ({customMode ? 'custom billed' : 'actual'})</span>
-                <span className="font-medium">{formatINR(calc.billedRoom)}</span>
+            <div className="space-y-2 rounded-lg bg-muted/50 p-3 text-xs">
+              {/* Lodging details */}
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">
+                  Room ({customMode ? 'custom billed' : 'actual'} · {num(days)}n × {formatINR(booking.ratePerDay)})
+                </span>
+                <span className="font-semibold text-foreground">{formatINR(calc.billedRoom)}</span>
               </div>
-              {calc.foodTotal > 0 && includeFood && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Food charges</span>
-                  <span className="font-medium">{formatINR(calc.foodTotal)}</span>
+
+              {/* Fooding Bill Details - Shows when toggle is ON, Hides when toggle is OFF */}
+              {includeFood && (
+                <div className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Utensils className="h-3.5 w-3.5 text-amber-600" />
+                      Fooding Bill ({calc.ordersSum > 0 ? 'Room Dining' : 'No Orders'})
+                    </span>
+                    <span className="font-bold text-amber-800 dark:text-amber-300">
+                      {formatINR(calc.ordersSum)}
+                    </span>
+                  </div>
+
+                  {/* Food order item breakdown */}
+                  {foodOrdersList.length > 0 ? (
+                    <div className="space-y-1 pt-1 border-t border-amber-500/20 text-[11px] text-muted-foreground">
+                      {foodOrdersList.map((order, idx) => (
+                        <div key={order.id || idx} className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <span className="font-medium text-foreground">Order #{order.id?.slice(-4) || idx + 1}:</span>{' '}
+                            {order.items && order.items.length > 0
+                              ? order.items.map((it) => `${it.name} x${it.quantity}`).join(', ')
+                              : `${order.items?.length || 1} item(s)`}
+                          </div>
+                          <span className="font-mono font-medium ml-2">{formatINR(order.total)}</span>
+                        </div>
+                      ))}
+                      <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 italic pt-0.5">
+                        * Food bill ({formatINR(calc.ordersSum)}) is settled at checkout. The final lodging bill invoice will show room stay charges only.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground italic">
+                      No active room dining orders recorded
+                    </p>
+                  )}
                 </div>
               )}
+
               {num(extraCharges) > 0 && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Extra charges</span>
@@ -545,6 +660,12 @@ export function GenerateBillDialog({
                 <span className="text-muted-foreground">SGST ({sgst}%)</span>
                 <span className="font-medium">{formatINR(calc.sgstAmount)}</span>
               </div>
+              {calc.foodTotal > 0 && (
+                <div className="flex justify-between text-amber-800 dark:text-amber-300">
+                  <span>Fooding Bill</span>
+                  <span className="font-medium">+{formatINR(calc.foodTotal)}</span>
+                </div>
+              )}
               {previousDue > 0 && (
                 <div className="flex justify-between text-red-700 dark:text-red-400">
                   <span>
@@ -603,6 +724,17 @@ export function GenerateBillDialog({
                   <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={() => autoBalance('CARD')}>
                     All Card
                   </Button>
+                  {calc.balance > 0.01 && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7 px-2 text-[11px] font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950 dark:text-emerald-200"
+                      onClick={() => setPayCash(String(Math.round((num(payCash) + calc.balance) * 100) / 100))}
+                    >
+                      + Settle in Cash
+                    </Button>
+                  )}
                 </div>
                 <span className={calc.balance > 0.01 ? 'font-bold text-amber-600 text-xs' : 'font-bold text-emerald-700 dark:text-emerald-400 text-xs'}>
                   {calc.balance > 0.01 ? `Outstanding: ${formatINR(calc.balance)}` : '✓ Fully paid'}
@@ -613,30 +745,48 @@ export function GenerateBillDialog({
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
             {calc.balance > 0.01 && (
-              <div className="space-y-1.5 rounded-lg border border-amber-300 bg-amber-50/80 p-3 dark:border-amber-800 dark:bg-amber-950/40">
-                <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
-                  {formatINR(calc.balance)} not collected. Collect the full amount, or enter the Admin PIN to check out with this balance due
-                  (it will be added to the guest&apos;s next bill).
+              <div className="rounded-md border border-amber-400 bg-amber-50/90 p-2.5 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200 space-y-1">
+                <div className="font-bold flex items-center justify-between">
+                  <span>⚠️ Balance Due: {formatINR(calc.balance)}</span>
+                  <span className="text-[10px] font-normal uppercase tracking-wide bg-amber-200/70 dark:bg-amber-900/60 px-1.5 py-0.5 rounded">Credit / Due</span>
+                </div>
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                  This checkout will record an outstanding due of <strong>{formatINR(calc.balance)}</strong> on {booking.guest?.name}&apos;s profile, and will automatically alert staff on future check-ins.
                 </p>
-                <Input
-                  type="password"
-                  inputMode="numeric"
-                  placeholder="Admin PIN (allow balance due)"
-                  value={adminPin}
-                  onChange={(e) => setAdminPin(e.target.value)}
-                  autoComplete="off"
-                  className="h-9 text-xs bg-white dark:bg-slate-900"
-                />
               </div>
             )}
-            <Button
-              className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs"
-              onClick={generateBill}
-              disabled={saving || (calc.balance > 0.01 && !adminPin.trim())}
-            >
-              {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-              Generate Bill &amp; Check Out
-            </Button>
+
+            {/* Bottom Action Buttons: Dual buttons when Fooding is ON, Single button when Fooding is OFF */}
+            {includeFood ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 border-amber-500/60 text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 font-semibold text-xs gap-1.5"
+                  onClick={handlePrintFoodBill}
+                >
+                  <Utensils className="h-3.5 w-3.5 text-amber-600" />
+                  Fooding Bill Generate
+                </Button>
+                <Button
+                  className="h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs gap-1.5"
+                  onClick={generateBill}
+                  disabled={saving}
+                >
+                  {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                  {calc.balance > 0.01 ? `Check Out (Due: ${formatINR(calc.balance)})` : 'Generate Bill & Check Out'}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs"
+                onClick={generateBill}
+                disabled={saving}
+              >
+                {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                {calc.balance > 0.01 ? `Check Out (Due: ${formatINR(calc.balance)})` : 'Generate Bill & Check Out'}
+              </Button>
+            )}
           </div>
         )}
       </DialogContent>

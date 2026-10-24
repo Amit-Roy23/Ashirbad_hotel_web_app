@@ -70,16 +70,24 @@ export function doDateRangesOverlap(
   return startA < endB && endA > startB
 }
 
-export async function api<T = unknown>(url: string, options?: RequestInit): Promise<T> {
+export interface ApiFetchOptions extends RequestInit {
+  adminPin?: string
+}
+
+export async function api<T = unknown>(url: string, options?: ApiFetchOptions): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    ...(options?.headers as Record<string, string> || {}),
+  }
+  if (options?.adminPin) {
+    headers['X-Admin-Pin'] = options.adminPin
+  }
   const res = await fetch(url, {
     cache: 'no-store',
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      ...(options?.headers || {}),
-    },
+    headers,
   })
   const data = await res.json()
   if (!res.ok) {
@@ -93,7 +101,7 @@ export async function api<T = unknown>(url: string, options?: RequestInit): Prom
  * the endpoint wraps rows (e.g. { entries: [...] }) — prevents
  * "x.filter is not a function" client crashes from shape mismatches.
  */
-export async function apiList<T = unknown>(url: string, options?: RequestInit): Promise<T[]> {
+export async function apiList<T = unknown>(url: string, options?: ApiFetchOptions): Promise<T[]> {
   const data = await api<T[] | { entries?: T[] }>(url, options)
   if (Array.isArray(data)) return data
   if (data && typeof data === 'object' && Array.isArray((data as { entries?: T[] }).entries)) {
@@ -106,7 +114,7 @@ export async function apiList<T = unknown>(url: string, options?: RequestInit): 
 export function apiAs<T = unknown>(
   url: string,
   user: { id: string; name: string; role: string } | null,
-  options?: RequestInit
+  options?: ApiFetchOptions
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -118,6 +126,9 @@ export function apiAs<T = unknown>(
     headers['X-User-Id'] = user.id
     headers['X-User-Name'] = encodeURIComponent(user.name)
     headers['X-User-Role'] = user.role
+  }
+  if (options?.adminPin) {
+    headers['X-Admin-Pin'] = options.adminPin
   }
   return fetch(url, { cache: 'no-store', ...options, headers }).then(async (res) => {
     const data = await res.json()
@@ -147,6 +158,117 @@ export function exportCSV(
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(link.href)
+}
+
+/** Client-side Report / Table printing */
+export function printTableReport(
+  title: string,
+  headers: string[],
+  rows: (string | number | null | undefined)[][],
+  subtitle?: string
+) {
+  const esc = (v: string | number | null | undefined) => {
+    if (v === null || v === undefined || v === '') return '—'
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+  }
+
+  const theadHtml = headers
+    .map(
+      (h) =>
+        `<th style="border: 1px solid #cbd5e1; padding: 8px 10px; background-color: #f1f5f9; text-align: left; font-size: 11px; font-weight: 700; color: #1e293b; text-transform: uppercase;">${esc(h)}</th>`
+    )
+    .join('')
+
+  const tbodyHtml = rows
+    .map(
+      (row, idx) =>
+        `<tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">` +
+        row
+          .map(
+            (cell) =>
+              `<td style="border: 1px solid #e2e8f0; padding: 7px 10px; font-size: 11px; color: #334155;">${esc(cell)}</td>`
+          )
+          .join('') +
+        `</tr>`
+    )
+    .join('')
+
+  const printTime = new Date().toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${esc(title)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 15px; color: #0f172a; }
+    .header { margin-bottom: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-end; }
+    .title { font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.3px; }
+    .subtitle { font-size: 11px; color: #64748b; margin-top: 2px; }
+    .meta { font-size: 11px; color: #64748b; text-align: right; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    @media print {
+      body { padding: 0; }
+      th { background-color: #e2e8f0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="title">${esc(title)}</div>
+      ${subtitle ? `<div class="subtitle">${esc(subtitle)}</div>` : ''}
+    </div>
+    <div class="meta">
+      <div>Printed: <strong>${printTime}</strong></div>
+      <div>Total Records: <strong>${rows.length}</strong></div>
+    </div>
+  </div>
+  <table>
+    <thead><tr>${theadHtml}</tr></thead>
+    <tbody>${tbodyHtml || '<tr><td colspan="' + headers.length + '" style="text-align: center; padding: 20px; color: #94a3b8;">No records found</td></tr>'}</tbody>
+  </table>
+</body>
+</html>
+  `
+
+  const iframe = document.createElement('iframe')
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
+  document.body.appendChild(iframe)
+
+  const doc = iframe.contentWindow?.document
+  if (!doc) return
+
+  doc.open()
+  doc.write(html)
+  doc.close()
+
+  setTimeout(() => {
+    iframe.contentWindow?.focus()
+    iframe.contentWindow?.print()
+    setTimeout(() => {
+      document.body.removeChild(iframe)
+    }, 1000)
+  }, 300)
 }
 
 export function dateOnly(d: string | Date | null | undefined): string {
@@ -380,4 +502,129 @@ export const LODGING_GST_RATES = ['0', '5'] as const
 /** Maps any stored/legacy GST value onto an allowed lodging rate (0 stays 0, anything else becomes 5) */
 export function normalizeLodgingGst(v: string | number | null | undefined): string {
   return Number(v) === 0 ? '0' : '5'
+}
+
+export type GovIdType = 'AADHAAR' | 'PAN' | 'PASSPORT' | 'VOTER_ID' | 'DRIVING_LICENSE'
+
+export const GOV_ID_TYPES: { value: GovIdType; label: string; placeholder: string; mask: string }[] = [
+  { value: 'AADHAAR', label: 'Aadhaar Card', placeholder: '12-digit UID (e.g. 1234 5678 9012)', mask: '12 digits' },
+  { value: 'PAN', label: 'PAN Card', placeholder: '10-char PAN (e.g. ABCDE1234F)', mask: 'ABCDE1234F' },
+  { value: 'PASSPORT', label: 'Passport', placeholder: 'Passport No. (e.g. A1234567)', mask: 'A1234567' },
+  { value: 'VOTER_ID', label: 'Voter ID Card', placeholder: 'Voter ID / EPIC No. (e.g. ABC1234567)', mask: 'EPIC No.' },
+  { value: 'DRIVING_LICENSE', label: 'Driving License', placeholder: 'Driving License No.', mask: 'DL No.' },
+]
+
+export function validateGovId(type: GovIdType, value: string): { valid: boolean; error?: string; formatted: string } {
+  const trimmed = value ? value.trim() : ''
+  if (!trimmed) {
+    return { valid: false, error: 'Government ID proof is mandatory', formatted: '' }
+  }
+
+  if (type === 'AADHAAR') {
+    const digits = trimmed.replace(/\D/g, '')
+    if (digits.length !== 12) {
+      return {
+        valid: false,
+        error: `Aadhaar number must be exactly 12 numeric digits (${digits.length}/12 entered)`,
+        formatted: digits,
+      }
+    }
+    const formatted = `${digits.slice(0, 4)} ${digits.slice(4, 8)} ${digits.slice(8, 12)}`
+    return { valid: true, formatted: `AADHAAR: ${formatted}` }
+  }
+
+  if (type === 'PAN') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/
+    if (upper.length !== 10 || !panRegex.test(upper)) {
+      return {
+        valid: false,
+        error: 'PAN must be standard 10 alphanumeric characters (5 letters, 4 numbers, 1 letter e.g. ABCDE1234F)',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `PAN: ${upper}` }
+  }
+
+  if (type === 'PASSPORT') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (upper.length < 6 || upper.length > 9) {
+      return {
+        valid: false,
+        error: 'Passport number must be 6 to 9 characters (e.g. A1234567)',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `PASSPORT: ${upper}` }
+  }
+
+  if (type === 'VOTER_ID') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (upper.length < 6 || upper.length > 15) {
+      return {
+        valid: false,
+        error: 'Voter ID must be at least 6 characters (e.g. ABC1234567)',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `VOTER_ID: ${upper}` }
+  }
+
+  if (type === 'DRIVING_LICENSE') {
+    const upper = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (upper.length < 8 || upper.length > 20) {
+      return {
+        valid: false,
+        error: 'Driving license must be at least 8 characters',
+        formatted: upper,
+      }
+    }
+    return { valid: true, formatted: `DRIVING_LICENSE: ${upper}` }
+  }
+
+  return { valid: true, formatted: trimmed }
+}
+
+export function parseGovId(raw: string | null | undefined): { idType: GovIdType; idNumber: string } {
+  if (!raw || !raw.trim()) {
+    return { idType: 'AADHAAR', idNumber: '' }
+  }
+  const str = raw.trim()
+  if (str.toUpperCase().startsWith('AADHAAR:')) {
+    return { idType: 'AADHAAR', idNumber: str.slice(8).trim() }
+  }
+  if (str.toUpperCase().startsWith('PAN:')) {
+    return { idType: 'PAN', idNumber: str.slice(4).trim() }
+  }
+  if (str.toUpperCase().startsWith('PASSPORT:')) {
+    return { idType: 'PASSPORT', idNumber: str.slice(9).trim() }
+  }
+  if (str.toUpperCase().startsWith('VOTER_ID:')) {
+    return { idType: 'VOTER_ID', idNumber: str.slice(9).trim() }
+  }
+  if (str.toUpperCase().startsWith('DRIVING_LICENSE:')) {
+    return { idType: 'DRIVING_LICENSE', idNumber: str.slice(16).trim() }
+  }
+
+  // Auto-detect if raw string without prefix
+  const cleanDigits = str.replace(/\D/g, '')
+  if (cleanDigits.length === 12) {
+    return { idType: 'AADHAAR', idNumber: str }
+  }
+  if (/^[A-Za-z]{5}[0-9]{4}[A-Za-z]{1}$/.test(str)) {
+    return { idType: 'PAN', idNumber: str.toUpperCase() }
+  }
+  if (/^[A-Za-z]{1}[0-9]{7}$/.test(str)) {
+    return { idType: 'PASSPORT', idNumber: str.toUpperCase() }
+  }
+
+  return { idType: 'AADHAAR', idNumber: str }
+}
+
+export function formatGovIdDisplay(raw: string | null | undefined): string {
+  if (!raw || !raw.trim()) return '-'
+  const parsed = parseGovId(raw)
+  const item = GOV_ID_TYPES.find((t) => t.value === parsed.idType)
+  const label = item ? item.label : parsed.idType
+  return `${label}: ${parsed.idNumber}`
 }

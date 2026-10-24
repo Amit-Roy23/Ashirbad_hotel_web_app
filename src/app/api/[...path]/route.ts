@@ -16,6 +16,7 @@ import {
   getBanquetBookings,
   createBanquetBooking,
   updateBanquetBooking,
+  cancelBanquetBooking,
   deleteBanquetBooking,
   getBanquetBills,
   createBanquetBill,
@@ -88,6 +89,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   restaurantAddress: 'Station Road, Kolkata',
   restaurantPhone: '+91 90000 00000',
   restaurantGstin: '',
+  restaurantFssai: '',
   gstPercent: '5',
   // Lodging bill GST (CGST + SGST, each 0 or 2.5) with an on/off switch
   lodgingGstEnabled: 'true',
@@ -271,9 +273,16 @@ function hasExplicitZone(s: string): boolean {
 
 function parseDateInput(value: unknown, fallbackTime = '08:00'): Date | null {
   if (value === undefined || value === null || value === '') return null
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? new Date() : value
+  }
   const s = String(value).trim()
   if (!s) return null
-  if (hasExplicitZone(s)) return new Date(s)
+  if (hasExplicitZone(s)) {
+    const d = new Date(s)
+    if (!isNaN(d.getTime())) return d
+  }
+  const cleanFallback = String(fallbackTime || '08:00').replace(/^T/i, '').trim() || '08:00'
   if (s.includes('T')) {
     const [d, t] = s.split('T')
     return makeIST(d, t.replace('Z', '').slice(0, 8))
@@ -282,7 +291,7 @@ function parseDateInput(value: unknown, fallbackTime = '08:00'): Date | null {
     const [d, t] = s.split(' ')
     return makeIST(d, t.slice(0, 8))
   }
-  return makeIST(s, fallbackTime)
+  return makeIST(s, cleanFallback)
 }
 
 /**
@@ -356,7 +365,7 @@ async function applyAutoExtensions(now = new Date()) {
   }
 }
 
-/** Recompute PARTIAL | PAID for a booking from its latest bill */
+/** Recompute UNPAID | PARTIAL | PAID for a booking from its latest bill */
 async function refreshBookingPaymentStatus(bookingId: string) {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
   if (!booking) return
@@ -369,9 +378,13 @@ async function refreshBookingPaymentStatus(bookingId: string) {
       orderBy: { createdAt: 'desc' },
     })
     if (bill) {
-      paymentStatus = billBalance(bill) > 0.01 ? 'PARTIAL' : 'PAID'
+      // Dues carried into a later bill are no longer owed here
+      const received = billReceived(bill)
+      if (billBalance(bill) <= 0.01) paymentStatus = 'PAID'
+      else if (received > 0.01) paymentStatus = 'PARTIAL'
+      else paymentStatus = 'UNPAID'
     } else {
-      paymentStatus = 'PAID'
+      paymentStatus = (booking.advance || 0) > 0 ? 'PARTIAL' : 'UNPAID'
     }
   }
   if (paymentStatus !== booking.paymentStatus) {
@@ -648,6 +661,70 @@ async function deleteRoom(req: NextRequest, user: RequestUser) {
 }
 
 // ============ GUESTS ============
+function attachGuestDueInfo(guest: any) {
+  if (!guest) return null
+  const dueHistory: Array<{
+    billId: string
+    billNumber: string
+    bookingId: string
+    roomNumber: string
+    checkIn: string
+    checkOut: string | null
+    actualCheckOut: string | null
+    checkoutDate: string
+    days: number
+    grandTotal: number
+    paidTotal: number
+    balanceDue: number
+    paymentStatus: string
+    status: string
+    createdAt: string
+  }> = []
+
+  for (const b of guest.bookings || []) {
+    for (const bill of b.bills || []) {
+      const totalPaid = billReceived(bill)
+      // Dues moved into a later bill (carriedForward) are owed on that bill, not here
+      const balanceDue = billBalance(bill)
+      if (balanceDue > 0.01) {
+        dueHistory.push({
+          billId: bill.id,
+          billNumber: bill.billNumber,
+          bookingId: b.id,
+          roomNumber: bill.roomNumber || b.room?.number || '—',
+          checkIn: b.checkIn ? new Date(b.checkIn).toISOString() : '',
+          checkOut: b.checkOut ? new Date(b.checkOut).toISOString() : null,
+          actualCheckOut: b.actualCheckOut ? new Date(b.actualCheckOut).toISOString() : null,
+          checkoutDate: b.actualCheckOut
+            ? new Date(b.actualCheckOut).toISOString()
+            : bill.createdAt
+              ? new Date(bill.createdAt).toISOString()
+              : b.checkOut
+                ? new Date(b.checkOut).toISOString()
+                : new Date().toISOString(),
+          days: bill.days || b.days || 1,
+          grandTotal: bill.grandTotal,
+          paidTotal: totalPaid,
+          balanceDue,
+          paymentStatus: b.paymentStatus || (totalPaid > 0 ? 'PARTIAL' : 'UNPAID'),
+          status: b.status,
+          createdAt: bill.createdAt ? new Date(bill.createdAt).toISOString() : new Date().toISOString(),
+        })
+      }
+    }
+  }
+
+  const totalDue = dueHistory.reduce((sum, d) => sum + d.balanceDue, 0)
+  return {
+    ...guest,
+    totalDue: Math.round(totalDue * 100) / 100,
+    dueHistory,
+    // used by the check-in dialogs and the lodging bill (dues are added to the next bill)
+    outstanding: Math.round(totalDue * 100) / 100,
+    outstandingBills: dueHistory.map((d) => ({ billNumber: d.billNumber, balance: d.balanceDue })),
+  }
+}
+
 async function listGuests(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const q = searchParams.get('q')
@@ -658,6 +735,7 @@ async function listGuests(req: NextRequest) {
           { name: { contains: q, mode: 'insensitive' } },
           { phone: { contains: q } },
           { company: { contains: q, mode: 'insensitive' } },
+          { idProof: { contains: q, mode: 'insensitive' } },
         ],
       }
       : undefined,
@@ -668,29 +746,49 @@ async function listGuests(req: NextRequest) {
         orderBy: { createdAt: 'desc' },
         include: {
           room: true,
-          bills: { orderBy: { createdAt: 'desc' }, take: 1 },
+          bills: { orderBy: { createdAt: 'desc' } },
         },
       },
     },
   })
-  return NextResponse.json(guests)
+  return NextResponse.json(guests.map(attachGuestDueInfo))
 }
 
 async function lookupGuest(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const phone = searchParams.get('phone') || ''
+  const rawPhone = searchParams.get('phone') || ''
+  const phone = rawPhone.replace(/\D/g, '')
+  const idProof = (searchParams.get('idProof') || '').trim()
+  const name = (searchParams.get('name') || '').trim()
+
+  let where: any = undefined
+
+  if (phone && phone.length >= 4) {
+    where = { phone: { contains: phone } }
+  } else if (idProof && idProof.length >= 4) {
+    where = { idProof: { contains: idProof, mode: 'insensitive' } }
+  } else if (name && name.length >= 2) {
+    where = { name: { contains: name, mode: 'insensitive' } }
+  }
+
+  if (!where) {
+    return NextResponse.json(null)
+  }
+
   const guest = await prisma.guest.findFirst({
-    where: { phone: { contains: phone } },
+    where,
     orderBy: { createdAt: 'desc' },
+    include: {
+      bookings: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          room: true,
+          bills: { orderBy: { createdAt: 'desc' } },
+        },
+      },
+    },
   })
-  if (!guest) return NextResponse.json(null)
-  // Dues from earlier stays: check-in needs Admin PIN and the amount is added to the next bill
-  const outstanding = await guestOutstanding(guest.id)
-  return NextResponse.json({
-    ...guest,
-    outstanding: outstanding.total,
-    outstandingBills: outstanding.bills.map((b) => ({ billNumber: b.billNumber, balance: billBalance(b) })),
-  })
+  return NextResponse.json(guest ? attachGuestDueInfo(guest) : null)
 }
 
 async function upsertGuest(body: Record<string, unknown>) {
@@ -845,7 +943,7 @@ async function listBookings(req: NextRequest) {
 
 async function createBooking(body: Record<string, unknown>, user: RequestUser) {
   const {
-    roomId, phone, name, company, gst, address, checkIn, checkOut, checkOutTime,
+    roomId, phone, name, company, gst, address, idProof, checkIn, checkOut, checkOutTime,
     guestCount, advance, advanceMethod, isCorporate, notes, bookingType, status: reqStatus,
   } = body
   if (!roomId || !phone || !name) {
@@ -996,6 +1094,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         ...(company !== undefined && { company: String(company) }),
         ...(gst !== undefined && { gst: String(gst) }),
         ...(address !== undefined && { address: String(address) }),
+        ...(idProof !== undefined && { idProof: String(idProof) }),
       },
       create: {
         phone: cleanPhone,
@@ -1003,6 +1102,7 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         ...(company ? { company: String(company) } : {}),
         ...(gst ? { gst: String(gst) } : {}),
         ...(address ? { address: String(address) } : {}),
+        ...(idProof ? { idProof: String(idProof) } : {}),
       },
     })
 
@@ -1344,10 +1444,25 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
         )
       }
     }
+    const cancelDate = new Date()
+    const reasonStr = body.reason ? String(body.reason).trim() : 'Cancelled by staff'
+    const refundNoteStr = body.refundNote ? String(body.refundNote).trim() : ''
+    const refundAmt = body.refundAmount !== undefined && body.refundAmount !== '' ? Number(body.refundAmount) : null
+
+    // Compose comprehensive cancellation record to store in notes
+    const cancelTimestamp = cancelDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })
+    const cancelLog = `[CANCELLED on ${cancelTimestamp} by ${user.name || 'Staff'}${user.role ? ` (${user.role})` : ''} | Reason: ${reasonStr}${refundNoteStr ? ` | Refund/Advance: ${refundNoteStr}` : ''}${refundAmt !== null ? ` | Refund Amount: ₹${refundAmt}` : ''}${booking.advance > 0 ? ` | Advance Paid: ₹${booking.advance}` : ''}]`
+    const updatedNotes = booking.notes ? `${booking.notes}\n${cancelLog}` : cancelLog
+
     const updated = await prisma.$transaction(async (tx) => {
       const b = await tx.booking.update({
         where: { id: String(id) },
-        data: { status: 'CANCELLED', actualCheckOut: new Date() },
+        data: {
+          status: 'CANCELLED',
+          actualCheckOut: cancelDate,
+          notes: updatedNotes,
+        },
+        include: { room: true, guest: true, bills: true },
       })
       if (booking.status === 'ACTIVE') {
         await tx.room.update({ where: { id: booking.roomId }, data: { housekeeping: 'DIRTY' } })
@@ -1357,7 +1472,13 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       return b
     })
     await refreshBookingPaymentStatus(booking.id)
-    await logAudit('BOOKING_CANCEL', 'Booking', booking.id, `Cancelled: ${booking.guest.name} (Room ${booking.room.number})`, user)
+    await logAudit(
+      'BOOKING_CANCEL',
+      'Booking',
+      booking.id,
+      `Cancelled booking for ${booking.guest.name} (${booking.guest.phone}) in Room ${booking.room.number}. Advance: ₹${booking.advance}, Reserved: ${formatDate(booking.checkIn)} to ${formatDate(booking.checkOut)}. Reason: ${reasonStr}`,
+      user
+    )
     return NextResponse.json(updated)
   }
 
@@ -1406,6 +1527,7 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       company,
       gst,
       address,
+      idProof,
       ratePerDay,
       advance,
       advanceMethod,
@@ -1439,6 +1561,7 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     if (company !== undefined) guestData.company = String(company)
     if (gst !== undefined) guestData.gst = String(gst)
     if (address !== undefined) guestData.address = String(address)
+    if (idProof !== undefined) guestData.idProof = String(idProof)
 
     if (advance !== undefined) {
       // A billed stay's advance is part of the invoice; it must not push received money past the bill total
@@ -1616,8 +1739,8 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   await applyAutoExtensions()
   const {
     bookingId, days, billedRoomTotal, roomDescription, roomNumber, extraCharges, discount,
-    payCash, payUpi, payCard, includeFood, corporateName, gstNumber, notes, checkout,
-    managerPin, adminPin,
+    payCash, payUpi, payCard, includeFood, foodOrderIds, corporateName, gstNumber, notes, checkout,
+    managerPin,
   } = body
 
   const booking = await prisma.booking.findUnique({
@@ -1641,11 +1764,12 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       )
     }
   }
-  if (checkout !== false && includeFood !== true) {
+  // With the fooding bill switched off, pending room-service orders would be left behind on a closed stay
+  if (checkout !== false && includeFood === false) {
     const pendingCount = await prisma.foodOrder.count({ where: { bookingId: booking.id, status: 'PENDING' } })
     if (pendingCount > 0) {
       return NextResponse.json(
-        { error: `${pendingCount} pending room-service order(s) exist. Include food in this bill or settle them in Restaurant before checkout.` },
+        { error: `${pendingCount} pending room-service order(s) exist. Turn on the Fooding Bill to settle them at checkout, or settle them in Restaurant first.` },
         { status: 400 }
       )
     }
@@ -1695,20 +1819,6 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
     user = approverUser
   }
 
-  let foodTotal = 0
-  let pendingOrders: { id: string }[] = []
-  if (includeFood === true) {
-    pendingOrders = await prisma.foodOrder.findMany({
-      where: { bookingId: booking.id, status: 'PENDING' },
-      select: { id: true },
-    })
-    const agg = await prisma.foodOrder.aggregate({
-      where: { bookingId: booking.id, status: 'PENDING' },
-      _sum: { total: true },
-    })
-    foodTotal = agg._sum.total || 0
-  }
-
   const extra = num(extraCharges)
   const disc = num(discount)
 
@@ -1721,17 +1831,42 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const previousDue = outstanding.total
   const carriedFrom = outstanding.bills.map((b) => ({ id: b.id, billNumber: b.billNumber, amount: billBalance(b) }))
 
-  // Full customer-facing calculation: CGST and SGST are computed separately on the billed amount
-  const taxable = Math.max(0, billedRoom + foodTotal + extra - disc)
+  // Determine food orders to include in bill
+  let foodTotal = 0
+  let foodTax = 0
+  let foodOrderIdsToUpdate: string[] = []
+
+  if (includeFood !== false) {
+    const orders = await prisma.foodOrder.findMany({
+      where: {
+        OR: [
+          { bookingId: booking.id },
+          ...(Array.isArray(foodOrderIds) && foodOrderIds.length > 0
+            ? [{ id: { in: foodOrderIds.map((id: any) => String(id)) } }]
+            : []),
+        ],
+        status: { notIn: ['PAID', 'ADDED_TO_BILL', 'CANCELLED'] },
+      },
+    })
+    const uniqueOrders = Array.from(new Map(orders.map((o) => [o.id, o])).values())
+    foodOrderIdsToUpdate = uniqueOrders.map((o) => o.id)
+    foodTotal = Math.round(uniqueOrders.reduce((sum, o) => sum + o.total, 0) * 100) / 100
+    foodTax = Math.round(uniqueOrders.reduce((sum, o) => sum + (o.taxAmount || 0), 0) * 100) / 100
+  }
+
+  // Full lodging stay calculation (Room + Extra - Disc, with CGST and SGST computed separately)
+  // Food is settled as separate restaurant dining revenue (with its own food GST) and not added to the lodging invoice
+  const taxable = Math.max(0, billedRoom + extra - disc)
   const gstSplit = computeGst(taxable, gstRates.cgst, gstRates.sgst)
   const billedGst = gstSplit.total
+  // Unpaid balance of earlier bills is added on top (already taxed, so no GST on it)
   const grandTotal = Math.max(0, Math.round((taxable + billedGst + previousDue) * 100) / 100)
   const advanceApplied = Math.min(booking.advance || 0, grandTotal)
-  const payableNow = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
+  const lodgingPayable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
+  const totalPayableNow = Math.max(0, Math.round((lodgingPayable + foodTotal) * 100) / 100)
 
-  // Hotel internal accounting calculation
-  const internalTaxable = Math.max(0, actualRoomTotal + foodTotal + extra - disc)
-  // Internal total = actual tariff + the GST actually charged on the invoice (on the custom amount for corporate bills)
+  // Hotel internal accounting calculation (lodging only)
+  const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
   const internalGst = billedGst
   const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
 
@@ -1739,27 +1874,33 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const upi = num(payUpi)
   const card = num(payCard)
   const paidTotal = cash + upi + card
-  if (paidTotal > payableNow + 0.01) {
+  if (paidTotal > totalPayableNow + 0.01) {
     return NextResponse.json(
-      { error: `Payment split (₹${paidTotal}) cannot exceed payable amount (₹${payableNow})` },
+      { error: `Payment split (₹${paidTotal}) cannot exceed payable amount (₹${totalPayableNow})` },
       { status: 400 }
     )
   }
-  // A lodging checkout bill needs full payment; leaving a balance due needs Admin approval
-  let dueApprovedBy: string | null = null
-  if (paidTotal < payableNow - 0.01) {
-    const admin = await verifyAdminPin(adminPin)
-    if (!admin) {
-      return NextResponse.json(
-        {
-          error: `Full payment required: collect ₹${payableNow.toFixed(2)} (received ₹${paidTotal.toFixed(2)}, balance ₹${(payableNow - paidTotal).toFixed(2)}). Checkout with a balance due needs the Admin PIN.`,
-          code: adminPin ? 'INVALID_ADMIN_PIN' : 'ADMIN_PIN_REQUIRED',
-        },
-        { status: 403 }
-      )
-    }
-    dueApprovedBy = admin.name
+  // Food orders are marked paid at checkout, so the food bill must be fully collected; lodging may stay due
+  if (foodTotal > 0 && paidTotal < foodTotal - 0.01) {
+    return NextResponse.json(
+      { error: `Collect at least the food bill (₹${foodTotal.toFixed(2)}) at checkout. The lodging amount may be left as due.` },
+      { status: 400 }
+    )
   }
+
+  // Distribute collected checkout payment between Food dining orders and Lodging bill
+  const foodCollected = Math.min(foodTotal, paidTotal)
+  let remFood = foodCollected
+  const foodCash = Math.min(cash, remFood)
+  remFood -= foodCash
+  const foodUpi = Math.min(upi, remFood)
+  remFood -= foodUpi
+  const foodCard = Math.min(card, remFood)
+  remFood -= foodCard
+
+  const lodgingCash = Math.max(0, Math.round((cash - foodCash) * 100) / 100)
+  const lodgingUpi = Math.max(0, Math.round((upi - foodUpi) * 100) / 100)
+  const lodgingCard = Math.max(0, Math.round((card - foodCard) * 100) / 100)
 
   const prefix = settings.invoicePrefix || 'INV'
   const counter = parseInt(settings.invoiceCounter) || 1
@@ -1788,13 +1929,13 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         actualGst: billedGst,
         internalGst,
         internalTotal,
-        foodTotal,
+        foodTotal: 0, // Food is settled separately; not added to the lodging invoice total
         extraCharges: extra,
         discount: disc,
         grandTotal,
-        payCash: cash,
-        payUpi: upi,
-        payCard: card,
+        payCash: lodgingCash,
+        payUpi: lodgingUpi,
+        payCard: lodgingCard,
         advanceApplied,
         previousDue,
         carriedFrom: carriedFrom.length ? JSON.stringify(carriedFrom) : null,
@@ -1808,12 +1949,59 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       },
     })
 
+    if (foodTotal > 0 && foodOrderIdsToUpdate.length > 0) {
+      await tx.foodOrder.updateMany({
+        where: { id: { in: foodOrderIdsToUpdate } },
+        data: { status: 'PAID' },
+      })
+
+      if (foodCollected > 0) {
+        const foodMethod =
+          foodCash > 0 && foodUpi === 0 && foodCard === 0
+            ? 'CASH'
+            : foodUpi > 0 && foodCash === 0 && foodCard === 0
+              ? 'UPI'
+              : foodCard > 0 && foodCash === 0 && foodUpi === 0
+                ? 'CARD'
+                : 'SPLIT'
+
+        // Food GST (CGST + SGST on the food orders) is booked as GST, the rest as FOOD revenue
+        const foodGstCollected = foodTotal > 0 ? Math.round(((foodTax * foodCollected) / foodTotal) * 100) / 100 : 0
+        await tx.ledgerEntry.create({
+          data: {
+            date: new Date(),
+            type: 'INCOME',
+            category: 'FOOD',
+            description: `Room Dining / Fooding bill settled at checkout - Room ${booking.room.number} - ${booking.guest.name}`,
+            amount: Math.round((foodCollected - foodGstCollected) * 100) / 100,
+            method: foodMethod,
+            source: 'AUTO',
+            refId: createdBill.id,
+          },
+        })
+        if (foodGstCollected > 0) {
+          await tx.ledgerEntry.create({
+            data: {
+              date: new Date(),
+              type: 'INCOME',
+              category: 'GST',
+              description: `CGST + SGST on fooding bill - Room ${booking.room.number} - ${booking.guest.name}`,
+              amount: foodGstCollected,
+              method: foodMethod,
+              source: 'AUTO',
+              refId: createdBill.id,
+            },
+          })
+        }
+      }
+    }
+
     await tx.auditLog.create({
       data: {
         action: body.status === 'DRAFT' ? 'BILL_DRAFT_CREATED' : 'BILL_FINALIZED',
         entity: 'Bill',
         entityId: createdBill.id,
-        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Amount: ₹${actualRoomTotal}, Billed Amount: ₹${billedRoom}, CGST: ${gstRates.cgst}% (₹${gstSplit.cgst}), SGST: ${gstRates.sgst}% (₹${gstSplit.sgst}),${previousDue > 0 ? ` Previous due: ₹${previousDue},` : ''} Grand Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
+        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Tariff: ₹${actualRoomTotal}, Billed Room: ₹${billedRoom}, Food Settled: ₹${foodCollected}, CGST: ${gstRates.cgst}% (₹${gstSplit.cgst}), SGST: ${gstRates.sgst}% (₹${gstSplit.sgst}),${previousDue > 0 ? ` Previous due: ₹${previousDue},` : ''} Lodging Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
         userName: user.name || 'Staff',
         userRole: user.role || 'RECEPTION',
       },
@@ -1824,18 +2012,6 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       await tx.bill.update({
         where: { id: c.id },
         data: { carriedForward: { increment: c.amount }, carriedToBillNumber: billNumber },
-      })
-    }
-    if (dueApprovedBy) {
-      await tx.auditLog.create({
-        data: {
-          action: 'BILL_DUE_APPROVED',
-          entity: 'Bill',
-          entityId: createdBill.id,
-          details: `Checkout bill ${billNumber} issued with ₹${(payableNow - paidTotal).toFixed(2)} balance due (${booking.guest.name}, Room ${booking.room.number}). Approved by Admin ${dueApprovedBy}.`,
-          userName: dueApprovedBy,
-          userRole: 'ADMIN',
-        },
       })
     }
     // Remember the company / GSTIN on the guest profile so they autofill next time
@@ -1861,13 +2037,6 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       })
     }
 
-    if (pendingOrders.length > 0) {
-      await tx.foodOrder.updateMany({
-        where: { id: { in: pendingOrders.map((o) => o.id) } },
-        data: { status: 'ADDED_TO_BILL' },
-      })
-    }
-
     const ledgerEntries = buildBillLedgerEntries({
       billId: createdBill.id,
       billNumber,
@@ -1877,7 +2046,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       days: billDays,
       ratePerDay: booking.ratePerDay,
       actualRoomTotal,
-      foodTotal,
+      foodTotal: 0,
       extraCharges: extra,
       discount: disc,
       gstPercent: gstPct,
@@ -2076,20 +2245,21 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     user = { id: approver.id, name: approver.name, role: approver.role }
   }
 
-  // Taxable and GST calculation based on customer-facing amount
-  const taxable = Math.max(0, newBilledRoom + bill.foodTotal + extra - disc)
+  // Taxable and CGST/SGST calculation based on the customer-facing amount; food (settled separately) is not taxed here
+  const foodTotal = bill.foodTotal || 0
+  const taxable = Math.max(0, newBilledRoom + extra - disc)
   const newGstSplit = computeGst(taxable, gstRates.cgst, gstRates.sgst)
   const newBilledGst = newGstSplit.total
   // previousDue (earlier bills' balance) stays part of the total; it is not taxed
-  const newGrandTotal = Math.max(0, Math.round((taxable + newBilledGst + (bill.previousDue || 0)) * 100) / 100)
+  const newGrandTotal = Math.max(0, Math.round((taxable + newBilledGst + foodTotal + (bill.previousDue || 0)) * 100) / 100)
   const advanceApplied = Math.min(bill.booking.advance || 0, newGrandTotal)
   const payableNow = Math.max(0, Math.round((newGrandTotal - advanceApplied - (bill.carriedForward || 0)) * 100) / 100)
 
   // Internal accounting calculation
-  const internalTaxable = Math.max(0, actualRoomTotal + bill.foodTotal + extra - disc)
-  // Internal total = actual tariff + the GST actually charged on the invoice (on the custom amount for corporate bills)
+  const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
+  // Internal total = actual tariff + the GST actually charged on the invoice + food bill
   const internalGst = newBilledGst
-  const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst) * 100) / 100)
+  const internalTotal = Math.max(0, Math.round((internalTaxable + internalGst + foodTotal) * 100) / 100)
 
   const cash = payCash !== undefined ? num(payCash) : bill.payCash
   const upi = payUpi !== undefined ? num(payUpi) : bill.payUpi
@@ -2102,16 +2272,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
       { status: 400 }
     )
   }
-  // An edited bill must stay fully paid unless an Admin approves leaving a balance due
-  if (isFinancialChange && paidTotal < payableNow - 0.01 && !(await verifyAdminPin(body.adminPin))) {
-    return NextResponse.json(
-      {
-        error: `Full payment required: updated payable is ₹${payableNow.toFixed(2)} but only ₹${paidTotal.toFixed(2)} is recorded. Adjust the payment split, or enter the Admin PIN to leave a balance due.`,
-        code: body.adminPin ? 'INVALID_ADMIN_PIN' : 'ADMIN_PIN_REQUIRED',
-      },
-      { status: 403 }
-    )
-  }
+  // Edited bills can have payment adjusted with or without an outstanding balance due
 
   const updatedBill = await prisma.$transaction(async (tx) => {
     // Optional room change for booking if requested
@@ -2262,12 +2423,15 @@ async function updateMenuItem(body: Record<string, unknown>) {
   return NextResponse.json(item)
 }
 
-async function deleteMenuItem(req: NextRequest) {
+async function deleteMenuItem(req: NextRequest, user: RequestUser) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  const item = await prisma.menuItem.findUnique({ where: { id } })
+  if (!item) return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
   await prisma.menuItem.delete({ where: { id } })
-  return NextResponse.json({ ok: true })
+  await logAudit('DELETE_MENU_ITEM', 'MenuItem', id, `Deleted menu item ${item.name}`, user)
+  return NextResponse.json({ success: true, message: `Menu item ${item.name} deleted` })
 }
 
 // ============ FOOD ORDERS ============
@@ -2303,9 +2467,10 @@ async function createOrder(body: Record<string, unknown>, user: RequestUser) {
   const subtotal = Math.round(
     items.reduce((s: number, it: { price: number; quantity: number }) => s + (it.price || 0) * (it.quantity || 1), 0) * 100
   ) / 100
-  // Food bill GST (CGST + SGST): direct restaurant bills only. Room-service food is taxed on the room bill.
+  // Food bill GST (CGST + SGST) from Settings, with a per-order on/off. Applies to walk-in and
+  // room-service orders alike: room food is settled as a separate fooding bill, not taxed on the room bill.
   const foodGst = foodGstDefaults(await getSettingsMap())
-  const applyGst = !bookingId && (body.gstEnabled !== undefined ? body.gstEnabled === true : foodGst.enabled)
+  const applyGst = body.gstEnabled !== undefined ? body.gstEnabled === true : foodGst.enabled
   const tax = applyGst ? computeGst(subtotal, foodGst.cgst, foodGst.sgst) : { cgst: 0, sgst: 0, total: 0 }
   const total = Math.round((subtotal + tax.total) * 100) / 100
   // Room-service orders hang off the in-house stay; the room is always the booking's current room
@@ -2367,23 +2532,14 @@ async function updateOrder(body: Record<string, unknown>, user: RequestUser) {
       )
     }
     const payMethod = method ? String(method) : 'CASH'
-    // Room-service food settled at the restaurant (not on the room bill) becomes a food bill: apply food GST now
+    // Food GST was fixed when the order was taken
     const subtotal = order.subtotal > 0 ? order.subtotal : order.total
-    let taxFields: { cgstPercent: number; sgstPercent: number; taxAmount: number; total: number } | null = null
-    if (order.bookingId && order.taxAmount <= 0) {
-      const foodGst = foodGstDefaults(await getSettingsMap())
-      const applyGst = body.gstEnabled !== undefined ? body.gstEnabled === true : foodGst.enabled
-      if (applyGst) {
-        const tax = computeGst(subtotal, foodGst.cgst, foodGst.sgst)
-        taxFields = { cgstPercent: foodGst.cgst, sgstPercent: foodGst.sgst, taxAmount: tax.total, total: Math.round((subtotal + tax.total) * 100) / 100 }
-      }
-    }
-    const taxAmount = taxFields ? taxFields.taxAmount : order.taxAmount
-    const payable = taxFields ? taxFields.total : order.total
+    const taxAmount = order.taxAmount || 0
+    const payable = order.total
     const updated = await prisma.$transaction(async (tx) => {
       const ord = await tx.foodOrder.update({
         where: { id: String(id) },
-        data: { status: 'PAID', subtotal, ...(taxFields || {}) },
+        data: { status: 'PAID', subtotal },
       })
       const desc = `Restaurant order${order.tableNo ? ` (Table ${order.tableNo})` : ''}${order.room ? ` - Room ${order.room.number}` : ''}`
       await tx.ledgerEntry.create({
@@ -2563,8 +2719,24 @@ async function deleteBill(req: NextRequest, user: RequestUser) {
 
   await prisma.$transaction(async (tx) => {
     await revertCarriedFrom(tx, bill)
+    // Room-service food settled together with this checkout bill (marked PAID, revenue booked on the
+    // bill) goes back to pending, since its revenue row is deleted with the bill. Orders paid at the
+    // restaurant counter have their own ledger row and stay paid.
+    const settledFood = await tx.ledgerEntry.count({ where: { refId: bill.id, category: 'FOOD' } })
     await tx.ledgerEntry.deleteMany({ where: { refId: bill.id } })
     await tx.bill.delete({ where: { id: bill.id } })
+    if (settledFood > 0) {
+      const paidOrders = await tx.foodOrder.findMany({ where: { bookingId: bill.bookingId, status: 'PAID' }, select: { id: true } })
+      const counterPaid = await tx.ledgerEntry.findMany({
+        where: { refId: { in: paidOrders.map((o) => o.id) } },
+        select: { refId: true },
+      })
+      const counterIds = new Set(counterPaid.map((r) => r.refId))
+      const settledIds = paidOrders.map((o) => o.id).filter((oid) => !counterIds.has(oid))
+      if (settledIds.length > 0) {
+        await tx.foodOrder.updateMany({ where: { id: { in: settledIds } }, data: { status: 'PENDING' } })
+      }
+    }
     // Food merged into this invoice goes back to pending so it can be billed again.
     // Orders carry no bill id, so this is only safe when no other invoice of the stay holds food.
     if (bill.foodTotal > 0) {
@@ -2667,7 +2839,7 @@ async function createStaffPayment(body: Record<string, unknown>, user: RequestUs
 
   const amt = num(amount)
   const payMethod = method ? String(method) : 'CASH'
-  const paymentDate = (parseDateInput(date, 'T12:00:00') as Date) || new Date()
+  const paymentDate = (parseDateInput(date, '12:00') as Date) || new Date()
   const paymentType = type ? String(type) : 'SALARY'
   const category = paymentType === 'ADVANCE' ? 'STAFF_ADVANCE' : 'SALARY'
 
@@ -2777,7 +2949,7 @@ async function createLedgerEntry(body: Record<string, unknown>, user: RequestUse
       method: method ? String(method) : 'CASH',
       vendor: vendor ? String(vendor) : null,
       source: 'MANUAL',
-      date: (parseDateInput(date, 'T12:00:00') as Date) || new Date(),
+      date: (parseDateInput(date, '12:00') as Date) || new Date(),
     },
   })
   await logAudit(type === 'INCOME' ? 'LEDGER_INCOME' : 'EXPENSE', 'LedgerEntry', entry.id, `${type} ₹${amount} — ${description}`, user)
@@ -2860,7 +3032,7 @@ async function updateLedgerEntry(body: Record<string, unknown>, user: RequestUse
       ...(amount !== undefined && { amount: num(amount) }),
       ...(method !== undefined && { method: String(method) }),
       ...(vendor !== undefined && { vendor: vendor ? String(vendor) : null }),
-      ...(date !== undefined && { date: (parseDateInput(date, 'T12:00:00') as Date) || existing.date }),
+      ...(date !== undefined && { date: (parseDateInput(date, '12:00') as Date) || existing.date }),
     },
   })
   if (link.kind === 'STAFF_PAYMENT') {
@@ -2906,7 +3078,7 @@ async function getStats() {
   const startToday = makeIST(istDateStr(now), '00:00')
   const endToday = makeIST(istDateStr(now), '23:59:59')
 
-  const [rooms, activeBookings, bookedFuture, todayBills, todayLedger, pendingFood, allBills] = await Promise.all([
+  const [rooms, activeBookings, bookedFuture, todayBills, todayPaidOrders, todayLedger, pendingFood, allBills] = await Promise.all([
     prisma.room.findMany({ select: { status: true, housekeeping: true, rate: true } }),
     prisma.booking.findMany({
       where: { status: { in: ['ACTIVE', 'BOOKED'] } },
@@ -2932,6 +3104,10 @@ async function getStats() {
         carriedForward: true,
       },
     }),
+    prisma.foodOrder.findMany({
+      where: { createdAt: { gte: startToday, lte: endToday }, status: 'PAID' },
+      select: { total: true },
+    }),
     prisma.ledgerEntry.findMany({
       where: { date: { gte: startToday, lte: endToday } },
       select: { type: true, category: true, amount: true, method: true, refId: true },
@@ -2955,7 +3131,8 @@ async function getStats() {
   const booked = rooms.filter((r) => r.status === 'BOOKED').length
   const maintenance = rooms.filter((r) => r.status === 'MAINTENANCE').length
   const dirtyRooms = rooms.filter((r) => r.housekeeping === 'DIRTY').length
-  const todayRevenue = todayBills.reduce((s, b) => s + billInternal(b).total, 0)
+  const todayDirectFoodRevenue = todayPaidOrders.reduce((s, o) => s + (o.total || 0), 0)
+  const todayRevenue = Math.round((todayBills.reduce((s, b) => s + billInternal(b).total, 0) + todayDirectFoodRevenue) * 100) / 100
 
   const billedBookingIds = new Set(allBills.map((b) => b.bookingId))
   const income = todayLedger
@@ -3137,6 +3314,72 @@ async function login(body: Record<string, unknown>) {
   return NextResponse.json({ id: user.id, name: user.name, role: user.role })
 }
 
+async function verifyAdminAuth(
+  req: NextRequest,
+  body?: Record<string, unknown>
+): Promise<{ ok: boolean; error?: string; adminUser?: RequestUser }> {
+  const pinHeader = req.headers.get('x-admin-pin') || req.headers.get('x-admin-password')
+  const url = new URL(req.url)
+  const pinParam = url.searchParams.get('adminPin') || url.searchParams.get('adminPassword')
+  const pinBody = body?.adminPin ? String(body.adminPin) : (body?.adminPassword ? String(body.adminPassword) : undefined)
+  const providedPin = (pinHeader || pinParam || pinBody || '').trim()
+
+  if (!providedPin) {
+    return {
+      ok: false,
+      error: 'Admin PIN / Password is required to perform deletion. Authorization required.',
+    }
+  }
+
+  // 1. Check active ADMIN user in database
+  const adminUser = await prisma.user.findFirst({
+    where: {
+      pin: providedPin,
+      active: true,
+      role: 'ADMIN',
+    },
+  })
+  if (adminUser) {
+    return { ok: true, adminUser: { id: adminUser.id, name: adminUser.name, role: 'ADMIN' } }
+  }
+
+  // 2. Check adminPin in Setting table
+  const settingAdminPin = await prisma.setting.findUnique({ where: { key: 'adminPin' } })
+  if (settingAdminPin?.value && settingAdminPin.value.trim() === providedPin) {
+    return { ok: true, adminUser: { id: 'setting-admin', name: 'Master Admin', role: 'ADMIN' } }
+  }
+
+  // 3. Fallback if no active ADMIN user in DB yet and no setting set: allow default '0000'
+  const countAdmins = await prisma.user.count({ where: { role: 'ADMIN', active: true } })
+  if (countAdmins === 0 && providedPin === '0000') {
+    return { ok: true, adminUser: { id: 'default-admin', name: 'Default Admin', role: 'ADMIN' } }
+  }
+
+  return {
+    ok: false,
+    error: 'Access Denied: Invalid Admin PIN or Password. Only administrators can authorize deletions.',
+  }
+}
+
+async function deleteUser(req: NextRequest, user: RequestUser) {
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get('id')
+  if (!id) return NextResponse.json({ error: 'User id required' }, { status: 400 })
+  const target = await prisma.user.findUnique({ where: { id } })
+  if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+
+  if (target.role === 'ADMIN') {
+    const adminCount = await prisma.user.count({ where: { role: 'ADMIN', active: true } })
+    if (adminCount <= 1) {
+      return NextResponse.json({ error: 'Cannot delete the only active Admin account.' }, { status: 400 })
+    }
+  }
+
+  await prisma.user.delete({ where: { id } })
+  await logAudit('USER_DELETE', 'User', id, `Deleted user ${target.name} (${target.role})`, user)
+  return NextResponse.json({ success: true, message: `User ${target.name} deleted` })
+}
+
 // ============ AUDIT ============
 async function listAudit(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -3208,16 +3451,19 @@ async function updateExpenseCategory(body: Record<string, unknown>) {
   return NextResponse.json(cat)
 }
 
-async function deleteExpenseCategory(req: NextRequest) {
+async function deleteExpenseCategory(req: NextRequest, user: RequestUser) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  const cat = await prisma.expenseCategory.findUnique({ where: { id } })
+  if (!cat) return NextResponse.json({ error: 'Category not found' }, { status: 404 })
   try {
     await prisma.expenseCategory.delete({ where: { id } })
+    await logAudit('DELETE_EXPENSE_CAT', 'ExpenseCategory', id, `Deleted expense category ${cat.name}`, user)
   } catch {
-    return NextResponse.json({ error: 'Cannot delete (may be in use)' }, { status: 400 })
+    return NextResponse.json({ error: 'Cannot delete (category may be in use)' }, { status: 400 })
   }
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ success: true, message: `Category ${cat.name} deleted` })
 }
 
 // ============ GLOBAL SEARCH ============
@@ -3483,18 +3729,56 @@ async function getReports(req: NextRequest) {
     if (e.type !== 'INCOME' || e.category !== 'ADVANCE') continue
     const row = dayRow(e.date)
     if (e.method === 'CASH') row.cash += e.amount
-    if (e.method === 'UPI') row.upi += e.amount
-    if (e.method === 'CARD') row.card += e.amount
+    else if (e.method === 'UPI') row.upi += e.amount
+    else if (e.method === 'CARD') row.card += e.amount
+    else row.cash += e.amount
     row.advances += e.amount
+  }
+  const orderMethod = new Map<string, string>()
+  for (const e of ledger) {
+    if (e.category === 'FOOD' && e.refId) {
+      orderMethod.set(e.refId, e.method)
+    }
   }
   for (const o of orders) {
     if (o.status !== 'PAID') continue
-    dayRow(o.createdAt).directFood += o.total
+    const row = dayRow(o.createdAt)
+    row.directFood += o.total
+    const m = (orderMethod.get(o.id) || 'CASH').toUpperCase()
+    if (m === 'UPI') row.upi += o.total
+    else if (m === 'CARD') row.card += o.total
+    else row.cash += o.total
   }
   const collectionsDaily = [...daily.values()]
     .filter((r) => r.date >= fromStr && r.date <= toStr)
-    .map((r) => ({ ...r, total: Math.round((r.bills + r.directFood + r.advances) * 100) / 100 }))
+    .map((r) => {
+      const cash = Math.round(r.cash * 100) / 100
+      const upi = Math.round(r.upi * 100) / 100
+      const card = Math.round(r.card * 100) / 100
+      const billsTotal = Math.round(r.bills * 100) / 100
+      const directFood = Math.round(r.directFood * 100) / 100
+      const advances = Math.round(r.advances * 100) / 100
+      const total = Math.round((cash + upi + card) * 100) / 100
+      return {
+        ...r,
+        cash,
+        upi,
+        card,
+        bills: billsTotal,
+        directFood,
+        advances,
+        total,
+      }
+    })
     .sort((a, b) => b.date.localeCompare(a.date))
+
+  const totalCash = Math.round(collectionsDaily.reduce((s, r) => s + r.cash, 0) * 100) / 100
+  const totalUpi = Math.round(collectionsDaily.reduce((s, r) => s + r.upi, 0) * 100) / 100
+  const totalCard = Math.round(collectionsDaily.reduce((s, r) => s + r.card, 0) * 100) / 100
+  const totalBills = Math.round(collectionsDaily.reduce((s, r) => s + r.bills, 0) * 100) / 100
+  const totalDirectFood = Math.round(collectionsDaily.reduce((s, r) => s + r.directFood, 0) * 100) / 100
+  const totalAdvances = Math.round(collectionsDaily.reduce((s, r) => s + r.advances, 0) * 100) / 100
+  const totalCollections = Math.round((totalCash + totalUpi + totalCard) * 100) / 100
 
   const expenseByCategory: Record<string, number> = {}
   for (const e of ledger.filter((x) => x.type === 'EXPENSE')) {
@@ -3508,6 +3792,84 @@ async function getReports(req: NextRequest) {
       (!!b.roomNumber && b.roomNumber !== b.booking.room.number)
   )
 
+  const gstBillsList = bills.filter(
+    (b) => (b.actualGst !== undefined && b.actualGst > 0) || (b.gstPercent !== undefined && b.gstPercent > 0) || (b.internalGst !== undefined && b.internalGst > 0)
+  )
+
+  const gstRows = gstBillsList.map((b) => {
+    const isCustom =
+      Math.abs(b.billedRoomTotal - b.actualRoomTotal) > 0.01 ||
+      (!!b.roomDescription && b.roomDescription !== b.booking.room.type) ||
+      (!!b.roomNumber && b.roomNumber !== b.booking.room.number) ||
+      b.isCorporate
+    const taxableAmount = Math.max(0, b.billedRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount)
+    const paid = billReceived(b)
+    const balance = billBalance(b)
+    const gstSplitRow = splitGst(b)
+    const effectiveCash = b.payCash || 0
+
+    const internalGst =
+      b.internalGst !== undefined && b.internalGst > 0
+        ? b.internalGst
+        : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
+        ? b.actualGst
+        : Math.round(Math.max(0, b.actualRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount) * b.gstPercent) / 100
+    const internalTotal =
+      b.internalTotal !== undefined && b.internalTotal > 0
+        ? b.internalTotal
+        : Math.abs(b.billedRoomTotal - b.actualRoomTotal) < 0.01
+        ? b.grandTotal
+        : Math.max(0, b.actualRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount) + internalGst
+
+    return {
+      id: b.id,
+      billNumber: b.billNumber,
+      date: b.createdAt,
+      guestName: b.booking.guest.name,
+      phone: b.booking.guest.phone,
+      email: b.booking.guest.email || null,
+      company: b.corporateName || b.booking.guest.company || null,
+      guestGst: b.gstNumber || b.booking.guest.gst || null,
+      address: b.booking.guest.address || null,
+      idProof: b.booking.guest.idProof || null,
+      originalRoomNumber: b.booking.room.number,
+      roomNumber: b.roomNumber || b.booking.room.number,
+      roomDescription: b.roomDescription || b.booking.room.type || 'Non-AC',
+      days: b.days,
+      actualRoomTotal: b.actualRoomTotal,
+      billedRoomTotal: b.billedRoomTotal,
+      foodTotal: b.foodTotal,
+      extraCharges: b.extraCharges,
+      discount: b.discount,
+      taxableAmount,
+      gstPercent: b.gstPercent,
+      actualGst: b.actualGst,
+      cgstPercent: gstSplitRow.cgstPercent,
+      sgstPercent: gstSplitRow.sgstPercent,
+      cgst: gstSplitRow.cgst,
+      sgst: gstSplitRow.sgst,
+      internalGst,
+      grandTotal: b.grandTotal,
+      internalTotal,
+      isCustom,
+      payCash: effectiveCash,
+      payUpi: b.payUpi,
+      payCard: b.payCard,
+      advanceApplied: b.advanceApplied,
+      paid,
+      balance,
+      approvedBy: b.approvedBy || null,
+      createdBy: b.createdBy || null,
+      status: b.status,
+      notes: b.notes || null,
+      booking: b.booking,
+    }
+  })
+
+  const foodDirectTotal = Math.round(orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0) * 100) / 100
+  const roomInternalRevenue = Math.round(bills.reduce((s, b) => s + billInternal(b).total, 0) * 100) / 100
+  const totalInternalRevenue = Math.round((roomInternalRevenue + foodDirectTotal) * 100) / 100
+
   return NextResponse.json({
     range: { from: fromStr, to: toStr, days: daysDiff },
     occupancy: {
@@ -3520,24 +3882,25 @@ async function getReports(req: NextRequest) {
       inHouseGuests: activeBookings.length,
     },
     collections: {
-      cash: bills.reduce((s, b) => s + b.payCash, 0) + ledger.filter((e) => e.type === 'INCOME' && e.method === 'CASH' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      upi: bills.reduce((s, b) => s + b.payUpi, 0) + ledger.filter((e) => e.type === 'INCOME' && e.method === 'UPI' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      card: bills.reduce((s, b) => s + b.payCard, 0) + ledger.filter((e) => e.type === 'INCOME' && e.method === 'CARD' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      directFood: orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0),
-      advances: ledger.filter((e) => e.type === 'INCOME' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
-      total: bills.reduce((s, b) => s + b.payCash + b.payUpi + b.payCard, 0) + orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0) + ledger.filter((e) => e.type === 'INCOME' && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0),
+      cash: totalCash,
+      upi: totalUpi,
+      card: totalCard,
+      bills: totalBills,
+      directFood: totalDirectFood,
+      advances: totalAdvances,
+      total: totalCollections,
     },
     collectionsDaily,
     revenue: {
-      actualRoomRevenue: bills.reduce((s, b) => s + b.actualRoomTotal, 0),
-      billedRoomRevenue: bills.reduce((s, b) => s + b.billedRoomTotal, 0),
-      gst: bills.reduce((s, b) => s + billInternal(b).gst, 0),
-      cgst: bills.reduce((s, b) => s + splitGst(b).cgst, 0),
-      sgst: bills.reduce((s, b) => s + splitGst(b).sgst, 0),
-      foodRoomPosted: bills.reduce((s, b) => s + b.foodTotal, 0),
-      foodDirect: orders.filter((o) => o.status === 'PAID').reduce((s, o) => s + o.total, 0),
-      discounts: bills.reduce((s, b) => s + b.discount, 0),
-      grandTotal: bills.reduce((s, b) => s + billInternal(b).total, 0),
+      actualRoomRevenue: Math.round(bills.reduce((s, b) => s + b.actualRoomTotal, 0) * 100) / 100,
+      billedRoomRevenue: Math.round(bills.reduce((s, b) => s + b.billedRoomTotal, 0) * 100) / 100,
+      gst: Math.round(bills.reduce((s, b) => s + billInternal(b).gst, 0) * 100) / 100,
+      cgst: Math.round(bills.reduce((s, b) => s + splitGst(b).cgst, 0) * 100) / 100,
+      sgst: Math.round(bills.reduce((s, b) => s + splitGst(b).sgst, 0) * 100) / 100,
+      foodRoomPosted: Math.round(bills.reduce((s, b) => s + b.foodTotal, 0) * 100) / 100,
+      foodDirect: foodDirectTotal,
+      discounts: Math.round(bills.reduce((s, b) => s + b.discount, 0) * 100) / 100,
+      grandTotal: totalInternalRevenue,
     },
     invoices: {
       count: bills.length,
@@ -3547,6 +3910,7 @@ async function getReports(req: NextRequest) {
         billNumber: b.billNumber,
         date: b.createdAt,
         guestName: b.booking.guest.name,
+        originalRoomNumber: b.booking.room.number,
         roomNumber: b.roomNumber || b.booking.room.number,
         roomDescription: b.roomDescription || b.booking.room.type || 'Non-AC',
         actualRoomTotal: b.actualRoomTotal,
@@ -3607,6 +3971,16 @@ async function getReports(req: NextRequest) {
     outstanding: {
       total: outstandingRows.reduce((s, r) => s + r.balance, 0),
       rows: outstandingRows,
+    },
+    gstBills: {
+      count: gstRows.length,
+      normalCount: gstRows.filter((r) => !r.isCustom).length,
+      customCount: gstRows.filter((r) => r.isCustom).length,
+      totalGstAmount: Math.round(gstRows.reduce((s, r) => s + r.actualGst, 0) * 100) / 100,
+      totalTaxableAmount: Math.round(gstRows.reduce((s, r) => s + r.taxableAmount, 0) * 100) / 100,
+      totalGrandTotal: Math.round(gstRows.reduce((s, r) => s + r.grandTotal, 0) * 100) / 100,
+      totalInternalGst: Math.round(gstRows.reduce((s, r) => s + r.internalGst, 0) * 100) / 100,
+      rows: gstRows,
     },
     bookings: {
       rows: bookings.map((b) => ({
@@ -3672,7 +4046,27 @@ async function dispatch(
   const resource = segments[0] || ''
   const user = getRequestUser(req)
 
+  // Enforce Admin PIN / Password authorization for ANY delete operation across the entire application
+  if (method === 'DELETE') {
+    const adminAuth = await verifyAdminAuth(req, body)
+    if (!adminAuth.ok) {
+      return NextResponse.json({ error: adminAuth.error }, { status: 403 })
+    }
+    if (adminAuth.adminUser) {
+      user.id = user.id || adminAuth.adminUser.id
+      user.name = user.name || adminAuth.adminUser.name
+      user.role = 'ADMIN'
+    }
+  }
+
   switch (resource) {
+    case 'verify-admin':
+      if (method === 'POST') {
+        const check = await verifyAdminAuth(req, body)
+        if (!check.ok) return NextResponse.json({ error: check.error }, { status: 403 })
+        return NextResponse.json({ ok: true, user: check.adminUser })
+      }
+      break
     case 'rooms':
       if (method === 'GET') return await listRooms(req)
       if (method === 'POST') return await createRoom(body)
@@ -3680,7 +4074,7 @@ async function dispatch(
       if (method === 'DELETE') return await deleteRoom(req, user)
       break
     case 'guests':
-      if (method === 'GET' && url.searchParams.get('phone')) return await lookupGuest(req)
+      if (method === 'GET' && (url.searchParams.get('phone') || url.searchParams.get('idProof') || url.searchParams.get('name') || url.searchParams.get('lookup') === 'true')) return await lookupGuest(req)
       if (method === 'GET') return await listGuests(req)
       if (method === 'POST') return await upsertGuest(body)
       if (method === 'DELETE') return await deleteGuest(req, user)
@@ -3703,7 +4097,7 @@ async function dispatch(
       if (method === 'GET') return await listMenu()
       if (method === 'POST') return await createMenuItem(body)
       if (method === 'PATCH') return await updateMenuItem(body)
-      if (method === 'DELETE') return await deleteMenuItem(req)
+      if (method === 'DELETE') return await deleteMenuItem(req, user)
       break
     case 'orders':
       if (method === 'GET') return await listOrders(req)
@@ -3739,6 +4133,7 @@ async function dispatch(
       if (method === 'GET') return await listUsers()
       if (method === 'POST') return await createUser(body, user)
       if (method === 'PATCH') return await updateUser(body, user)
+      if (method === 'DELETE') return await deleteUser(req, user)
       break
     case 'auth':
       if (method === 'POST' && body.action === 'verify-admin') {
@@ -3793,6 +4188,13 @@ async function dispatch(
         )
       }
       if (method === 'POST') {
+        if (body.action === 'cancel') {
+          const id = String(body.id || '')
+          if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+          const b = await cancelBanquetBooking(body as any, user.name)
+          await logAudit('BANQUET_CANCEL', 'BanquetBooking', id, `Cancelled banquet booking ${b.bookingNumber} (${b.customerName}). Reason: ${body.reason || 'Staff action'}`, user)
+          return NextResponse.json(b)
+        }
         const b = await createBanquetBooking(body as any, user.name)
         await logAudit('BANQUET_CREATE', 'BanquetBooking', b.id, `Created banquet booking ${b.bookingNumber} for ${b.customerName}`, user)
         return NextResponse.json(b)
@@ -3800,6 +4202,11 @@ async function dispatch(
       if (method === 'PATCH') {
         const id = String(body.id || url.searchParams.get('id') || '')
         if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+        if (body.action === 'cancel' || body.status === 'CANCELLED') {
+          const b = await cancelBanquetBooking({ id, ...body as any }, user.name)
+          await logAudit('BANQUET_CANCEL', 'BanquetBooking', id, `Cancelled banquet booking ${b.bookingNumber} (${b.customerName}). Reason: ${body.reason || 'Staff action'}`, user)
+          return NextResponse.json(b)
+        }
         const b = await updateBanquetBooking(id, body as any, user.name)
         await logAudit('BANQUET_UPDATE', 'BanquetBooking', id, `Updated banquet booking ${b.bookingNumber}`, user)
         return NextResponse.json(b)
@@ -3868,7 +4275,7 @@ async function dispatch(
       if (method === 'GET') return await listExpenseCategories()
       if (method === 'POST') return await createExpenseCategory(body)
       if (method === 'PATCH') return await updateExpenseCategory(body)
-      if (method === 'DELETE') return await deleteExpenseCategory(req)
+      if (method === 'DELETE') return await deleteExpenseCategory(req, user)
       break
     case 'search':
       if (method === 'GET') return await globalSearch(req)

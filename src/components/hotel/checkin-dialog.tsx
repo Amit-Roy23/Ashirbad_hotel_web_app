@@ -20,15 +20,46 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap } from '@/lib/hotel-utils'
+import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, formatDateTime, toDateStr, doDateRangesOverlap, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { runWithAdminPin } from '@/lib/admin-pin'
 import { CompanyInput } from './company-input'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
-import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight, Clock } from 'lucide-react'
+import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, ShieldCheck, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+
+interface DueItem {
+  billId: string
+  billNumber: string
+  bookingId: string
+  roomNumber: string
+  checkIn: string
+  checkOut: string | null
+  actualCheckOut: string | null
+  checkoutDate: string
+  days: number
+  grandTotal: number
+  paidTotal: number
+  balanceDue: number
+  paymentStatus: string
+  status: string
+  createdAt: string
+}
+
+interface GuestLookupResult {
+  id: string
+  name: string
+  phone: string
+  company?: string | null
+  gst?: string | null
+  address?: string | null
+  idProof?: string | null
+  totalDue?: number
+  dueHistory?: DueItem[]
+}
 
 interface BookingInfo {
   id: string
@@ -61,6 +92,8 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
   const [bookingMode, setBookingMode] = useState<'CHECKIN' | 'BOOKING'>(initialMode)
   const [phone, setPhone] = useState('')
   const [name, setName] = useState('')
+  const [idType, setIdType] = useState<GovIdType>('AADHAAR')
+  const [idNumber, setIdNumber] = useState('')
   const [company, setCompany] = useState('')
   const [gst, setGst] = useState('')
   const [address, setAddress] = useState('')
@@ -73,36 +106,37 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
   const [isCorporate, setIsCorporate] = useState(false)
   const [notes, setNotes] = useState('')
   const [autoFilled, setAutoFilled] = useState(false)
-  const [outstanding, setOutstanding] = useState(0)
+  const [guestDueInfo, setGuestDueInfo] = useState<{ totalDue: number; dueHistory: DueItem[] } | null>(null)
   const [saving, setSaving] = useState(false)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (open && room) {
-      setBookingMode(initialMode)
-      setPhone('')
-      setName('')
-      setCompany('')
-      setGst('')
-      setAddress('')
-      setCheckInDate(todayStr())
-      setCheckOut(addDays(1))
-      setGuestCount('1')
-      setAdvance('')
-      setAdvanceMethod('CASH')
-      setIsCorporate(false)
-      setNotes('')
-      setAutoFilled(false)
-      setOutstanding(0)
-      setError('')
+    if (!open || !room) return
+    setBookingMode(initialMode)
+    setPhone('')
+    setName('')
+    setIdType('AADHAAR')
+    setIdNumber('')
+    setCompany('')
+    setGst('')
+    setAddress('')
+    setCheckInDate(todayStr())
+    setCheckOut(addDays(1))
+    setGuestCount('1')
+    setAdvance('')
+    setAdvanceMethod('CASH')
+    setIsCorporate(false)
+    setNotes('')
+    setAutoFilled(false)
+    setGuestDueInfo(null)
+    setError('')
 
-      api<Record<string, string>>('/api/settings')
-        .then((s) => {
-          if (s?.checkoutTime) setCheckOutTime(s.checkoutTime)
-        })
-        .catch(() => {})
-    }
+    api<Record<string, string>>('/api/settings')
+      .then((s) => {
+        if (s?.checkoutTime) setCheckOutTime(s.checkoutTime)
+      })
+      .catch(() => {})
   }, [open, room, initialMode])
 
   const effectiveCheckIn = bookingMode === 'BOOKING' ? checkInDate : todayStr()
@@ -146,33 +180,90 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     return toDateStr(upcomingBooking.checkIn)
   }, [upcomingBooking])
 
-  // AUTO-FILL: when phone matches an old customer, fetch their details
-  async function lookupGuest(value: string) {
-    const clean = sanitizePhone(value)
+  // Dedicated lookup helpers that instantly clear old due alert when data is changed
+  async function lookupByPhone(val: string) {
+    const clean = sanitizePhone(val)
     setPhone(clean)
-    if (clean.length >= 4) {
-      setSearching(true)
-      try {
-        const guest = await api<{ name: string; company?: string; gst?: string; address?: string; outstanding?: number } | null>(
-          `/api/guests?phone=${encodeURIComponent(clean)}`
-        )
-        setOutstanding(guest?.outstanding || 0)
-        if (guest) {
-          setName(guest.name)
-          setCompany(guest.company || '')
-          setGst(guest.gst || '')
-          setAddress(guest.address || '')
-          if (guest.company) setIsCorporate(true)
-          setAutoFilled(true)
-        } else {
-          setAutoFilled(false)
-          setOutstanding(0)
+    setGuestDueInfo(null) // immediately clear any old due alert when typing a new phone
+    if (clean.length < 4) {
+      setAutoFilled(false)
+      return
+    }
+    setSearching(true)
+    try {
+      const guest = await api<GuestLookupResult | null>(`/api/guests?phone=${encodeURIComponent(clean)}`)
+      if (guest) {
+        if (!name || autoFilled) setName(guest.name)
+        if (!company || autoFilled) setCompany(guest.company || '')
+        if (!gst || autoFilled) setGst(guest.gst || '')
+        if (!address || autoFilled) setAddress(guest.address || '')
+        if (guest.idProof && (!idNumber || autoFilled)) {
+          const parsed = parseGovId(guest.idProof)
+          setIdType(parsed.idType)
+          setIdNumber(parsed.idNumber)
         }
-      } catch {
-        // ignore lookup errors
-      } finally {
-        setSearching(false)
+        if (guest.company) setIsCorporate(true)
+        setAutoFilled(true)
+
+        if (guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
+          setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
+        } else {
+          setGuestDueInfo(null)
+        }
+      } else {
+        setAutoFilled(false)
+        setGuestDueInfo(null)
       }
+    } catch {
+      setGuestDueInfo(null)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  async function lookupByIdProof(rawId: string) {
+    const cleanId = rawId.trim()
+    if (cleanId.length < 4) {
+      if (!phone) setGuestDueInfo(null)
+      return
+    }
+    try {
+      const guest = await api<GuestLookupResult | null>(`/api/guests?idProof=${encodeURIComponent(cleanId)}`)
+      if (guest) {
+        if (!phone) setPhone(guest.phone)
+        if (!name || autoFilled) setName(guest.name)
+        if (!company || autoFilled) setCompany(guest.company || '')
+        if (!gst || autoFilled) setGst(guest.gst || '')
+        if (!address || autoFilled) setAddress(guest.address || '')
+        if (guest.company) setIsCorporate(true)
+        if (guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
+          setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
+        } else {
+          setGuestDueInfo(null)
+        }
+      } else {
+        if (!phone) setGuestDueInfo(null)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function lookupByName(rawName: string) {
+    const cleanName = rawName.trim()
+    if (cleanName.length < 3) {
+      if (!phone && !idNumber) setGuestDueInfo(null)
+      return
+    }
+    try {
+      const guest = await api<GuestLookupResult | null>(`/api/guests?name=${encodeURIComponent(cleanName)}`)
+      if (guest && guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
+        setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
+      } else {
+        if (!phone && !idNumber) setGuestDueInfo(null)
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -191,6 +282,11 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     }
     if (!name.trim()) {
       setError('Guest name is required')
+      return
+    }
+    const idCheck = validateGovId(idType, idNumber)
+    if (!idCheck.valid) {
+      setError(idCheck.error || 'Valid Government ID proof is mandatory (Aadhaar / PAN / Passport)')
       return
     }
     if (isCorporate && !company.trim()) {
@@ -228,6 +324,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           roomId: room.id,
           phone: cleanPhone,
           name: name.trim(),
+          idProof: idCheck.formatted,
           company: company.trim() || undefined,
           gst: gst.trim() || undefined,
           address: address.trim() || undefined,
@@ -457,7 +554,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 maxLength={10}
                 placeholder="10-digit mobile number"
                 value={phone}
-                onChange={(e) => lookupGuest(e.target.value)}
+                onChange={(e) => lookupByPhone(e.target.value)}
                 className="h-9 pr-10 text-xs"
               />
               {searching && (
@@ -477,12 +574,6 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 ✓ Valid 10-digit mobile number
               </p>
             )}
-            {outstanding > 0 && (
-              <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
-                ⚠ Outstanding from earlier stay(s): ₹{outstanding.toLocaleString('en-IN')}. Check-in needs the Admin PIN, and this amount
-                will be added to the next bill.
-              </p>
-            )}
             {autoFilled && (
               <p className="text-xs text-emerald-600 font-medium">
                 ✓ Returning customer found — details auto-filled!
@@ -500,8 +591,132 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
               onChange={(e) => {
                 setName(e.target.value)
                 setAutoFilled(false)
+                if (!phone && !idNumber) setGuestDueInfo(null)
+              }}
+              onBlur={(e) => {
+                if (e.target.value.trim().length >= 3 && !phone && !idNumber) {
+                  lookupByName(e.target.value)
+                }
               }}
             />
+          </div>
+
+          {/* Outstanding Past Due Alert Banner */}
+          {guestDueInfo && guestDueInfo.totalDue > 0.01 && (
+            <div className="rounded-lg border-2 border-red-500/80 bg-red-50 p-3 dark:border-red-600 dark:bg-red-950/40 text-red-950 dark:text-red-100 space-y-2 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-xs text-red-700 dark:text-red-400">
+                  <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                  <span>OUTSTANDING DUE PAYMENT ALERT!</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="destructive" className="font-bold text-[11px] px-2 py-0.5">
+                    Total Due: {formatINR(guestDueInfo.totalDue)}
+                  </Badge>
+                  <button
+                    type="button"
+                    onClick={() => setGuestDueInfo(null)}
+                    className="text-red-500 hover:text-red-700 dark:text-red-400 p-0.5 rounded-full hover:bg-red-100 dark:hover:bg-red-900/50"
+                    title="Dismiss Alert"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-red-900 dark:text-red-200">
+                This guest has <strong>{guestDueInfo.dueHistory.length} unpaid bill(s)</strong> totaling <strong>{formatINR(guestDueInfo.totalDue)}</strong> from past checkout(s):
+              </p>
+              <p className="text-[11px] font-semibold text-red-900 dark:text-red-200">
+                Check-in needs the Admin PIN. The due amount will be added to this guest&apos;s next bill.
+              </p>
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {guestDueInfo.dueHistory.map((due) => (
+                  <div key={due.billId || due.billNumber} className="rounded border border-red-200 bg-white/90 dark:bg-red-900/30 p-2 text-xs flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold text-foreground text-xs">
+                        Room {due.roomNumber} • Invoice #{due.billNumber}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Checked out on: <span className="font-medium text-foreground">{formatDateTime(due.checkoutDate)}</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold text-red-600 dark:text-red-400 text-xs">{formatINR(due.balanceDue)}</div>
+                      <div className="text-[10px] text-muted-foreground">Billed: {formatINR(due.grandTotal)} | Paid: {formatINR(due.paidTotal)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Government ID Proof (Mandatory) */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-2.5">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                Govt. ID Proof <span className="text-destructive">*</span>
+              </Label>
+              <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                Mandatory
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="space-y-1 sm:col-span-1">
+                <Select value={idType} onValueChange={(val: GovIdType) => setIdType(val)}>
+                  <SelectTrigger className="h-9 text-xs bg-background">
+                    <SelectValue placeholder="ID Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GOV_ID_TYPES.map((t) => (
+                      <SelectItem key={t.value} value={t.value} className="text-xs">
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1 sm:col-span-2">
+                <Input
+                  placeholder={GOV_ID_TYPES.find((t) => t.value === idType)?.placeholder || 'Enter ID number'}
+                  value={idNumber}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    const digits = idType === 'AADHAAR' ? raw.replace(/\D/g, '').slice(0, 12) : raw.toUpperCase()
+                    setIdNumber(digits)
+                    if (!phone) {
+                      setGuestDueInfo(null)
+                      if (digits.length >= 4) lookupByIdProof(digits)
+                    }
+                  }}
+                  className="h-9 text-xs font-mono font-medium uppercase bg-background"
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Real-time validation message */}
+            {idNumber.length > 0 && (
+              <div className="pt-0.5">
+                {(() => {
+                  const check = validateGovId(idType, idNumber)
+                  if (check.valid) {
+                    return (
+                      <p className="text-[11px] font-medium text-emerald-600 flex items-center gap-1">
+                        ✓ Valid {GOV_ID_TYPES.find((t) => t.value === idType)?.label} ({check.formatted})
+                      </p>
+                    )
+                  }
+                  return (
+                    <p className="text-[11px] font-medium text-amber-600">
+                      {check.error}
+                    </p>
+                  )
+                })()}
+              </div>
+            )}
           </div>
 
           {isCorporate && (
@@ -544,21 +759,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 max="4"
                 value={guestCount}
                 className="h-9 text-xs"
-                onChange={(e) => {
-                  const val = e.target.value
-                  if (val === '') {
-                    setGuestCount('')
-                  } else {
-                    const numVal = parseInt(val)
-                    if (!isNaN(numVal)) {
-                      if (numVal > 4) setGuestCount('4')
-                      else if (numVal < 1) setGuestCount('1')
-                      else setGuestCount(String(numVal))
-                    } else {
-                      setGuestCount(val)
-                    }
-                  }
-                }}
+                onChange={(e) => setGuestCount(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">

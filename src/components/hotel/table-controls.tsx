@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Search, RotateCcw, Download, ArrowUp, ArrowDown, Filter } from 'lucide-react'
+import { Search, RotateCcw, Download, Printer, ArrowUp, ArrowDown, Filter } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import {
@@ -129,6 +129,7 @@ export function TableControls({
   onFilterChange,
   onReset,
   onExport,
+  onPrint,
   exportName = 'export',
   children,
 }: {
@@ -140,6 +141,7 @@ export function TableControls({
   onFilterChange?: (key: string, value: string) => void
   onReset?: () => void
   onExport?: () => void
+  onPrint?: () => void
   exportName?: string
   children?: React.ReactNode // extra custom filters (date ranges etc.)
 }) {
@@ -185,7 +187,19 @@ export function TableControls({
             Reset
           </Button>
         )}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1.5">
+          {onPrint && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5 text-xs font-semibold"
+              onClick={onPrint}
+              title="Print directly"
+            >
+              <Printer className="h-3.5 w-3.5" aria-hidden />
+              Print
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
