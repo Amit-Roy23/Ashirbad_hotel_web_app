@@ -20,7 +20,7 @@ export function RoomStatusBadge({
     return (
       <span
         className={cn(
-          'inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800 dark:bg-red-950 dark:text-red-300',
+          'inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800 dark:border-transparent dark:bg-red-950 dark:text-red-300',
           className
         )}
       >
@@ -33,7 +33,7 @@ export function RoomStatusBadge({
     return (
       <span
         className={cn(
-          'inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:bg-amber-950 dark:border-amber-700 dark:text-amber-200',
+          'inline-flex items-center gap-1 rounded-full bg-amber-200 border border-amber-400 px-2 py-0.5 text-[11px] font-semibold text-amber-950 dark:bg-amber-950 dark:border-amber-700 dark:text-amber-200',
           className
         )}
       >
@@ -72,12 +72,12 @@ export function RoomStatusBadge({
     return (
       <span
         className={cn(
-          'inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-semibold text-orange-800 dark:bg-orange-950 dark:text-orange-300',
+          'inline-flex items-center gap-1 rounded-full border border-violet-300 bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800 dark:border-transparent dark:bg-orange-950 dark:text-orange-300',
           className
         )}
       >
         <BrushCleaning className="h-3 w-3" aria-hidden />
-        Dirty
+        To Clean
       </span>
     )
   }
