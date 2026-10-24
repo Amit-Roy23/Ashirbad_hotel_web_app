@@ -27,6 +27,18 @@ import {
   adjustBanquetAdvance,
   BanquetError,
 } from '@/lib/banquet-service'
+import {
+  listItems as listInventoryItems,
+  createItem as createInventoryItem,
+  updateItem as updateInventoryItem,
+  deleteItem as deleteInventoryItem,
+  recordMovement as recordInventoryMovement,
+  deleteMovement as deleteInventoryMovement,
+  listMovements as listInventoryMovements,
+  stockReport as inventoryStockReport,
+  lowStockCount as inventoryLowStockCount,
+  InventoryError,
+} from '@/lib/inventory-service'
 import { isValidHalfRate, normalizeHalfRate, computeGst, billBalance, billReceived, splitGst } from '@/lib/gst'
 
 export const dynamic = 'force-dynamic'
@@ -128,6 +140,49 @@ function ensureSchema(): Promise<void> {
       `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "cgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
       `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "sgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
       `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "decorEnabled" BOOLEAN NOT NULL DEFAULT true`,
+      // Inventory (same definition as prisma/schema.prisma)
+      `CREATE TABLE IF NOT EXISTS "InventoryItem" (
+        "id" TEXT NOT NULL,
+        "name" TEXT NOT NULL,
+        "category" TEXT NOT NULL DEFAULT 'Housekeeping & Linen',
+        "unit" TEXT NOT NULL DEFAULT 'pcs',
+        "stock" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "reorderLevel" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "avgCost" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "location" TEXT,
+        "notes" TEXT,
+        "active" BOOLEAN NOT NULL DEFAULT true,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "InventoryItem_pkey" PRIMARY KEY ("id")
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "InventoryItem_name_key" ON "InventoryItem"("name")`,
+      `CREATE INDEX IF NOT EXISTS "InventoryItem_category_idx" ON "InventoryItem"("category")`,
+      `CREATE INDEX IF NOT EXISTS "InventoryItem_active_idx" ON "InventoryItem"("active")`,
+      `CREATE TABLE IF NOT EXISTS "InventoryMovement" (
+        "id" TEXT NOT NULL,
+        "itemId" TEXT NOT NULL,
+        "type" TEXT NOT NULL,
+        "quantity" DOUBLE PRECISION NOT NULL,
+        "balanceAfter" DOUBLE PRECISION NOT NULL,
+        "unitCost" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "totalCost" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "vendor" TEXT,
+        "reference" TEXT,
+        "department" TEXT,
+        "roomNumber" TEXT,
+        "method" TEXT,
+        "expenseRecorded" BOOLEAN NOT NULL DEFAULT false,
+        "note" TEXT,
+        "createdBy" TEXT,
+        "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "InventoryMovement_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "InventoryMovement_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "InventoryItem"("id") ON DELETE CASCADE ON UPDATE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS "InventoryMovement_itemId_idx" ON "InventoryMovement"("itemId")`,
+      `CREATE INDEX IF NOT EXISTS "InventoryMovement_date_idx" ON "InventoryMovement"("date")`,
+      `CREATE INDEX IF NOT EXISTS "InventoryMovement_type_idx" ON "InventoryMovement"("type")`,
     ]
     schemaReady = (async () => {
       for (const sql of stmts) await prisma.$executeRawUnsafe(sql)
@@ -3073,6 +3128,10 @@ async function resolveLedgerLink(entry: { source: string; refId: string | null; 
     if (banquet.length > 0) return { kind: 'BANQUET_ADVANCE', bookingId: refId }
     return { kind: 'NONE' }
   }
+  const stockEntry = await prisma.inventoryMovement.findUnique({ where: { id: refId }, include: { item: true } })
+  if (stockEntry) {
+    return { kind: 'LOCKED', reason: `This expense is the inventory purchase of ${stockEntry.item.name}. Change or delete it from the Inventory tab.` }
+  }
   const bill = await prisma.bill.findUnique({ where: { id: refId } })
   if (bill) return { kind: 'LOCKED', reason: `This entry is generated from invoice ${bill.billNumber}. Edit or delete the invoice in Billing instead.` }
   const order = await prisma.foodOrder.findUnique({ where: { id: refId } })
@@ -3267,8 +3326,10 @@ async function getStats() {
     })
 
   const outstanding = allBills.reduce((s, b) => s + billBalance(b), 0)
+  const lowStockItems = await inventoryLowStockCount()
 
   return NextResponse.json({
+    lowStockItems,
     totalRooms: rooms.length,
     vacant,
     occupied,
@@ -4121,7 +4182,7 @@ async function route(
     res.headers.set('Expires', '0')
     return res
   } catch (e) {
-    if (e instanceof BanquetError) {
+    if (e instanceof BanquetError || e instanceof InventoryError) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { 'Cache-Control': 'no-store' } })
     }
     console.error(`API Error [${method} ${url.pathname}]:`, e)
@@ -4221,6 +4282,95 @@ async function dispatch(
       break
     case 'stats':
       if (method === 'GET') return await getStats()
+      break
+    case 'inventory':
+      if (method === 'GET') return NextResponse.json(await listInventoryItems(url.searchParams.get('archived') === 'true'))
+      if (method === 'POST') {
+        const item = await createInventoryItem(body, user.name)
+        await logAudit(
+          'INVENTORY_ITEM',
+          'InventoryItem',
+          item.id,
+          `Added inventory item ${item.name} (${item.category})${item.stock > 0 ? `, opening stock ${item.stock} ${item.unit}` : ''}`,
+          user
+        )
+        return NextResponse.json(item)
+      }
+      if (method === 'PATCH') {
+        const item = await updateInventoryItem(body)
+        await logAudit(
+          'INVENTORY_ITEM',
+          'InventoryItem',
+          item.id,
+          body.active !== undefined && Object.keys(body).length <= 2
+            ? `${item.active ? 'Restored' : 'Archived'} inventory item ${item.name}`
+            : `Updated inventory item ${item.name}`,
+          user
+        )
+        return NextResponse.json(item)
+      }
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return NextResponse.json({ error: 'Item id is required' }, { status: 400 })
+        const res = await deleteInventoryItem(id)
+        await logAudit(
+          'INVENTORY_ITEM',
+          'InventoryItem',
+          id,
+          res.archived ? `Archived inventory item ${res.item.name} (has stock history)` : `Deleted inventory item ${res.item.name}`,
+          user
+        )
+        return NextResponse.json({ success: true, archived: res.archived })
+      }
+      break
+    case 'inventory-movements':
+      if (method === 'GET') {
+        return NextResponse.json(
+          await listInventoryMovements({
+            itemId: url.searchParams.get('itemId'),
+            type: url.searchParams.get('type'),
+            from: url.searchParams.get('from'),
+            to: url.searchParams.get('to'),
+          })
+        )
+      }
+      if (method === 'POST') {
+        // A stock count correction changes stock without a purchase or use, so it needs an Admin
+        if (String(body.type).toUpperCase() === 'ADJUSTMENT') {
+          const admin = await verifyAdminAuth(req, body)
+          if (!admin.ok) {
+            return NextResponse.json({ error: 'Admin PIN is required for a stock count correction' }, { status: 403 })
+          }
+        }
+        const { movement, item } = await recordInventoryMovement(body, user.name)
+        const qty = `${Math.abs(movement.quantity)} ${item.unit}`
+        const detail =
+          movement.type === 'PURCHASE'
+            ? `Stock in: ${qty} ${item.name} @ ₹${movement.unitCost}${movement.vendor ? ` from ${movement.vendor}` : ''} = ₹${movement.totalCost}${movement.expenseRecorded ? ' (added to Expenses)' : ''}`
+            : movement.type === 'ISSUE'
+              ? `Stock used: ${qty} ${item.name} → ${movement.department}${movement.roomNumber ? ` (Room ${movement.roomNumber})` : ''}`
+              : movement.type === 'WASTAGE'
+                ? `Wastage: ${qty} ${item.name} — ${movement.note}`
+                : `Stock count correction: ${item.name} ${movement.quantity > 0 ? '+' : '-'}${qty} (now ${item.stock} ${item.unit}) — ${movement.note}`
+        await logAudit(`INVENTORY_${movement.type}`, 'InventoryMovement', movement.id, `${detail}. Balance ${item.stock} ${item.unit}`, user)
+        return NextResponse.json({ movement, item })
+      }
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return NextResponse.json({ error: 'Entry id is required' }, { status: 400 })
+        const { movement, item } = await deleteInventoryMovement(id)
+        await logAudit(
+          'INVENTORY_DELETE',
+          'InventoryMovement',
+          id,
+          `Deleted ${movement.type.toLowerCase()} entry of ${Math.abs(movement.quantity)} ${item.unit} ${item.name}; stock restored to ${Math.max(0, Math.round((item.stock - movement.quantity) * 1000) / 1000)} ${item.unit}`,
+          user
+        )
+        return NextResponse.json({ success: true })
+      }
+      break
+    case 'inventory-report':
+      if (method === 'GET') return NextResponse.json(await inventoryStockReport(url.searchParams.get('from'), url.searchParams.get('to')))
       break
     case 'settings':
       if (method === 'GET') return await getSettings()

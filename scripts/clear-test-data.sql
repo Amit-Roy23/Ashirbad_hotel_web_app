@@ -1,11 +1,12 @@
 -- Clear test data from the Ashirbad hotel database.
 --
 -- KEEPS: admin / app users and their PINs, settings (hotel name, GST, PIN, ...),
---        rooms, banquet halls, menu items, staff list, expense categories.
+--        rooms, banquet halls, menu items, staff list, expense categories,
+--        inventory item list.
 -- DELETES: guests, bookings, stay extensions, bills, food orders, payments and
 --          expenses (ledger), staff salary payments, banquet bookings and banquet
---          bills, audit trail.
--- RESETS: occupied / booked rooms to Vacant and all rooms to Clean (rooms under
+--          bills, inventory stock entries, audit trail.
+-- RESETS: inventory stock to 0, occupied / booked rooms to Vacant and all rooms to Clean (rooms under
 --         Maintenance stay in Maintenance), banquet halls to Available, and the
 --         invoice number back to INV-0001.
 --
@@ -34,6 +35,15 @@ SET "status" = CASE WHEN "status" = 'MAINTENANCE' THEN 'MAINTENANCE' ELSE 'VACAN
 UPDATE "BanquetHall" SET "status" = 'AVAILABLE' WHERE "status" <> 'MAINTENANCE';
 
 UPDATE "Setting" SET "value" = '1' WHERE "key" = 'invoiceCounter';
+
+-- Inventory tables exist once the app has run with the inventory feature
+DO $$
+BEGIN
+  IF to_regclass('"InventoryMovement"') IS NOT NULL THEN
+    DELETE FROM "InventoryMovement";
+    UPDATE "InventoryItem" SET "stock" = 0, "avgCost" = 0;
+  END IF;
+END $$;
 
 COMMIT;
 
