@@ -117,9 +117,7 @@ export function BanquetBillDialog({
         0,
         (booking.hallRent || 0) +
           (booking.foodTotal || 0) +
-          (booking.decorEnabled === false ? 0 : booking.decorCharges || 0) +
-          (booking.extraCharges || 0) -
-          (booking.discount || 0)
+          (booking.decorEnabled === false ? 0 : (booking.decorCharges || 0) + (booking.extraCharges || 0) - (booking.discount || 0))
       )
       const gst = computeGst(taxable, 2.5, 2.5).total
       const grand = taxable + gst
@@ -135,11 +133,13 @@ export function BanquetBillDialog({
   // Calculations
   const numHall = Math.max(0, parseFloat(hallRent) || 0)
   const numFood = Math.max(0, parseFloat(foodCharges) || 0)
+  // "Decor, AV Services & Discounts" switched off on the booking = none of them on this invoice
+  const servicesOff = !existingBill && booking?.decorEnabled === false
   // Decor switched off = no decoration charge on this invoice
-  const numDecor = decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
-  const numSound = Math.max(0, parseFloat(soundAvCharges) || 0)
-  const numExtra = Math.max(0, parseFloat(extraCharges) || 0)
-  const numDiscount = Math.max(0, parseFloat(discount) || 0)
+  const numDecor = !servicesOff && decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
+  const numSound = servicesOff ? 0 : Math.max(0, parseFloat(soundAvCharges) || 0)
+  const numExtra = servicesOff ? 0 : Math.max(0, parseFloat(extraCharges) || 0)
+  const numDiscount = servicesOff ? 0 : Math.max(0, parseFloat(discount) || 0)
   const numGstPct = cgst + sgst
 
   const taxableAmount = Math.max(0, numHall + numFood + numDecor + numSound + numExtra - numDiscount)
@@ -246,6 +246,11 @@ export function BanquetBillDialog({
             <h4 className="text-xs font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wide">
               Invoice Line Items &amp; Charges
             </h4>
+            {servicesOff && (
+              <p className="text-[11px] text-muted-foreground">
+                Decor, AV services &amp; discounts are switched off for this booking (₹0).
+              </p>
+            )}
 
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
               <div className="space-y-1">
@@ -277,15 +282,15 @@ export function BanquetBillDialog({
                   <Label className="text-xs">Stage &amp; Decor (₹)</Label>
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
-                    <Switch checked={decorOn} onCheckedChange={setDecorOn} disabled={isEditing} className="scale-75" />
+                    <Switch checked={decorOn && !servicesOff} onCheckedChange={setDecorOn} disabled={isEditing || servicesOff} className="scale-75" />
                   </div>
                 </div>
                 <Input
                   type="number"
                   min="0"
-                  value={decorOn ? decorCharges : '0'}
+                  value={decorOn && !servicesOff ? decorCharges : '0'}
                   onChange={(e) => setDecorCharges(e.target.value)}
-                  disabled={isEditing || !decorOn}
+                  disabled={isEditing || !decorOn || servicesOff}
                   className="h-9 text-xs"
                 />
               </div>
@@ -295,9 +300,9 @@ export function BanquetBillDialog({
                 <Input
                   type="number"
                   min="0"
-                  value={soundAvCharges}
+                  value={servicesOff ? '0' : soundAvCharges}
                   onChange={(e) => setSoundAvCharges(e.target.value)}
-                  disabled={isEditing}
+                  disabled={isEditing || servicesOff}
                   className="h-9 text-xs"
                 />
               </div>
@@ -307,9 +312,9 @@ export function BanquetBillDialog({
                 <Input
                   type="number"
                   min="0"
-                  value={extraCharges}
+                  value={servicesOff ? '0' : extraCharges}
                   onChange={(e) => setExtraCharges(e.target.value)}
-                  disabled={isEditing}
+                  disabled={isEditing || servicesOff}
                   className="h-9 text-xs"
                 />
               </div>
@@ -319,9 +324,9 @@ export function BanquetBillDialog({
                 <Input
                   type="number"
                   min="0"
-                  value={discount}
+                  value={servicesOff ? '0' : discount}
                   onChange={(e) => setDiscount(e.target.value)}
-                  disabled={isEditing}
+                  disabled={isEditing || servicesOff}
                   className="h-9 text-xs text-emerald-600 font-semibold"
                 />
               </div>

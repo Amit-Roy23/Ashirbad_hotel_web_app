@@ -601,6 +601,17 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
             />
           </div>
 
+          <div className="space-y-1.5">
+            <Label htmlFor="address" className="text-xs font-semibold text-foreground">Address</Label>
+            <Input
+              id="address"
+              placeholder="Guest address (city, state)"
+              value={address}
+              className="h-9 text-xs"
+              onChange={(e) => setAddress(e.target.value)}
+            />
+          </div>
+
           {/* Outstanding Past Due Alert Banner */}
           {guestDueInfo && guestDueInfo.totalDue > 0.01 && (
             <div className="rounded-lg border-2 border-red-500/80 bg-red-50 p-3 dark:border-red-600 dark:bg-red-950/40 text-red-950 dark:text-red-100 space-y-2 animate-in fade-in duration-200">

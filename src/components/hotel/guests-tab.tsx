@@ -165,55 +165,67 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'createdAt')
   const { paged, controls } = usePagination(sorted as unknown as GuestRow[], 10)
 
-  const guestExportHeaders = [
+  // Printed report: no money columns; each stay shows the actual (original) room, not the billed room text
+  const guestPrintHeaders = [
     'Guest Name',
     'Phone Number',
+    'Address',
     'Gov ID Proof Number',
-    'How Much Paid',
+    'Room No (Original)',
     'Date to Stay (From - To)',
   ]
+  const guestExportHeaders = [...guestPrintHeaders, 'How Much Paid']
 
-  function getGuestRowsData() {
+  function getGuestRowsData(withPaid: boolean) {
     return (filtered as unknown as GuestRow[]).map((g) => {
-      let totalPaid = 0
-      for (const b of g.bookings || []) {
-        if (b.bills && b.bills.length > 0) {
-          for (const bill of b.bills) {
-            totalPaid +=
-              (Number(bill.advanceApplied) || 0) +
-              (Number(bill.payCash) || 0) +
-              (Number(bill.payUpi) || 0) +
-              (Number(bill.payCard) || 0)
-          }
-        } else if (b.advance) {
-          totalPaid += Number(b.advance) || 0
-        }
-      }
-      totalPaid = Math.round(totalPaid * 100) / 100
-
+      const stays = g.bookings || []
+      const rooms = stays.length > 0 ? [...new Set(stays.map((b) => b.room?.number).filter(Boolean))].join(', ') || '—' : '—'
       const stayDates =
-        g.bookings && g.bookings.length > 0
-          ? g.bookings
-              .map((b) => `${formatDate(b.checkIn)} to ${b.checkOut ? formatDate(b.checkOut) : 'Present'}`)
+        stays.length > 0
+          ? stays
+              .map(
+                (b) =>
+                  `${b.room?.number ? `Room ${b.room.number}: ` : ''}${formatDate(b.checkIn)} to ${
+                    b.actualCheckOut || b.checkOut ? formatDate(b.actualCheckOut || b.checkOut) : 'Present'
+                  }`
+              )
               .join('; ')
           : '—'
-
-      return [
+      const row: (string | number)[] = [
         g.name,
         g.phone,
+        g.address || '—',
         g.idProof ? formatGovIdDisplay(g.idProof) : '—',
-        totalPaid,
+        rooms,
         stayDates,
       ]
+      if (withPaid) {
+        let totalPaid = 0
+        for (const b of stays) {
+          if (b.bills && b.bills.length > 0) {
+            for (const bill of b.bills) {
+              totalPaid +=
+                (Number(bill.advanceApplied) || 0) +
+                (Number(bill.payCash) || 0) +
+                (Number(bill.payUpi) || 0) +
+                (Number(bill.payCard) || 0)
+            }
+          } else if (b.advance) {
+            totalPaid += Number(b.advance) || 0
+          }
+        }
+        row.push(Math.round(totalPaid * 100) / 100)
+      }
+      return row
     })
   }
 
   function doExport() {
-    exportCSV('guests-report.csv', guestExportHeaders, getGuestRowsData())
+    exportCSV('guests-report.csv', guestExportHeaders, getGuestRowsData(true))
   }
 
   function doPrint() {
-    printTableReport('Guests Directory Report', guestExportHeaders, getGuestRowsData(), `${filtered.length} guests recorded`)
+    printTableReport('Guests Directory Report', guestPrintHeaders, getGuestRowsData(false), `${filtered.length} guests recorded`)
   }
 
   function openEdit(g: GuestRow) {

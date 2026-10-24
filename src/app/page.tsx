@@ -15,6 +15,7 @@ import { ReportsTab } from '@/components/hotel/reports-tab'
 import { SettingsTab } from '@/components/hotel/settings-tab'
 import { BanquetTab } from '@/components/hotel/banquet-tab'
 import { GlobalSearch } from '@/components/hotel/global-search'
+import { AdminPinHost } from '@/components/hotel/admin-pin-host'
 import { LoginDialog } from '@/components/hotel/login-dialog'
 import { UserProvider, useUser } from '@/components/hotel/user-context'
 import { formatINR } from '@/lib/hotel-utils'
@@ -404,6 +405,7 @@ function Shell() {
 
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} onNavigate={onNavigate} />
       <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} onLogin={login} />
+      <AdminPinHost />
     </div>
   )
 }
