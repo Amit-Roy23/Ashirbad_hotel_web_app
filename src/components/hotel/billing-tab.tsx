@@ -31,6 +31,7 @@ import { PrintableInvoice } from './printable-invoice'
 import { PrintableAdvanceReceipt } from './printable-advance-receipt'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, totalReceived, balanceDue, payableNow } from '@/lib/hotel-utils'
+import { splitGst } from '@/lib/gst'
 import { getCachedUser } from './user-context'
 import {
   Loader2,
@@ -287,7 +288,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
   function doExportCheckout() {
     exportCSV(
       'checkout_invoices.csv',
-      ['Invoice', 'Date', 'Guest', 'Phone', 'Room', 'Actual Room', 'Billed Room', 'Food', 'GST', 'Grand Total', 'Advance Applied', 'Paid at Checkout', 'Balance Due', 'Status'],
+      ['Invoice', 'Date', 'Guest', 'Phone', 'Room', 'Actual Room', 'Billed Room', 'Food', 'CGST', 'SGST', 'Previous Due', 'Grand Total', 'Advance Applied', 'Paid at Checkout', 'Balance Due', 'Status'],
       (filteredBills as unknown as Bill[]).map((b) => [
         b.billNumber,
         formatDateTime(b.createdAt),
@@ -297,7 +298,9 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
         b.actualRoomTotal,
         b.billedRoomTotal,
         b.foodTotal,
-        b.actualGst,
+        splitGst(b).cgst,
+        splitGst(b).sgst,
+        (b as unknown as { previousDue?: number }).previousDue || 0,
         b.grandTotal,
         b.advanceApplied,
         paidOf(b) - (b.advanceApplied || 0),
@@ -623,6 +626,16 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                           {!isPaid && (
                             <div className="text-[11px] text-red-600 font-semibold">
                               Due: {formatINR(balanceOf(b))}
+                            </div>
+                          )}
+                          {(b as unknown as { carriedToBillNumber?: string | null }).carriedToBillNumber && (
+                            <div className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                              Due moved to {(b as unknown as { carriedToBillNumber?: string }).carriedToBillNumber}
+                            </div>
+                          )}
+                          {((b as unknown as { previousDue?: number }).previousDue || 0) > 0 && (
+                            <div className="text-[11px] text-muted-foreground">
+                              Incl. previous due {formatINR((b as unknown as { previousDue?: number }).previousDue)}
                             </div>
                           )}
                         </TableCell>

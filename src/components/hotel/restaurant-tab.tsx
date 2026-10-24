@@ -18,6 +18,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, apiAs, formatINR, formatDateTime, formatDate, exportCSV } from '@/lib/hotel-utils'
+import { computeGst, normalizeHalfRate, splitGst } from '@/lib/gst'
 import { triggerPrintFoodBill } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import {
@@ -72,6 +73,10 @@ interface OrderItem {
 interface FoodOrder {
   id: string
   total: number
+  subtotal?: number
+  cgstPercent?: number
+  sgstPercent?: number
+  taxAmount?: number
   status: string
   notes?: string
   createdBy?: string | null
@@ -113,6 +118,8 @@ export function RestaurantTab({
   const [orderNotes, setOrderNotes] = useState('')
   const [cart, setCart] = useState<Record<string, { menuItemId: string; itemNumber: number; name: string; price: number; quantity: number }>>({})
   const [saving, setSaving] = useState(false)
+  // Food bill GST on/off for this order (default from Settings; only for direct restaurant bills)
+  const [foodGstOn, setFoodGstOn] = useState<boolean | null>(null)
   const [error, setError] = useState('')
   const [quickNumInput, setQuickNumInput] = useState('')
   const [menuSearch, setMenuSearch] = useState('')
@@ -194,6 +201,22 @@ export function RestaurantTab({
     () => Object.values(cart).reduce((s, it) => s + it.price * it.quantity, 0),
     [cart]
   )
+
+  const foodGst = useMemo(() => {
+    const on = foodGstOn ?? settings.foodGstEnabled === 'true'
+    const applies = orderType === 'DIRECT' && on
+    const tax = applies
+      ? computeGst(cartTotal, normalizeHalfRate(settings.foodCgst), normalizeHalfRate(settings.foodSgst))
+      : { cgst: 0, sgst: 0, total: 0 }
+    return {
+      on,
+      applies,
+      cgstPct: normalizeHalfRate(settings.foodCgst),
+      sgstPct: normalizeHalfRate(settings.foodSgst),
+      ...tax,
+      grand: Math.round((cartTotal + tax.total) * 100) / 100,
+    }
+  }, [foodGstOn, settings, orderType, cartTotal])
 
   const cartItemCount = useMemo(
     () => Object.values(cart).reduce((s, it) => s + it.quantity, 0),
@@ -329,6 +352,7 @@ export function RestaurantTab({
             ? { bookingId: selectedBooking?.id, roomId: selectedBooking?.room.id }
             : {}),
           notes: orderNotes.trim() || undefined,
+          gstEnabled: orderType === 'DIRECT' ? foodGst.on : undefined,
           items,
         }),
       })
@@ -885,10 +909,42 @@ export function RestaurantTab({
                       <span>Total Items</span>
                       <span className="font-bold text-foreground">{cartItemCount} item(s)</span>
                     </div>
+                    {/* Food bill GST (CGST + SGST) with on/off */}
+                    {orderType === 'DIRECT' ? (
+                      <div className="mt-2 space-y-1 border-t border-emerald-200 pt-2 text-xs dark:border-emerald-900">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-foreground">GST on food bill</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-muted-foreground">{foodGst.on ? 'On' : 'Off'}</span>
+                            <Switch checked={foodGst.on} onCheckedChange={(v) => setFoodGstOn(v)} className="scale-75" aria-label="Food bill GST on or off" />
+                          </div>
+                        </div>
+                        {foodGst.applies && (
+                          <>
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>Subtotal</span>
+                              <span>{formatINR(cartTotal)}</span>
+                            </div>
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>CGST ({foodGst.cgstPct}%)</span>
+                              <span>{formatINR(foodGst.cgst)}</span>
+                            </div>
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>SGST ({foodGst.sgstPct}%)</span>
+                              <span>{formatINR(foodGst.sgst)}</span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="mt-2 border-t border-emerald-200 pt-2 text-[11px] text-muted-foreground dark:border-emerald-900">
+                        Room service: CGST / SGST is applied on the room bill at checkout.
+                      </p>
+                    )}
                     <div className="mt-1 flex items-center justify-between font-bold text-base">
                       <span>Total Amount:</span>
                       <span className="text-lg text-emerald-700 dark:text-emerald-400">
-                        {formatINR(cartTotal)}
+                        {formatINR(foodGst.grand)}
                       </span>
                     </div>
                   </div>
@@ -906,7 +962,7 @@ export function RestaurantTab({
                     ) : (
                       <SendHorizontal className="mr-2 h-4 w-4" />
                     )}
-                    Place Order &amp; Print KOT ({formatINR(cartTotal)})
+                    Place Order &amp; Print KOT ({formatINR(foodGst.grand)})
                   </Button>
                 </CardContent>
               </Card>
@@ -1203,6 +1259,22 @@ export function RestaurantTab({
 
                 <div className="mt-3 space-y-1 pt-1">
                   <Separator />
+                  {(printOrder.taxAmount || 0) > 0 && (
+                    <>
+                      <div className="flex justify-between text-xs pt-1">
+                        <span>Subtotal</span>
+                        <span>{formatINR(printOrder.subtotal || printOrder.total - (printOrder.taxAmount || 0))}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span>CGST ({printOrder.cgstPercent}%)</span>
+                        <span>{formatINR(splitGst({ gstPercent: (printOrder.cgstPercent || 0) + (printOrder.sgstPercent || 0), cgstPercent: printOrder.cgstPercent, sgstPercent: printOrder.sgstPercent, actualGst: printOrder.taxAmount }).cgst)}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span>SGST ({printOrder.sgstPercent}%)</span>
+                        <span>{formatINR(splitGst({ gstPercent: (printOrder.cgstPercent || 0) + (printOrder.sgstPercent || 0), cgstPercent: printOrder.cgstPercent, sgstPercent: printOrder.sgstPercent, actualGst: printOrder.taxAmount }).sgst)}</span>
+                      </div>
+                    </>
+                  )}
                   <div className="flex justify-between font-bold text-sm pt-1">
                     <span>Total Amount</span>
                     <span className="text-emerald-700 dark:text-emerald-400">{formatINR(printOrder.total)}</span>

@@ -40,6 +40,7 @@ export interface BanquetBooking {
   foodPackageName?: string | null
   foodTotal: number
   decorCharges: number
+  decorEnabled?: boolean
   extraCharges: number
   discount: number
   totalEstimated: number
@@ -76,6 +77,8 @@ export interface BanquetBill {
   discount: number
   taxableAmount: number
   gstPercent: number
+  cgstPercent?: number
+  sgstPercent?: number
   gstAmount: number
   grandTotal: number
   advanceApplied: number

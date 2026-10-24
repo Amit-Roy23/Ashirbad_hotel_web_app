@@ -23,6 +23,8 @@ import {
 import { api, apiAs, addDays, formatINR, todayStr, sanitizePhone, formatDate, toDateStr, doDateRangesOverlap, getRoomOperationalState } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
+import { runWithAdminPin } from '@/lib/admin-pin'
+import { CompanyInput } from './company-input'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
 import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, Sparkles, ChevronLeft, ChevronRight, Clock } from 'lucide-react'
@@ -84,6 +86,7 @@ export function BookingDialog({
   const [isCorporate, setIsCorporate] = useState(false)
   const [notes, setNotes] = useState('')
   const [autoFilled, setAutoFilled] = useState(false)
+  const [outstanding, setOutstanding] = useState(0)
   const [saving, setSaving] = useState(false)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
@@ -93,6 +96,7 @@ export function BookingDialog({
     setBookingMode(initialMode)
     setError('')
     setAutoFilled(false)
+    setOutstanding(0)
     setSaving(false)
     const inD = initialCheckInDate || todayStr()
     setCheckInDate(inD)
@@ -184,9 +188,10 @@ export function BookingDialog({
     if (clean.length >= 4) {
       setSearching(true)
       try {
-        const guest = await api<{ name: string; company?: string; gst?: string } | null>(
+        const guest = await api<{ name: string; company?: string; gst?: string; address?: string; outstanding?: number } | null>(
           `/api/guests?phone=${encodeURIComponent(clean)}`
         )
+        setOutstanding(guest?.outstanding || 0)
         if (guest) {
           setName(guest.name)
           setCompany(guest.company || '')
@@ -195,6 +200,7 @@ export function BookingDialog({
           setAutoFilled(true)
         } else {
           setAutoFilled(false)
+          setOutstanding(0)
         }
       } catch {
         // ignore lookup errors
@@ -251,9 +257,11 @@ export function BookingDialog({
     setError('')
     try {
       const isAdvance = bookingMode === 'BOOKING'
-      await apiAs('/api/bookings', getCachedUser(), {
+      // A guest with dues from earlier stays needs the Admin PIN to check in (asked and retried)
+      const created = await runWithAdminPin((adminPin) => apiAs('/api/bookings', getCachedUser(), {
         method: 'POST',
         body: JSON.stringify({
+          adminPin,
           roomId: selectedRoom,
           phone: cleanPhone,
           name: name.trim(),
@@ -270,7 +278,8 @@ export function BookingDialog({
           bookingType: isAdvance ? 'BOOKING' : 'CHECKIN',
           status: isAdvance ? 'BOOKED' : 'ACTIVE',
         }),
-      })
+      }))
+      if (created === null) return
       onSuccess()
       onOpenChange(false)
       if (isAdvance) {
@@ -529,6 +538,12 @@ export function BookingDialog({
                 ✓ Valid 10-digit mobile number
               </p>
             )}
+            {outstanding > 0 && (
+              <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
+                ⚠ Outstanding from earlier stay(s): ₹{outstanding.toLocaleString('en-IN')}. Check-in needs the Admin PIN, and this amount
+                will be added to the next bill.
+              </p>
+            )}
             {autoFilled && (
               <p className="text-xs font-medium text-emerald-600">
                 ✓ Returning customer found — details auto-filled!
@@ -554,7 +569,7 @@ export function BookingDialog({
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="bk-company" className="text-xs font-semibold text-foreground">Company</Label>
-                <Input id="bk-company" placeholder="Company name" value={company} className="h-9 text-xs" onChange={(e) => setCompany(e.target.value)} />
+                <CompanyInput id="bk-company" value={company} onChange={setCompany} onPick={(c) => c.gst && setGst(c.gst)} className="h-9 text-xs" />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="bk-gst" className="text-xs font-semibold text-foreground">GST Number</Label>

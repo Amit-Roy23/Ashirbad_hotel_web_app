@@ -21,6 +21,9 @@ import {
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { apiAs, formatINR } from '@/lib/hotel-utils'
+import { Switch } from '@/components/ui/switch'
+import { computeGst, splitGst } from '@/lib/gst'
+import { GstPicker } from './gst-picker'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetBooking, BanquetBill } from '@/types/banquet'
@@ -62,7 +65,9 @@ export function BanquetBillDialog({
   const [soundAvCharges, setSoundAvCharges] = useState('0')
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
-  const [gstPercent, setGstPercent] = useState('18')
+  const [cgst, setCgst] = useState(2.5)
+  const [sgst, setSgst] = useState(2.5)
+  const [decorOn, setDecorOn] = useState(true)
 
   // Payment Settlement fields
   const [advanceApplied, setAdvanceApplied] = useState('0')
@@ -83,7 +88,12 @@ export function BanquetBillDialog({
       setSoundAvCharges(String(existingBill.soundAvCharges || 0))
       setExtraCharges(String(existingBill.extraCharges || 0))
       setDiscount(String(existingBill.discount || 0))
-      setGstPercent(String(existingBill.gstPercent || 18))
+      {
+        const split = splitGst({ ...existingBill, actualGst: existingBill.gstAmount })
+        setCgst(split.cgstPercent)
+        setSgst(split.sgstPercent)
+      }
+      setDecorOn((existingBill.decorCharges || 0) > 0)
       setAdvanceApplied(String(existingBill.advanceApplied || 0))
       setPayCash(String(existingBill.payCash || 0))
       setPayUpi(String(existingBill.payUpi || 0))
@@ -97,7 +107,9 @@ export function BanquetBillDialog({
       setSoundAvCharges('0')
       setExtraCharges(String(booking.extraCharges || 0))
       setDiscount(String(booking.discount || 0))
-      setGstPercent('18')
+      setCgst(2.5)
+      setSgst(2.5)
+      setDecorOn(booking.decorEnabled !== false)
       setAdvanceApplied(String(booking.advancePaid || 0))
 
       // Pre-fill remaining amount into UPI/Cash for convenience
@@ -105,11 +117,11 @@ export function BanquetBillDialog({
         0,
         (booking.hallRent || 0) +
           (booking.foodTotal || 0) +
-          (booking.decorCharges || 0) +
+          (booking.decorEnabled === false ? 0 : booking.decorCharges || 0) +
           (booking.extraCharges || 0) -
           (booking.discount || 0)
       )
-      const gst = Math.round(((taxable * 18) / 100) * 100) / 100
+      const gst = computeGst(taxable, 2.5, 2.5).total
       const grand = taxable + gst
       const balance = Math.max(0, grand - (booking.advancePaid || 0))
       setPayUpi(String(Math.round(balance)))
@@ -123,14 +135,16 @@ export function BanquetBillDialog({
   // Calculations
   const numHall = Math.max(0, parseFloat(hallRent) || 0)
   const numFood = Math.max(0, parseFloat(foodCharges) || 0)
-  const numDecor = Math.max(0, parseFloat(decorCharges) || 0)
+  // Decor switched off = no decoration charge on this invoice
+  const numDecor = decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
   const numSound = Math.max(0, parseFloat(soundAvCharges) || 0)
   const numExtra = Math.max(0, parseFloat(extraCharges) || 0)
   const numDiscount = Math.max(0, parseFloat(discount) || 0)
-  const numGstPct = Math.max(0, parseFloat(gstPercent) || 0)
+  const numGstPct = cgst + sgst
 
   const taxableAmount = Math.max(0, numHall + numFood + numDecor + numSound + numExtra - numDiscount)
-  const gstAmount = Math.round(((taxableAmount * numGstPct) / 100) * 100) / 100
+  const gstSplit = computeGst(taxableAmount, cgst, sgst)
+  const gstAmount = gstSplit.total
   const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
 
   const numAdvance = Math.max(0, parseFloat(advanceApplied) || 0)
@@ -183,6 +197,8 @@ export function BanquetBillDialog({
             extraCharges: numExtra,
             discount: numDiscount,
             gstPercent: numGstPct,
+            cgstPercent: cgst,
+            sgstPercent: sgst,
             advanceApplied: numAdvance,
             payCash: numCash,
             payUpi: numUpi,
@@ -257,13 +273,19 @@ export function BanquetBillDialog({
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs">Stage &amp; Decor (₹)</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Stage &amp; Decor (₹)</Label>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
+                    <Switch checked={decorOn} onCheckedChange={setDecorOn} disabled={isEditing} className="scale-75" />
+                  </div>
+                </div>
                 <Input
                   type="number"
                   min="0"
-                  value={decorCharges}
+                  value={decorOn ? decorCharges : '0'}
                   onChange={(e) => setDecorCharges(e.target.value)}
-                  disabled={isEditing}
+                  disabled={isEditing || !decorOn}
                   className="h-9 text-xs"
                 />
               </div>
@@ -307,20 +329,19 @@ export function BanquetBillDialog({
 
             {/* GST & Totals Summary */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t text-xs">
-              <div className="flex items-center gap-2">
-                <Label className="text-xs">GST Rate:</Label>
-                <Select value={gstPercent} onValueChange={setGstPercent} disabled={isEditing}>
-                  <SelectTrigger className="h-8 w-24 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="18">18% GST</SelectItem>
-                    <SelectItem value="12">12% GST</SelectItem>
-                    <SelectItem value="5">5% GST</SelectItem>
-                    <SelectItem value="0">0% (Exempt)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <span className="text-muted-foreground">({formatINR(gstAmount)})</span>
+              <div className="w-full space-y-1.5 sm:w-64">
+                <GstPicker
+                  cgst={cgst}
+                  sgst={sgst}
+                  disabled={isEditing}
+                  onChange={(n) => {
+                    setCgst(n.cgst)
+                    setSgst(n.sgst)
+                  }}
+                />
+                <p className="text-muted-foreground">
+                  CGST {formatINR(gstSplit.cgst)} · SGST {formatINR(gstSplit.sgst)}
+                </p>
               </div>
 
               <div className="text-right">

@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -98,6 +99,7 @@ export function BanquetBookingDialog({
   const [foodRatePerPlate, setFoodRatePerPlate] = useState('650')
   const [foodPackageName, setFoodPackageName] = useState('Standard Buffet')
   const [decorCharges, setDecorCharges] = useState('10000')
+  const [decorOn, setDecorOn] = useState(true)
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
   const [advancePaid, setAdvancePaid] = useState('10000')
@@ -129,6 +131,7 @@ export function BanquetBookingDialog({
       setFoodRatePerPlate(String(booking.foodRatePerPlate || 0))
       setFoodPackageName(booking.foodPackageName || 'Standard Buffet')
       setDecorCharges(String(booking.decorCharges || 0))
+      setDecorOn(booking.decorEnabled !== false)
       setExtraCharges(String(booking.extraCharges || 0))
       setDiscount(String(booking.discount || 0))
       setAdvancePaid(String(booking.advancePaid || 0))
@@ -154,6 +157,7 @@ export function BanquetBookingDialog({
       setFoodRatePerPlate('650')
       setFoodPackageName('Royal Buffet')
       setDecorCharges('10000')
+      setDecorOn(true)
       setExtraCharges('0')
       setDiscount('0')
       setAdvancePaid('10000')
@@ -180,7 +184,8 @@ export function BanquetBookingDialog({
   const numHallRent = Math.max(0, parseFloat(hallRent) || 0)
   const numFoodPerPlate = Math.max(0, parseFloat(foodRatePerPlate) || 0)
   const totalFood = numGuests * numFoodPerPlate
-  const numDecor = Math.max(0, parseFloat(decorCharges) || 0)
+  // Decor switched off = no decoration for this event, no charge
+  const numDecor = decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
   const numExtra = Math.max(0, parseFloat(extraCharges) || 0)
   const numDiscount = Math.max(0, parseFloat(discount) || 0)
   const numAdvance = Math.max(0, parseFloat(advancePaid) || 0)
@@ -224,6 +229,7 @@ export function BanquetBookingDialog({
             foodPackageName,
             foodTotal: totalFood,
             decorCharges: numDecor,
+            decorEnabled: decorOn,
             extraCharges: numExtra,
             discount: numDiscount,
             advancePaid: numAdvance,
@@ -254,6 +260,7 @@ export function BanquetBookingDialog({
             foodPackageName,
             foodTotal: totalFood,
             decorCharges: numDecor,
+            decorEnabled: decorOn,
             extraCharges: numExtra,
             discount: numDiscount,
             advancePaid: numAdvance,
@@ -600,14 +607,21 @@ export function BanquetBookingDialog({
 
               {/* Decor Charges */}
               <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-foreground">
-                  Stage &amp; Decor Charges (₹)
-                </Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium text-foreground">
+                    Stage &amp; Decor Charges (₹)
+                  </Label>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
+                    <Switch checked={decorOn} onCheckedChange={setDecorOn} className="scale-75" aria-label="Decor on or off" />
+                  </div>
+                </div>
                 <Input
                   type="number"
                   min="0"
-                  value={decorCharges}
+                  value={decorOn ? decorCharges : '0'}
                   onChange={(e) => setDecorCharges(e.target.value)}
+                  disabled={!decorOn}
                   className="h-9 text-xs font-mono font-medium"
                 />
               </div>

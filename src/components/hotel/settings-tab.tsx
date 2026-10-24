@@ -22,7 +22,9 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
-import { api, apiAs, formatDateTime, exportCSV, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
+import { api, apiAs, formatDateTime, exportCSV } from '@/lib/hotel-utils'
+import { normalizeHalfRate } from '@/lib/gst'
+import { GstPicker } from './gst-picker'
 import { useUser, getCachedUser } from './user-context'
 import { LoginDialog } from './login-dialog'
 import { toast } from '@/hooks/use-toast'
@@ -280,27 +282,41 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
               <Percent className="h-4 w-4 text-emerald-600" />
               <p className="text-sm font-semibold">Billing &amp; Tax Rules</p>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="s-gst">Default GST %</Label>
-                {/* Lodging bills allow only 0% or 5% GST */}
-                <div id="s-gst" className="grid h-9 grid-cols-2 gap-1">
-                  {LODGING_GST_RATES.map((pct) => (
-                    <button
-                      key={pct}
-                      type="button"
-                      onClick={() => setSettings({ ...settings, gstPercent: pct })}
-                      className={`rounded border text-xs font-semibold transition-colors ${
-                        normalizeLodgingGst(settings.gstPercent) === pct
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-muted text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      {pct}%
-                    </button>
-                  ))}
+            {/* GST section: CGST + SGST (each 0% or 2.5%) with on/off, for lodging and food bills */}
+            {([
+              { key: 'lodging', title: 'Lodging Bill GST', hint: 'Default CGST / SGST on room checkout bills' },
+              { key: 'food', title: 'Food Bill GST', hint: 'CGST / SGST on restaurant bills paid at the counter (room-service food is taxed on the room bill)' },
+            ] as const).map((sec) => {
+              const enabledKey = `${sec.key}GstEnabled`
+              const on = sec.key === 'lodging' ? settings[enabledKey] !== 'false' : settings[enabledKey] === 'true'
+              const c = normalizeHalfRate(settings[`${sec.key}Cgst`])
+              const sg = normalizeHalfRate(settings[`${sec.key}Sgst`])
+              return (
+                <div key={sec.key} className="space-y-2 rounded-lg border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium">{sec.title}</p>
+                      <p className="text-[11px] text-muted-foreground">{sec.hint}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-muted-foreground">{on ? 'On' : 'Off'}</span>
+                      <Switch
+                        checked={on}
+                        aria-label={`${sec.title} on or off`}
+                        onCheckedChange={(v) => setSettings({ ...settings, [enabledKey]: v ? 'true' : 'false' })}
+                      />
+                    </div>
+                  </div>
+                  <GstPicker
+                    cgst={c}
+                    sgst={sg}
+                    disabled={!on}
+                    onChange={(n) => setSettings({ ...settings, [`${sec.key}Cgst`]: String(n.cgst), [`${sec.key}Sgst`]: String(n.sgst) })}
+                  />
                 </div>
-              </div>
+              )
+            })}
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="s-inv">Invoice Prefix</Label>
                 <Input id="s-inv" value={settings.invoicePrefix || ''} onChange={(e) => setSettings({ ...settings, invoicePrefix: e.target.value })} />

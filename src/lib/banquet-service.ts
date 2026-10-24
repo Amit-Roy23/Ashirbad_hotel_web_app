@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { istDateStr } from '@/lib/stay'
+import { computeGst, isValidHalfRate } from '@/lib/gst'
 import { BanquetBooking, BanquetBill, BanquetHall, BanquetStats } from '@/types/banquet'
 import crypto from 'crypto'
 
@@ -342,6 +343,7 @@ export async function getBanquetBookings(query?: {
     foodPackageName: b.foodPackageName,
     foodTotal: Number(b.foodTotal || 0),
     decorCharges: Number(b.decorCharges || 0),
+    decorEnabled: b.decorEnabled !== false,
     extraCharges: Number(b.extraCharges || 0),
     discount: Number(b.discount || 0),
     totalEstimated: Number(b.totalEstimated || 0),
@@ -384,6 +386,7 @@ export async function createBanquetBooking(
     foodPackageName?: string
     foodTotal?: number
     decorCharges?: number
+    decorEnabled?: boolean
     extraCharges?: number
     discount?: number
     advancePaid?: number
@@ -403,7 +406,9 @@ export async function createBanquetBooking(
   const hallRent = Number(data.hallRent) || 0
   const foodRatePerPlate = Number(data.foodRatePerPlate) || 0
   const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : foodRatePerPlate * guestCount
-  const decorCharges = Number(data.decorCharges) || 0
+  // Decoration can be switched off for an event; then it carries no charge
+  const decorEnabled = data.decorEnabled !== false
+  const decorCharges = decorEnabled ? Number(data.decorCharges) || 0 : 0
   const extraCharges = Number(data.extraCharges) || 0
   const discount = Number(data.discount) || 0
   const advancePaid = Number(data.advancePaid) || 0
@@ -480,6 +485,8 @@ export async function createBanquetBooking(
     }
   }
 
+  await prisma.$executeRawUnsafe('UPDATE "BanquetBooking" SET "decorEnabled" = $2 WHERE "id" = $1', id, decorEnabled)
+
   const created = await getBanquetBookings({ search: bookingNumber })
   return created[0] || { id, bookingNumber, customerName: data.customerName, totalEstimated, advancePaid }
 }
@@ -511,7 +518,15 @@ export async function updateBanquetBooking(
   const hallRent = data.hallRent !== undefined ? Number(data.hallRent) : Number(existing.hallRent)
   const guestCount = data.guestCount !== undefined ? Number(data.guestCount) : Number(existing.guestCount)
   const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : Number(existing.foodTotal)
-  const decorCharges = data.decorCharges !== undefined ? Number(data.decorCharges) : Number(existing.decorCharges)
+  const decorEnabled =
+    (data as { decorEnabled?: boolean }).decorEnabled !== undefined
+      ? (data as { decorEnabled?: boolean }).decorEnabled !== false
+      : existing.decorEnabled !== false
+  const decorCharges = !decorEnabled
+    ? 0
+    : data.decorCharges !== undefined
+      ? Number(data.decorCharges)
+      : Number(existing.decorCharges)
   const extraCharges = data.extraCharges !== undefined ? Number(data.extraCharges) : Number(existing.extraCharges)
   const discount = data.discount !== undefined ? Number(data.discount) : Number(existing.discount)
 
@@ -595,10 +610,12 @@ export async function updateBanquetBooking(
     updates.push(`"foodTotal" = $${pIdx++}`)
     params.push(foodTotal)
   }
-  if (data.decorCharges !== undefined) {
+  if (data.decorCharges !== undefined || !decorEnabled) {
     updates.push(`"decorCharges" = $${pIdx++}`)
     params.push(decorCharges)
   }
+  updates.push(`"decorEnabled" = $${pIdx++}`)
+  params.push(decorEnabled)
   if (data.extraCharges !== undefined) {
     updates.push(`"extraCharges" = $${pIdx++}`)
     params.push(extraCharges)
@@ -725,6 +742,8 @@ export async function getBanquetBills(query?: {
     discount: Number(b.discount || 0),
     taxableAmount: Number(b.taxableAmount || 0),
     gstPercent: Number(b.gstPercent || 0),
+    cgstPercent: Number(b.cgstPercent || 0),
+    sgstPercent: Number(b.sgstPercent || 0),
     gstAmount: Number(b.gstAmount || 0),
     grandTotal: Number(b.grandTotal || 0),
     advanceApplied: Number(b.advanceApplied || 0),
@@ -753,6 +772,8 @@ export async function createBanquetBill(
     extraCharges?: number
     discount?: number
     gstPercent?: number
+    cgstPercent?: number
+    sgstPercent?: number
     advanceApplied?: number
     payCash?: number
     payUpi?: number
@@ -790,14 +811,28 @@ export async function createBanquetBill(
 
   const hallRent = data.hallRent !== undefined ? Number(data.hallRent) : Number(booking.hallRent)
   const foodCharges = data.foodCharges !== undefined ? Number(data.foodCharges) : Number(booking.foodTotal)
-  const decorCharges = data.decorCharges !== undefined ? Number(data.decorCharges) : Number(booking.decorCharges)
+  const decorCharges =
+    booking.decorEnabled === false ? 0 : data.decorCharges !== undefined ? Number(data.decorCharges) : Number(booking.decorCharges)
   const soundAvCharges = Number(data.soundAvCharges) || 0
   const extraCharges = data.extraCharges !== undefined ? Number(data.extraCharges) : Number(booking.extraCharges)
   const discount = data.discount !== undefined ? Number(data.discount) : Number(booking.discount)
 
   const taxableAmount = Math.max(0, hallRent + foodCharges + decorCharges + soundAvCharges + extraCharges - discount)
-  const gstPercent = data.gstPercent !== undefined ? Number(data.gstPercent) : 18
-  const gstAmount = Math.round(((taxableAmount * gstPercent) / 100) * 100) / 100
+  // GST as CGST + SGST, each 0% or 2.5% (legacy combined gstPercent 0/5 is split in halves)
+  let cgstPercent = 2.5
+  let sgstPercent = 2.5
+  if (data.cgstPercent !== undefined || data.sgstPercent !== undefined) {
+    if (!isValidHalfRate(data.cgstPercent ?? 0) || !isValidHalfRate(data.sgstPercent ?? 0)) {
+      throw new BanquetError('CGST and SGST can each only be 0% or 2.5%')
+    }
+    cgstPercent = Number(data.cgstPercent ?? 0)
+    sgstPercent = Number(data.sgstPercent ?? 0)
+  } else if (data.gstPercent !== undefined) {
+    if (Number(data.gstPercent) === 0) cgstPercent = sgstPercent = 0
+    else if (Number(data.gstPercent) !== 5) throw new BanquetError('GST is CGST 2.5% + SGST 2.5% (or 0%)')
+  }
+  const gstPercent = cgstPercent + sgstPercent
+  const gstAmount = computeGst(taxableAmount, cgstPercent, sgstPercent).total
   const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
 
   const advanceApplied = Math.min(Number(data.advanceApplied ?? booking.advancePaid), grandTotal)
@@ -863,6 +898,13 @@ export async function createBanquetBill(
     managerName || null,
     now,
     now
+  )
+
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBill" SET "cgstPercent" = $2, "sgstPercent" = $3 WHERE "id" = $1',
+    id,
+    cgstPercent,
+    sgstPercent
   )
 
   // Update booking status to completed

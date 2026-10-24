@@ -1,14 +1,17 @@
 import { formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
+import { billBalance, splitGst } from '@/lib/gst'
+import { requestAdminApproval } from '@/lib/admin-pin'
 
-export function triggerPrintInvoice(bill: any, settings: Record<string, string> = {}) {
+export async function triggerPrintInvoice(bill: any, settings: Record<string, string> = {}) {
   if (!bill) return
-  // Lodging invoices are printed only once fully paid
-  const received =
-    Number(bill.advanceApplied || 0) + Number(bill.payCash || 0) + Number(bill.payUpi || 0) + Number(bill.payCard || 0)
-  const due = Math.round((Number(bill.grandTotal || 0) - received) * 100) / 100
+  // A bill with balance due can only be printed with Admin approval
+  const due = billBalance(bill)
   if (due > 0.01) {
-    alert(`Bill ${bill.billNumber || ''} has ₹${due.toFixed(2)} outstanding. Collect full payment before printing.`)
-    return
+    const ok = await requestAdminApproval(
+      `Printed bill ${bill.billNumber || ''} with ₹${due.toFixed(2)} balance due`,
+      `Bill ${bill.billNumber || ''} has ₹${due.toFixed(2)} balance due. Enter the Admin PIN to print it.`
+    )
+    if (!ok) return
   }
 
   const hotelName = settings.hotelName || 'Ashirbad Lodge'
@@ -24,9 +27,9 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
   const gstNumber = bill.gstNumber || guest?.gst
 
   const subtotal = Math.max(0, (bill.billedRoomTotal || 0) + (bill.foodTotal || 0) + (bill.extraCharges || 0) - (bill.discount || 0))
-  const paidAfterAdvance = (bill.payCash || 0) + (bill.payUpi || 0) + (bill.payCard || 0)
-  const totalPaid = (bill.advanceApplied || 0) + paidAfterAdvance
-  const balance = Math.max(0, Math.round(((bill.grandTotal || 0) - totalPaid) * 100) / 100)
+  const gst = splitGst(bill)
+  const previousDue = Number(bill.previousDue || 0)
+  const guestAddress = guest?.address || ''
   const roomRatePerNight = bill.days > 0 ? Math.round((bill.billedRoomTotal / bill.days) * 100) / 100 : bill.billedRoomTotal
 
   const html = `
@@ -149,7 +152,7 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
       <div class="meta-col">
         <div class="meta-row">Invoice No: <span class="val">${escapeHtml(bill.billNumber)}</span></div>
         <div class="meta-row">Date: <span class="val">${formatDateTime(bill.createdAt)}</span></div>
-        <div class="meta-row">Room: <span class="val">${escapeHtml(roomNo)} ${roomDesc ? `(${escapeHtml(roomDesc)})` : ''}</span></div>
+        <div class="meta-row">Billing Room No: <span class="val">${escapeHtml(roomNo)} ${roomDesc ? `(${escapeHtml(roomDesc)})` : ''}</span></div>
         <div class="meta-row">Check-In: <span class="val">${formatDateTime(bill.booking?.checkIn)}</span></div>
         <div class="meta-row">Check-Out: <span class="val">${formatDateTime(bill.booking?.actualCheckOut || bill.booking?.checkOut)}</span></div>
         <div class="meta-row">Nights Billed: <span class="val">${bill.days} night(s)</span></div>
@@ -157,8 +160,9 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
       <div class="meta-col text-right">
         <div class="meta-row">Guest: <span class="val">${escapeHtml(guest?.name || 'Guest')}</span></div>
         <div class="meta-row">Phone: <span class="val">${escapeHtml(guest?.phone || 'N/A')}</span></div>
+        ${guestAddress ? `<div class="meta-row">Address: <span class="val">${escapeHtml(guestAddress)}</span></div>` : ''}
         ${corporateName ? `<div class="meta-row">Company: <span class="val">${escapeHtml(corporateName)}</span></div>` : ''}
-        ${gstNumber ? `<div class="meta-row">Guest GSTIN: <span class="val">${escapeHtml(gstNumber)}</span></div>` : ''}
+        ${gstNumber ? `<div class="meta-row">Company GSTIN: <span class="val">${escapeHtml(gstNumber)}</span></div>` : ''}
       </div>
     </div>
 
@@ -166,7 +170,7 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
 
     <div class="table-section">
       <div class="row">
-        <span>${roomDesc ? `${escapeHtml(roomDesc)} ` : ''}Room Charge (${bill.days} night${bill.days > 1 ? 's' : ''} @ ${formatINR(roomRatePerNight)})</span>
+        <span>Room Rent — Room ${escapeHtml(roomNo)}${roomDesc ? ` (${escapeHtml(roomDesc)})` : ''}, ${bill.days} night${bill.days > 1 ? 's' : ''} @ ${formatINR(roomRatePerNight)}</span>
         <span class="semi-bold">${formatINR(bill.billedRoomTotal)}</span>
       </div>
 
@@ -193,46 +197,27 @@ export function triggerPrintInvoice(bill: any, settings: Record<string, string> 
         <span>${formatINR(subtotal)}</span>
       </div>
 
-      ${bill.actualGst > 0 ? `
       <div class="row">
-        <span>GST (${bill.gstPercent}%)</span>
-        <span class="semi-bold">${formatINR(bill.actualGst)}</span>
-      </div>` : `
-      <div class="row" style="color:#6b7280;">
-        <span>GST (0%)</span>
-        <span>₹0</span>
-      </div>`}
+        <span>CGST (${gst.cgstPercent}%)</span>
+        <span class="semi-bold">${formatINR(gst.cgst)}</span>
+      </div>
+      <div class="row">
+        <span>SGST (${gst.sgstPercent}%)</span>
+        <span class="semi-bold">${formatINR(gst.sgst)}</span>
+      </div>
+
+      ${previousDue > 0 ? `
+      <div class="row red">
+        <span>Previous Outstanding</span>
+        <span class="semi-bold">${formatINR(previousDue)}</span>
+      </div>` : ''}
 
       <div class="row total">
         <span>Grand Total</span>
         <span class="green">${formatINR(bill.grandTotal)}</span>
       </div>
-
-      ${bill.advanceApplied > 0 ? `
-      <div class="row green">
-        <span>Less: Advance</span>
-        <span class="semi-bold">-${formatINR(bill.advanceApplied)}</span>
-      </div>` : ''}
     </div>
 
-    <div class="pay-box">
-      <div class="pay-row semi-bold" style="color:#111827;">
-        <span>Paid (cash/UPI/card):</span><span>${formatINR(paidAfterAdvance)}</span>
-      </div>
-      ${bill.payCash > 0 ? `<div class="pay-row" style="padding-left:8px;"><span>• Cash</span><span>${formatINR(bill.payCash)}</span></div>` : ''}
-      ${bill.payUpi > 0 ? `<div class="pay-row" style="padding-left:8px;"><span>• UPI</span><span>${formatINR(bill.payUpi)}</span></div>` : ''}
-      ${bill.payCard > 0 ? `<div class="pay-row" style="padding-left:8px;"><span>• Card</span><span>${formatINR(bill.payCard)}</span></div>` : ''}
-      <div class="pay-row semi-bold" style="border-top:1px solid #e5e7eb; padding-top:4px; margin-top:4px; color:#111827;">
-        <span>Total Paid:</span><span>${formatINR(totalPaid)}</span>
-      </div>
-      ${balance > 0.01 ? `
-      <div class="pay-row red bold">
-        <span>Balance Due:</span><span>${formatINR(balance)}</span>
-      </div>` : `
-      <div class="pay-row green bold">
-        <span>Balance Due:</span><span>₹0 (Fully Paid ✓)</span>
-      </div>`}
-    </div>
 
     <div class="footer-note">
       Thank you for staying with us! Please visit again.
@@ -320,6 +305,11 @@ export function triggerPrintFoodBill(order: any, settings: Record<string, string
     <div class="divider"></div>
     <div>${itemsHtml}</div>
     <div class="divider"></div>
+    ${Number(order.taxAmount || 0) > 0 ? `
+    <div class="flex-between" style="font-size:12px;"><span>Subtotal</span><span>${formatINR(order.subtotal || (order.total - order.taxAmount))}</span></div>
+    <div class="flex-between" style="font-size:12px;"><span>CGST (${order.cgstPercent}%)</span><span>${formatINR(splitGst({ gstPercent: Number(order.cgstPercent || 0) + Number(order.sgstPercent || 0), cgstPercent: order.cgstPercent, sgstPercent: order.sgstPercent, actualGst: order.taxAmount }).cgst)}</span></div>
+    <div class="flex-between" style="font-size:12px; margin-bottom:6px;"><span>SGST (${order.sgstPercent}%)</span><span>${formatINR(splitGst({ gstPercent: Number(order.cgstPercent || 0) + Number(order.sgstPercent || 0), cgstPercent: order.cgstPercent, sgstPercent: order.sgstPercent, actualGst: order.taxAmount }).sgst)}</span></div>
+    ` : ''}
     <div class="flex-between bold" style="font-size: 15px;">
       <span>Total Amount</span>
       <span style="color: #047857;">${formatINR(order.total)}</span>
@@ -471,6 +461,104 @@ export function triggerPrintAdvanceReceipt(booking: any, settings: Record<string
     setTimeout(() => {
       document.body.removeChild(iframe)
     }, 1000)
+  }, 300)
+}
+
+/**
+ * Guest details sheet: profile with address and every stay with its original (actual) room number.
+ * Money paid is deliberately not printed.
+ */
+export function triggerPrintGuestDetails(guest: any, settings: Record<string, string> = {}) {
+  if (!guest) return
+  const hotelName = settings.hotelName || 'Ashirbad Lodge'
+  const hotelAddress = settings.hotelAddress || ''
+  const hotelPhone = settings.hotelPhone || ''
+  const stays = (guest.bookings || []) as any[]
+  const rows = stays
+    .map(
+      (b) => `
+      <tr>
+        <td><b>${escapeHtml(b.room?.number || '—')}</b>${b.room?.type ? ` <span class="muted">(${escapeHtml(b.room.type)})</span>` : ''}</td>
+        <td>${formatDate(b.checkIn)}</td>
+        <td>${formatDate(b.actualCheckOut || b.checkOut)}</td>
+        <td class="c">${b.days || 1}</td>
+        <td class="c">${b.guestCount || 1}</td>
+        <td>${escapeHtml(b.status || '')}</td>
+        <td>${escapeHtml(b.bills?.[0]?.billNumber || '—')}</td>
+      </tr>`
+    )
+    .join('')
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Guest Details - ${escapeHtml(guest.name || '')}</title>
+  <style>
+    @page { size: A4 portrait; margin: 0mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; padding: 12mm 15mm; font-size: 12px; line-height: 1.5; }
+    .card { max-width: 720px; margin: 0 auto; border: 1px solid #d1d5db; border-radius: 8px; padding: 22px; }
+    .c { text-align: center; }
+    .muted { color: #6b7280; }
+    h1 { font-size: 20px; font-weight: 800; }
+    .badge { display: inline-block; margin-top: 6px; padding: 3px 12px; font-size: 11px; font-weight: 700; border-radius: 9999px; background: #ecfdf5; color: #065f46; letter-spacing: .5px; }
+    .divider { border-top: 1px solid #e5e7eb; margin: 14px 0; }
+    .grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; }
+    .grid span:nth-child(odd) { color: #6b7280; }
+    .grid span:nth-child(even) { font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align: left; font-size: 11.5px; }
+    th { background: #f9fafb; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="c">
+      <h1>${escapeHtml(hotelName)}</h1>
+      ${hotelAddress ? `<div class="muted">${escapeHtml(hotelAddress)}</div>` : ''}
+      ${hotelPhone ? `<div class="muted">Ph: ${escapeHtml(hotelPhone)}</div>` : ''}
+      <div class="badge">GUEST DETAILS</div>
+    </div>
+    <div class="divider"></div>
+    <div class="grid">
+      <span>Guest Name</span><span>${escapeHtml(guest.name || '')}</span>
+      <span>Phone</span><span>${escapeHtml(guest.phone || '')}</span>
+      <span>Address</span><span>${escapeHtml(guest.address || '—')}</span>
+      ${guest.company ? `<span>Company</span><span>${escapeHtml(guest.company)}</span>` : ''}
+      ${guest.gst ? `<span>GSTIN</span><span>${escapeHtml(guest.gst)}</span>` : ''}
+      ${guest.idProof ? `<span>ID Proof</span><span>${escapeHtml(guest.idProof)}</span>` : ''}
+      <span>Total Stays</span><span>${stays.length}</span>
+    </div>
+    <div class="divider"></div>
+    <div style="font-weight:700;">Stay History</div>
+    <table>
+      <thead><tr><th>Room No</th><th>Check-In</th><th>Check-Out</th><th class="c">Nights</th><th class="c">Guests</th><th>Status</th><th>Bill No</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" class="c muted">No stays recorded</td></tr>'}</tbody>
+    </table>
+    <p class="c muted" style="margin-top:16px; font-size:11px;">Printed ${formatDateTime(new Date())}</p>
+  </div>
+</body>
+</html>`
+
+  const iframe = document.createElement('iframe')
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
+  document.body.appendChild(iframe)
+  const doc = iframe.contentWindow?.document
+  if (!doc) return
+  doc.open()
+  doc.write(html)
+  doc.close()
+  setTimeout(() => {
+    iframe.contentWindow?.focus()
+    iframe.contentWindow?.print()
+    setTimeout(() => document.body.removeChild(iframe), 1000)
   }, 300)
 }
 

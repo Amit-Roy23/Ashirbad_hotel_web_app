@@ -81,7 +81,7 @@ check('bill+checkout leaving pending food blocked', res.status === 400, JSON.str
 res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 12, includeFood: true, extraCharges: 200, discount: 300, payCash: 1600 })
 check('GST other than 0%/5% rejected', res.status === 400, JSON.stringify(res.data))
 res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 5, includeFood: true, extraCharges: 200, discount: 300, payCash: 1000 })
-check('bill without full payment rejected', res.status === 400, JSON.stringify(res.data))
+check('bill without full payment rejected (needs Admin PIN)', res.status === 403, JSON.stringify(res.data))
 res = await call('POST', '/api/bills', { bookingId: bA.id, days: 2, gstPercent: 5, includeFood: true, extraCharges: 200, discount: 300, payCash: 1000, payUpi: 600 })
 const bill1 = res.data
 check('bill created (fresh DB invoice counter)', res.status === 200, JSON.stringify(res.data))
@@ -195,7 +195,7 @@ check('edited banquet advance reaches ledger (3000)', adv === 3000, String(adv))
 res = await call('PATCH', '/api/banquet-bookings', { id: bq1.id, advancePaid: 2500 })
 adv = (await ledger()).filter((e) => e.refId === bq1.id && e.category === 'ADVANCE').reduce((s, e) => s + e.amount, 0)
 check('reduced banquet advance reflected (2500)', adv === 2500, String(adv))
-res = await call('POST', '/api/banquet-bills', { banquetBookingId: bq1.id, gstPercent: 18, payCash: 1000 })
+res = await call('POST', '/api/banquet-bills', { banquetBookingId: bq1.id, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 1000 })
 const bqBill = res.data
 check('banquet bill', res.status === 200, JSON.stringify(res.data))
 check('banquet income not booked as ROOM_RENT', (await ledger()).filter((e) => e.refId === bqBill.id).every((e) => e.category === 'BANQUET'))
@@ -210,6 +210,92 @@ res = await call('POST', '/api/banquet-bookings', { hallId: hall.id, customerNam
 check('booking number does not collide after a delete', res.status === 200, JSON.stringify(res.data))
 await call('DELETE', `/api/banquet-bookings?id=${bq1.id}`)
 check('deleting banquet booking clears its advance', !(await ledger()).some((e) => e.refId === bq1.id))
+
+console.log('— CGST / SGST')
+await call('POST', '/api/rooms', { number: '201', type: 'AC', rate: 1000, capacity: 2 })
+const r201 = await room('201')
+res = await call('POST', '/api/bookings', { roomId: r201.id, phone: '9876500030', name: 'Gita', checkIn: new Date().toISOString(), checkOut: plus(1), bookingType: 'CHECKIN' })
+const bG = res.data
+res = await call('POST', '/api/bills', { bookingId: bG.id, days: 1, cgstPercent: 5, sgstPercent: 0, payCash: 1050 })
+check('CGST other than 0/2.5 rejected', res.status === 400, JSON.stringify(res.data))
+res = await call('POST', '/api/bills', { bookingId: bG.id, days: 1, cgstPercent: 2.5, sgstPercent: 0, payCash: 1025 })
+const billG = res.data
+check('CGST 2.5% + SGST 0% bill', res.status === 200 && billG.cgstPercent === 2.5 && billG.sgstPercent === 0 && billG.actualGst === 25 && billG.grandTotal === 1025, JSON.stringify(res.data))
+
+console.log('— part payments during the stay')
+await call('POST', '/api/rooms', { number: '202', type: 'AC', rate: 1000, capacity: 2 })
+const r202 = await room('202')
+res = await call('POST', '/api/bookings', { roomId: r202.id, phone: '9876500031', name: 'Hari', checkIn: new Date().toISOString(), checkOut: plus(2), bookingType: 'CHECKIN', advance: 300 })
+const bH = res.data
+res = await call('PATCH', '/api/bookings', { id: bH.id, action: 'add-payment', amount: 700, method: 'UPI' })
+check('part payment accepted', res.status === 200 && res.data.advance === 1000, JSON.stringify(res.data))
+res = await call('PATCH', '/api/bookings', { id: bH.id, action: 'add-payment', amount: 500, method: 'CASH' })
+const hRows = (await ledger()).filter((e) => e.refId === bH.id && e.category === 'ADVANCE')
+check('each payment is its own ledger row (300 + 700 + 500)', hRows.length === 3 && hRows.reduce((s, e) => s + e.amount, 0) === 1500, JSON.stringify(hRows.map((e) => e.amount)))
+// 2 nights 2000 + 5% = 2100, paid 1500 during stay → 600 at checkout
+res = await call('POST', '/api/bills', { bookingId: bH.id, days: 2, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 600 })
+check('checkout bill deducts part payments', res.status === 200 && res.data.advanceApplied === 1500 && res.data.grandTotal === 2100, JSON.stringify(res.data))
+
+console.log('— outstanding guest: admin PIN, carried to next bill')
+await call('POST', '/api/rooms', { number: '203', type: 'AC', rate: 1000, capacity: 2 })
+const r203 = await room('203')
+res = await call('POST', '/api/bookings', { roomId: r203.id, phone: '9876500032', name: 'Isha', checkIn: new Date().toISOString(), checkOut: plus(1), bookingType: 'CHECKIN' })
+const bI = res.data
+res = await call('POST', '/api/bills', { bookingId: bI.id, days: 1, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 50 })
+check('balance due without Admin PIN refused', res.status === 403, JSON.stringify(res.data))
+res = await call('POST', '/api/bills', { bookingId: bI.id, days: 1, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 50, adminPin: '5678' })
+check('Manager PIN is not enough for balance due', res.status === 403, JSON.stringify(res.data))
+res = await call('POST', '/api/bills', { bookingId: bI.id, days: 1, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 50, adminPin: '1234' })
+const billI1 = res.data
+check('Admin PIN allows checkout with ₹1000 due', res.status === 200, JSON.stringify(res.data))
+const lookI = (await call('GET', '/api/guests?phone=9876500032')).data
+check('guest lookup shows outstanding 1000', lookI.outstanding === 1000, JSON.stringify(lookI))
+res = await call('POST', '/api/bookings', { roomId: r203.id, phone: '9876500032', name: 'Isha', checkIn: new Date().toISOString(), checkOut: plus(1), bookingType: 'CHECKIN' })
+check('outstanding guest check-in needs Admin PIN', res.status === 403 && res.data.code === 'OUTSTANDING_PIN_REQUIRED', JSON.stringify(res.data))
+res = await call('POST', '/api/bookings', { roomId: r203.id, phone: '9876500032', name: 'Isha', checkIn: new Date().toISOString(), checkOut: plus(1), bookingType: 'CHECKIN', adminPin: '1234' })
+const bI2 = res.data
+check('check-in allowed with Admin PIN', res.status === 200, JSON.stringify(res.data))
+// new stay 1000 + 50 GST + previous 1000 = 2050
+res = await call('POST', '/api/bills', { bookingId: bI2.id, days: 1, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 2050 })
+const billI2 = res.data
+check('next bill includes previous due (2050)', res.status === 200 && billI2.previousDue === 1000 && billI2.grandTotal === 2050, JSON.stringify(res.data))
+let allBills = (await call('GET', '/api/bills')).data
+const oldI = allBills.find((b) => b.id === billI1.id)
+check('old bill marked carried to new bill', oldI.carriedForward === 1000 && oldI.carriedToBillNumber === billI2.billNumber, JSON.stringify(oldI))
+check('guest has no outstanding now', (await call('GET', '/api/guests?phone=9876500032')).data.outstanding === 0)
+const iLedger = (await ledger()).filter((e) => e.refId === billI2.id).reduce((s, e) => s + e.amount, 0)
+check('previous due is not counted as new income (ledger 1050)', Math.abs(iLedger - 1050) < 0.01, String(iLedger))
+res = await call('DELETE', `/api/bills?id=${billI1.id}`)
+check('cannot delete a bill whose due was carried', res.status === 400)
+res = await call('DELETE', `/api/bills?id=${billI2.id}`)
+allBills = (await call('GET', '/api/bills')).data
+check('deleting new bill gives the due back to the old bill', allBills.find((b) => b.id === billI1.id).carriedForward === 0)
+
+console.log('— admin PIN check endpoint')
+check('wrong admin PIN rejected', (await call('POST', '/api/auth', { action: 'verify-admin', pin: '0000' })).status === 403)
+check('admin PIN accepted', (await call('POST', '/api/auth', { action: 'verify-admin', pin: '1234', reason: 'test' })).status === 200)
+
+console.log('— food bill GST')
+await call('PATCH', '/api/settings', { foodGstEnabled: 'true', foodCgst: '2.5', foodSgst: '2.5' })
+res = await call('POST', '/api/orders', { tableNo: '5', items: [{ name: 'Thali', price: 200, quantity: 1 }] })
+const fo = res.data
+check('direct food bill gets CGST+SGST (200 + 10)', fo.subtotal === 200 && fo.taxAmount === 10 && fo.total === 210, JSON.stringify(fo))
+res = await call('POST', '/api/orders', { tableNo: '6', gstEnabled: false, items: [{ name: 'Tea', price: 20, quantity: 1 }] })
+check('food GST switched off on the order', res.data.taxAmount === 0 && res.data.total === 20, JSON.stringify(res.data))
+await call('PATCH', '/api/orders', { id: fo.id, action: 'paid', method: 'UPI' })
+const foRows = (await ledger()).filter((e) => e.refId === fo.id)
+check('paid food bill → FOOD 200 + GST 10 ledger', foRows.some((e) => e.category === 'FOOD' && e.amount === 200) && foRows.some((e) => e.category === 'GST' && e.amount === 10), JSON.stringify(foRows))
+check('invalid food CGST rejected', (await call('PATCH', '/api/settings', { foodCgst: '9' })).status === 400)
+
+console.log('— company GSTIN remembered')
+const comps = (await call('GET', '/api/companies?q=acm')).data
+check('company Acme found for autofill', comps.some((c) => c.company === 'Acme'), JSON.stringify(comps))
+
+console.log('— banquet decor off + CGST/SGST')
+res = await call('POST', '/api/banquet-bookings', { hallId: hall.id, customerName: 'P', customerPhone: '9000000009', eventName: 'Party', eventDate: plus(30), slot: 'EVENING', hallRent: 10000, decorCharges: 5000, decorEnabled: false })
+check('decor off → no decor charge', res.status === 200 && res.data.decorCharges === 0 && res.data.decorEnabled === false && res.data.totalEstimated === 10000, JSON.stringify(res.data))
+res = await call('POST', '/api/banquet-bills', { banquetBookingId: res.data.id, cgstPercent: 2.5, sgstPercent: 2.5, payCash: 10500 })
+check('banquet bill CGST+SGST (10000 → 500)', res.status === 200 && res.data.gstAmount === 500 && res.data.cgstPercent === 2.5, JSON.stringify(res.data))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -13,7 +13,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
-import { apiAs, formatINR, formatDate, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate } from '@/lib/hotel-utils'
+import { computeGst, normalizeHalfRate } from '@/lib/gst'
+import { GstPicker } from './gst-picker'
+import { CompanyInput } from './company-input'
 import { getCachedUser } from './user-context'
 import { Loader2, Info, ShieldCheck } from 'lucide-react'
 
@@ -23,6 +26,7 @@ interface Guest {
   phone: string
   company?: string | null
   gst?: string | null
+  address?: string | null
 }
 
 interface Room {
@@ -54,6 +58,11 @@ export interface Bill {
   roomNumber?: string | null
   roomDescription?: string | null
   gstPercent: number
+  cgstPercent?: number
+  sgstPercent?: number
+  previousDue?: number
+  carriedForward?: number
+  carriedToBillNumber?: string | null
   actualGst: number
   internalGst?: number
   internalTotal?: number
@@ -95,7 +104,11 @@ export function GenerateBillDialog({
   const [customTotal, setCustomTotal] = useState('')
   const [roomNumber, setRoomNumber] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
-  const [gstPercent, setGstPercent] = useState(normalizeLodgingGst(defaultGstPercent))
+  const [cgst, setCgst] = useState(2.5)
+  const [sgst, setSgst] = useState(2.5)
+  const [previousDue, setPreviousDue] = useState(0)
+  const [previousDueBills, setPreviousDueBills] = useState<{ billNumber: string; balance: number }[]>([])
+  const [adminPin, setAdminPin] = useState('')
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
   const [includeFood, setIncludeFood] = useState(false)
@@ -114,8 +127,9 @@ export function GenerateBillDialog({
       const initRoom = booking.ratePerDay * initDays
       const initFood = (booking.foodOrders || []).reduce((s, o) => s + o.total, 0)
       const initTaxable = initRoom + initFood
-      const gst = parseFloat(normalizeLodgingGst(defaultGstPercent)) || 0
-      const initGrand = Math.round((initTaxable + (initTaxable * gst) / 100) * 100) / 100
+      // Default CGST / SGST until Settings load (legacy combined default split in halves)
+      const half = Number(defaultGstPercent) === 0 ? 0 : 2.5
+      const initGrand = Math.round((initTaxable + computeGst(initTaxable, half, half).total) * 100) / 100
       const initAdv = Math.min(booking.advance || 0, initGrand)
       const initPayable = Math.max(0, Math.round((initGrand - initAdv) * 100) / 100)
 
@@ -124,7 +138,11 @@ export function GenerateBillDialog({
       setCustomTotal('')
       setRoomNumber(booking.room?.number || '')
       setRoomDescription(booking.room?.type || 'Non-AC')
-      setGstPercent(normalizeLodgingGst(defaultGstPercent))
+      setCgst(half)
+      setSgst(half)
+      setPreviousDue(0)
+      setPreviousDueBills([])
+      setAdminPin('')
       setExtraCharges('0')
       setDiscount('0')
       // Pending room-service must land on this bill; checkout is refused if it would be left behind
@@ -136,6 +154,28 @@ export function GenerateBillDialog({
       setGstNumber(booking.guest?.gst || '')
       setManagerPin('')
       setError('')
+
+      // Lodging CGST / SGST from Settings, and dues from the guest's earlier bills (added to this bill)
+      Promise.all([
+        api<Record<string, string>>('/api/settings').catch(() => ({}) as Record<string, string>),
+        booking.guest?.phone
+          ? api<{ outstanding?: number; outstandingBills?: { billNumber: string; balance: number }[] } | null>(
+              `/api/guests?phone=${encodeURIComponent(booking.guest.phone)}`
+            ).catch(() => null)
+          : Promise.resolve(null),
+      ]).then(([s, g]) => {
+        const off = s.lodgingGstEnabled === 'false'
+        const c = off ? 0 : normalizeHalfRate(s.lodgingCgst, half)
+        const sg = off ? 0 : normalizeHalfRate(s.lodgingSgst, half)
+        setCgst(c)
+        setSgst(sg)
+        const due = Math.max(0, Number(g?.outstanding || 0))
+        setPreviousDue(due)
+        setPreviousDueBills(g?.outstandingBills || [])
+        const tax = computeGst(initTaxable, c, sg).total
+        const grand = Math.round((initTaxable + tax + due) * 100) / 100
+        setPayCash(String(Math.max(0, Math.round((grand - Math.min(booking.advance || 0, grand)) * 100) / 100)))
+      })
     }
   }, [open, booking, defaultGstPercent])
 
@@ -152,8 +192,10 @@ export function GenerateBillDialog({
 
     // Customer-facing full total
     const taxable = Math.max(0, billedRoom + foodTotal + extra - disc)
-    const gstAmount = Math.round(taxable * num(gstPercent)) / 100
-    const grandTotal = Math.max(0, Math.round((taxable + gstAmount) * 100) / 100)
+    const tax = computeGst(taxable, cgst, sgst)
+    const gstAmount = tax.total
+    // Earlier unpaid bills are added on top (already taxed, so no GST on them)
+    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + previousDue) * 100) / 100)
     const advanceApplied = Math.min(booking.advance || 0, grandTotal)
     const payable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
 
@@ -174,6 +216,8 @@ export function GenerateBillDialog({
       foodTotal,
       taxable,
       gstAmount,
+      cgstAmount: tax.cgst,
+      sgstAmount: tax.sgst,
       grandTotal,
       advanceApplied,
       payable,
@@ -184,7 +228,7 @@ export function GenerateBillDialog({
       balance,
       adjustment,
     }
-  }, [booking, days, customMode, customTotal, includeFood, extraCharges, discount, gstPercent, payCash, payUpi, payCard])
+  }, [booking, days, customMode, customTotal, includeFood, extraCharges, discount, cgst, sgst, previousDue, payCash, payUpi, payCard])
 
   function autoBalance(method: 'CASH' | 'UPI' | 'CARD') {
     if (!calc) return
@@ -232,8 +276,8 @@ export function GenerateBillDialog({
       setError(`Payment split (₹${calc.paid}) cannot exceed payable amount (₹${calc.payable})`)
       return
     }
-    if (calc.balance > 0.01) {
-      setError(`Full payment required before the bill can be generated or printed. Collect the outstanding ${formatINR(calc.balance)}.`)
+    if (calc.balance > 0.01 && !adminPin.trim()) {
+      setError(`Full payment required. Collect the outstanding ${formatINR(calc.balance)}, or enter the Admin PIN to check out with a balance due.`)
       return
     }
     setSaving(true)
@@ -248,7 +292,8 @@ export function GenerateBillDialog({
           billedRoomTotal: customMode && num(customTotal) > 0 ? num(customTotal) : undefined,
           roomNumber: customMode && roomNumber.trim() ? roomNumber.trim() : undefined,
           roomDescription: customMode && roomDescription.trim() ? roomDescription.trim() : undefined,
-          gstPercent: num(gstPercent),
+          cgstPercent: cgst,
+          sgstPercent: sgst,
           extraCharges: num(extraCharges),
           discount: num(discount),
           payCash: num(payCash),
@@ -258,6 +303,7 @@ export function GenerateBillDialog({
           corporateName: corporateName || undefined,
           gstNumber: gstNumber || undefined,
           managerPin: (customMode || isWaivingOverstay) ? managerPin.trim() : undefined,
+          adminPin: calc.balance > 0.01 ? adminPin.trim() : undefined,
           checkout: true,
         }),
       })
@@ -405,31 +451,18 @@ export function GenerateBillDialog({
               )
             })()}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-foreground">GST % *</Label>
-                {/* Lodging bills are issued at 0% or 5% GST only */}
-                <div className="grid h-9 grid-cols-2 gap-1">
-                  {LODGING_GST_RATES.map((pct) => (
-                    <button
-                      key={pct}
-                      type="button"
-                      onClick={() => setGstPercent(pct)}
-                      className={`rounded border text-xs font-semibold transition-colors ${
-                        num(gstPercent) === num(pct)
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-muted text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      {pct}%
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-foreground">Billable Days *</Label>
-                <Input type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)} className="h-9 text-xs" />
-              </div>
+            {/* GST is charged as CGST + SGST, each 0% or 2.5% */}
+            <GstPicker
+              cgst={cgst}
+              sgst={sgst}
+              onChange={(n) => {
+                setCgst(n.cgst)
+                setSgst(n.sgst)
+              }}
+            />
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-foreground">Billable Days *</Label>
+              <Input type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)} className="h-9 text-xs" />
             </div>
 
             {/* Overstay waiver Manager/Admin PIN requirement */}
@@ -458,13 +491,18 @@ export function GenerateBillDialog({
               )
             })()}
 
-            {(corporateName || gstNumber || num(gstPercent) > 0 || booking.isCorporate) && (
+            {(corporateName || gstNumber || cgst + sgst > 0 || booking.isCorporate) && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold text-foreground">
                     Bill To (Company) {booking.isCorporate ? <span className="text-red-500">*</span> : ''}
                   </Label>
-                  <Input value={corporateName} onChange={(e) => setCorporateName(e.target.value)} placeholder="Company name" className="h-9 text-xs" />
+                  <CompanyInput
+                    value={corporateName}
+                    onChange={setCorporateName}
+                    onPick={(c) => c.gst && setGstNumber(c.gst)}
+                    className="h-9 text-xs"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold text-foreground">GSTIN</Label>
@@ -499,10 +537,23 @@ export function GenerateBillDialog({
                   <span className="font-medium">-{formatINR(num(discount))}</span>
                 </div>
               )}
-              {calc.gstAmount > 0 && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">GST ({num(gstPercent)}%)</span>
-                  <span className="font-medium">{formatINR(calc.gstAmount)}</span>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">CGST ({cgst}%)</span>
+                <span className="font-medium">{formatINR(calc.cgstAmount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">SGST ({sgst}%)</span>
+                <span className="font-medium">{formatINR(calc.sgstAmount)}</span>
+              </div>
+              {previousDue > 0 && (
+                <div className="flex justify-between text-red-700 dark:text-red-400">
+                  <span>
+                    Previous outstanding
+                    {previousDueBills.length > 0 && (
+                      <span className="text-[10px] font-normal"> ({previousDueBills.map((b) => b.billNumber).join(', ')})</span>
+                    )}
+                  </span>
+                  <span className="font-medium">+{formatINR(previousDue)}</span>
                 </div>
               )}
               <Separator />
@@ -512,7 +563,7 @@ export function GenerateBillDialog({
               </div>
               {calc.advanceApplied > 0 && (
                 <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
-                  <span>Less: Advance received</span>
+                  <span>Less: Advance / part payments received</span>
                   <span className="font-medium">-{formatINR(calc.advanceApplied)}</span>
                 </div>
               )}
@@ -562,14 +613,26 @@ export function GenerateBillDialog({
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
             {calc.balance > 0.01 && (
-              <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                Collect the full amount ({formatINR(calc.balance)} outstanding) to generate and print the bill.
-              </p>
+              <div className="space-y-1.5 rounded-lg border border-amber-300 bg-amber-50/80 p-3 dark:border-amber-800 dark:bg-amber-950/40">
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                  {formatINR(calc.balance)} not collected. Collect the full amount, or enter the Admin PIN to check out with this balance due
+                  (it will be added to the guest&apos;s next bill).
+                </p>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="Admin PIN (allow balance due)"
+                  value={adminPin}
+                  onChange={(e) => setAdminPin(e.target.value)}
+                  autoComplete="off"
+                  className="h-9 text-xs bg-white dark:bg-slate-900"
+                />
+              </div>
             )}
             <Button
               className="w-full h-9 bg-emerald-600 hover:bg-emerald-700 font-semibold text-white text-xs"
               onClick={generateBill}
-              disabled={saving || calc.balance > 0.01}
+              disabled={saving || (calc.balance > 0.01 && !adminPin.trim())}
             >
               {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Generate Bill &amp; Check Out

@@ -55,6 +55,8 @@ interface ReportData {
     actualRoomRevenue: number
     billedRoomRevenue: number
     gst: number
+    cgst?: number
+    sgst?: number
     foodRoomPosted: number
     foodDirect: number
     discounts: number
@@ -74,6 +76,10 @@ interface ReportData {
       roomDescription?: string | null
       foodTotal: number
       gst: number
+      cgst?: number
+      sgst?: number
+      cgstPercent?: number
+      sgstPercent?: number
       internalGst: number
       grandTotal: number
       internalTotal: number
@@ -280,10 +286,10 @@ export function ReportsTab({ refreshKey }: TabProps) {
                   onClick={() =>
                     exportCSV(
                       'invoice-report.csv',
-                      ['Invoice', 'Date', 'Guest', 'Room', 'Actual Room', 'Billed Room', 'Room Description', 'Food', 'GST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
+                      ['Invoice', 'Date', 'Guest', 'Room', 'Actual Room', 'Billed Room', 'Room Description', 'Food', 'CGST', 'SGST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
                       data.invoices.rows.map((r) => [
                         r.billNumber, formatDateTime(r.date), r.guestName, r.roomNumber,
-                        r.actualRoomTotal, r.billedRoomTotal, r.roomDescription || '', r.foodTotal, r.gst, r.internalGst, r.grandTotal, r.internalTotal,
+                        r.actualRoomTotal, r.billedRoomTotal, r.roomDescription || '', r.foodTotal, r.cgst ?? r.gst / 2, r.sgst ?? r.gst / 2, r.internalGst, r.grandTotal, r.internalTotal,
                         r.isCustom ? 'Yes' : 'No', r.approvedBy || '',
                       ])
                     )
@@ -303,7 +309,8 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       <TableHead>Actual</TableHead>
                       <TableHead>Billed</TableHead>
                       <TableHead>Food</TableHead>
-                      <TableHead>GST</TableHead>
+                      <TableHead>CGST</TableHead>
+                      <TableHead>SGST</TableHead>
                       <TableHead>Invoice Total</TableHead>
                       <TableHead>Internal Total</TableHead>
                     </TableRow>
@@ -311,7 +318,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                   <TableBody>
                     {data.invoices.rows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={10} className="py-6 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={11} className="py-6 text-center text-sm text-muted-foreground">
                           No invoices in this range.
                         </TableCell>
                       </TableRow>
@@ -334,7 +341,8 @@ export function ReportsTab({ refreshKey }: TabProps) {
                           {formatINR(r.billedRoomTotal)}
                         </TableCell>
                         <TableCell className="text-xs">{formatINR(r.foodTotal)}</TableCell>
-                        <TableCell className="text-xs">{formatINR(r.gst)}</TableCell>
+                        <TableCell className="text-xs">{formatINR(r.cgst ?? r.gst / 2)}</TableCell>
+                        <TableCell className="text-xs">{formatINR(r.sgst ?? r.gst / 2)}</TableCell>
                         <TableCell className="text-xs font-bold">{formatINR(r.grandTotal)}</TableCell>
                         <TableCell className="text-xs font-medium text-muted-foreground">{formatINR(r.internalTotal)}</TableCell>
                       </TableRow>
@@ -344,7 +352,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
               </div>
               <p className="text-[11px] text-muted-foreground">
                 Internal room revenue kept at actual tariff: <b>{formatINR(data.revenue.actualRoomRevenue)}</b> · Internal revenue (total):{' '}
-                <b>{formatINR(data.revenue.grandTotal)}</b> · Internal GST: <b>{formatINR(data.revenue.gst)}</b> · Discounts given: <b>{formatINR(data.revenue.discounts)}</b>
+                <b>{formatINR(data.revenue.grandTotal)}</b> · CGST: <b>{formatINR(data.revenue.cgst ?? data.revenue.gst / 2)}</b> · SGST: <b>{formatINR(data.revenue.sgst ?? data.revenue.gst / 2)}</b> · Discounts given: <b>{formatINR(data.revenue.discounts)}</b>
               </p>
             </TabsContent>
 

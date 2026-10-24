@@ -176,6 +176,7 @@ export interface BillLike {
   payCash?: number | null
   payUpi?: number | null
   payCard?: number | null
+  carriedForward?: number | null
 }
 
 /** Total money received for a bill = advanceApplied + payCash + payUpi + payCard */
@@ -189,10 +190,10 @@ export function totalReceived(bill: BillLike | null | undefined): number {
   return Math.round(total * 100) / 100
 }
 
-/** Balance due on a bill = grandTotal - totalReceived */
+/** Balance due on a bill = grandTotal - totalReceived - dues already moved into a later bill */
 export function balanceDue(bill: BillLike | null | undefined): number {
   if (!bill) return 0
-  const bal = Number(bill.grandTotal || 0) - totalReceived(bill)
+  const bal = Number(bill.grandTotal || 0) - totalReceived(bill) - Number(bill.carriedForward || 0)
   return Math.max(0, Math.round(bal * 100) / 100)
 }
 

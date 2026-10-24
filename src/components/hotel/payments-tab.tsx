@@ -26,6 +26,8 @@ interface PaymentRow {
   ref: string
   date: string
   guest: string
+  phone?: string
+  roomNo?: string
   detail: string
   amount: number
   cash: number
@@ -45,7 +47,7 @@ interface Bill {
   roomDescription?: string | null
   internalGst?: number
   internalTotal?: number
-  booking: { guest: { name: string }; room: { number: string } }
+  booking: { guest: { name: string; phone?: string }; room: { number: string } }
 }
 
 interface Order {
@@ -84,6 +86,8 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
   const [bills, setBills] = useState<Bill[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [ledger, setLedger] = useState<LedgerEntry[]>([])
+  // refId -> guest phone / room, so advances & part payments can be searched by number
+  const [refInfo, setRefInfo] = useState<Record<string, { phone?: string; room?: string; name?: string }>>({})
   const [loading, setLoading] = useState(true)
   const [lastBill, setLastBill] = useState<Bill | null>(null)
 
@@ -95,12 +99,18 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
 
   const load = useCallback(async () => {
     try {
-      const [b, o, l, s] = await Promise.all([
+      const [b, o, l, s, bk, bq] = await Promise.all([
         apiList<Bill>('/api/bills'),
         apiList<Order>('/api/orders'),
         apiList<LedgerEntry>('/api/ledger?type=INCOME'),
         api<Record<string, string>>('/api/settings').catch(() => ({})),
+        apiList<{ id: string; guest?: { name?: string; phone?: string }; room?: { number?: string } }>('/api/bookings').catch(() => []),
+        apiList<{ id: string; customerName?: string; customerPhone?: string }>('/api/banquet-bookings').catch(() => []),
       ])
+      const info: Record<string, { phone?: string; room?: string; name?: string }> = {}
+      for (const x of bk) info[x.id] = { phone: x.guest?.phone, room: x.room?.number, name: x.guest?.name }
+      for (const x of bq) info[x.id] = { phone: x.customerPhone, name: x.customerName }
+      setRefInfo(info)
       setLoadedSettings(s)
       setBills(b)
       setOrders(o)
@@ -127,6 +137,8 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           ref: b.billNumber,
           date: b.createdAt,
           guest: b.booking?.guest?.name || 'Guest',
+          phone: b.booking?.guest?.phone,
+          roomNo: b.booking?.room?.number,
           detail: `Room ${b.booking?.room?.number ?? '-'} — room + food bill`,
           amount: paid,
           cash: b.payCash,
@@ -159,9 +171,11 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
       out.push({
         id: `adv-${l.id}`,
         source: 'ADVANCE',
-        ref: 'Guest Advance',
+        ref: l.description.startsWith('Part payment') ? 'Part Payment' : 'Guest Advance',
         date: l.date,
-        guest: l.description.replace('Advance from ', '').split(' (')[0],
+        guest: (l.refId && refInfo[l.refId]?.name) || l.description.replace(/^(Advance|Part payment) from /, '').split(' (')[0],
+        phone: l.refId ? refInfo[l.refId]?.phone : undefined,
+        roomNo: l.refId ? refInfo[l.refId]?.room : undefined,
         detail: l.description,
         amount: l.amount,
         cash: l.method === 'CASH' ? l.amount : 0,
@@ -170,12 +184,20 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
       })
     }
     return out.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-  }, [bills, orders, ledger])
+  }, [bills, orders, ledger, refInfo])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
+    const qDigits = q.replace(/[^0-9]/g, '')
     return rows.filter((r) => {
-      if (q && !`${r.ref} ${r.guest} ${r.detail}`.toLowerCase().includes(q)) return false
+      if (q) {
+        // Search by text, phone number, room number, bill number or amount
+        const hay = `${r.ref} ${r.guest} ${r.detail} ${r.phone || ''} ${r.roomNo || ''} ${r.amount}`.toLowerCase()
+        const digitHay = `${r.phone || ''} ${r.roomNo || ''} ${r.ref} ${r.amount}`.replace(/[^0-9 ]/g, '')
+        const textHit = hay.includes(q)
+        const numberHit = qDigits.length > 0 && qDigits === q.replace(/[\s+-]/g, '') && digitHay.replace(/ /g, '|').split('|').some((part) => part.includes(qDigits))
+        if (!textHit && !numberHit) return false
+      }
       const d = new Date(r.date).toISOString().slice(0, 10)
       if (from && d < from) return false
       if (to && d > to) return false
@@ -314,7 +336,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
       <TableControls
         search={search}
         onSearch={setSearch}
-        searchPlaceholder="Reference, guest, detail…"
+        searchPlaceholder="Phone, room, bill no, guest, amount…"
         filters={[
           {
             key: 'channel',
@@ -381,7 +403,10 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
                   {r.source === 'BILL' ? 'Room Bill' : r.source === 'ORDER' ? 'Restaurant' : 'Advance'}
                 </TableCell>
                 <TableCell className="text-xs font-medium">{r.ref}</TableCell>
-                <TableCell className="text-xs">{r.guest}</TableCell>
+                <TableCell className="text-xs">
+                  <div>{r.guest}</div>
+                  {r.phone && <div className="text-[10px] text-muted-foreground">{r.phone}</div>}
+                </TableCell>
                 <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">{r.detail}</TableCell>
                 <TableCell className="text-right text-xs">{r.cash > 0 ? formatINR(r.cash) : '—'}</TableCell>
                 <TableCell className="text-right text-xs">{r.upi > 0 ? formatINR(r.upi) : '—'}</TableCell>

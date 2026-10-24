@@ -21,9 +21,10 @@ import {
 } from '@/components/ui/table'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, exportCSV } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, exportCSV, toDateStr } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
-import { Loader2, History, Pencil, Trash2 } from 'lucide-react'
+import { triggerPrintGuestDetails } from '@/lib/print-invoice'
+import { Loader2, History, Pencil, Trash2, Printer } from 'lucide-react'
 
 interface Bill {
   id: string
@@ -35,6 +36,7 @@ interface Booking {
   id: string
   checkIn: string
   checkOut?: string | null
+  actualCheckOut?: string | null
   days: number
   guestCount?: number
   ratePerDay: number
@@ -52,6 +54,7 @@ interface GuestRow {
   company?: string | null
   gst?: string | null
   address?: string | null
+  idProof?: string | null
   createdAt: string
   bookings: Booking[]
 }
@@ -67,6 +70,9 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const [loading, setLoading] = useState(true)
 
   const [search, setSearch] = useState('')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [settings, setSettings] = useState<Record<string, string>>({})
   const [viewGuest, setViewGuest] = useState<GuestRow | null>(null)
   const [editGuest, setEditGuest] = useState<GuestRow | null>(null)
   const [editName, setEditName] = useState('')
@@ -81,7 +87,12 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
 
   const load = useCallback(async () => {
     try {
-      setGuests(await api<GuestRow[]>('/api/guests'))
+      const [g, s] = await Promise.all([
+        api<GuestRow[]>('/api/guests'),
+        api<Record<string, string>>('/api/settings').catch(() => ({}) as Record<string, string>),
+      ])
+      setGuests(g)
+      setSettings(s)
     } catch {
       // silent
     } finally {
@@ -95,11 +106,25 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return guests
-    return guests.filter((g) =>
-      `${g.name} ${g.phone} ${g.company || ''} ${g.gst || ''}`.toLowerCase().includes(q)
-    )
-  }, [guests, search])
+    return guests.filter((g) => {
+      if (q && !`${g.name} ${g.phone} ${g.company || ''} ${g.gst || ''}`.toLowerCase().includes(q)) return false
+      if (from || to) {
+        // Date filter: guests who stayed (any day of a stay) within the range; guests without stays by first-seen date
+        const lo = from || '0000-01-01'
+        const hi = to || '9999-12-31'
+        if (g.bookings.length === 0) {
+          const d = toDateStr(g.createdAt)
+          return d >= lo && d <= hi
+        }
+        return g.bookings.some((b) => {
+          const inD = toDateStr(b.checkIn)
+          const outD = toDateStr(b.actualCheckOut || b.checkOut) || inD
+          return inD <= hi && outD >= lo
+        })
+      }
+      return true
+    })
+  }, [guests, search, from, to])
 
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'createdAt')
   const { paged, controls } = usePagination(sorted as unknown as GuestRow[], 10)
@@ -188,9 +213,19 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
         search={search}
         onSearch={setSearch}
         searchPlaceholder="Name, phone, company, GST…"
-        onReset={() => setSearch('')}
+        onReset={() => {
+          setSearch('')
+          setFrom('')
+          setTo('')
+        }}
         onExport={doExport}
-      />
+      >
+        <div className="flex items-center gap-1.5">
+          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="Stay from date" />
+          <span className="text-xs font-medium text-muted-foreground">to</span>
+          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="Stay to date" />
+        </div>
+      </TableControls>
 
       <div className="overflow-x-auto rounded-lg border">
         <Table>
@@ -271,10 +306,18 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
             <DialogDescription>
               {viewGuest?.phone}
               {viewGuest?.company ? ` · ${viewGuest.company}` : ''}
-              {viewGuest?.gst ? ` · GST ${viewGuest.gst}` : ''}
+              {viewGuest?.gst ? ` · GSTIN ${viewGuest.gst}` : ''}
               {viewGuest?.address ? ` · ${viewGuest.address}` : ''}
             </DialogDescription>
           </DialogHeader>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-fit gap-1.5"
+            onClick={() => viewGuest && triggerPrintGuestDetails(viewGuest, settings)}
+          >
+            <Printer className="h-3.5 w-3.5" /> Print Guest Details
+          </Button>
 
           <div className="max-h-96 space-y-2.5 overflow-y-auto pr-1">
             {(viewGuest?.bookings.length || 0) === 0 ? (
@@ -322,11 +365,6 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
                       <div>
                         <span className="font-medium text-foreground">Check-Out:</span> {formatDate(b.checkOut)}
                       </div>
-                      {b.advance > 0 && (
-                        <div>
-                          <span className="font-medium text-emerald-600">Advance:</span> {formatINR(b.advance)}
-                        </div>
-                      )}
                       {latestBill && (
                         <div>
                           <span className="font-medium text-foreground">Bill Total:</span> {formatINR(latestBill.grandTotal)} ({latestBill.billNumber})

@@ -23,6 +23,7 @@ import { CheckinDialog } from './checkin-dialog'
 import { GenerateBillDialog, type Bill } from './generate-bill-dialog'
 import { EditBillDialog } from './edit-bill-dialog'
 import { RoomFoodBillDialog } from './room-food-bill-dialog'
+import { PartPaymentDialog, type PartPaymentBooking } from './part-payment-dialog'
 import { PrintableInvoice } from './printable-invoice'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { BookingDialog } from './booking-dialog'
@@ -32,6 +33,7 @@ import { Separator } from '@/components/ui/separator'
 import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState, todayStr, addDays, toDateStr } from '@/lib/hotel-utils'
 import { nextAutoExtensionAt } from '@/lib/stay'
 import { getCachedUser } from './user-context'
+import { runWithAdminPin } from '@/lib/admin-pin'
 import { toast } from '@/hooks/use-toast'
 import {
   Loader2,
@@ -133,6 +135,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     roomId?: string
     initialCheckInDate?: string
   } | null>(null)
+  const [partPay, setPartPay] = useState<{ booking: PartPaymentBooking; roomNumber: string } | null>(null)
   const [foodBillState, setFoodBillState] = useState<{
     open: boolean
     roomId?: string
@@ -1024,10 +1027,15 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                             if (!opState.todayBooking) return
                             setBusy(true)
                             try {
-                              const res = await apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
-                                method: 'PATCH',
-                                body: JSON.stringify({ id: opState.todayBooking.id, action: 'checkin' }),
-                              })
+                              const bookingId = opState.todayBooking.id
+                              // Guests with dues from earlier stays need the Admin PIN to check in
+                              const res = await runWithAdminPin((adminPin) =>
+                                apiAs<{ error?: string }>('/api/bookings', getCachedUser(), {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ id: bookingId, action: 'checkin', adminPin }),
+                                })
+                              )
+                              if (res === null) return
                               if (res && res.error) {
                                 toast({ variant: 'destructive', title: 'Check-In Failed', description: res.error })
                                 return
@@ -1195,7 +1203,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           </div>
                         )}
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Advance</span>
+                          <span className="text-muted-foreground">Paid so far (advance + part payments)</span>
                           <span className="font-semibold">{formatINR(opState.activeBooking.advance)}</span>
                         </div>
                       </div>
@@ -1256,6 +1264,21 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           }}
                         >
                           <Utensils className="mr-1.5 h-4 w-4 text-amber-600 dark:text-amber-400" /> Fooding Bill (Room Service)
+                        </Button>
+
+                        {/* Part payment while the guest is staying (deducted from the checkout bill) */}
+                        <Button
+                          variant="outline"
+                          className="w-full border-emerald-500/40 font-semibold text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                          onClick={() => {
+                            const b = opState.activeBooking
+                            if (b) {
+                              setPartPay({ booking: b, roomNumber: currentRoom.number })
+                              setViewRoom(null)
+                            }
+                          }}
+                        >
+                          <Wallet className="mr-1.5 h-4 w-4" /> Receive Part Payment
                         </Button>
                       </div>
 
@@ -1537,6 +1560,17 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
           }}
         />
       )}
+
+      <PartPaymentDialog
+        open={!!partPay}
+        onOpenChange={(o) => !o && setPartPay(null)}
+        booking={partPay?.booking || null}
+        roomNumber={partPay?.roomNumber}
+        onSuccess={() => {
+          load()
+          onDataChanged()
+        }}
+      />
 
       {/* Room Fooding Bill Dialog */}
       {foodBillState?.open && (

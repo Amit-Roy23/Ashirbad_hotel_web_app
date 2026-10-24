@@ -23,6 +23,8 @@ import {
 import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, toDateStr, doDateRangesOverlap } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
+import { runWithAdminPin } from '@/lib/admin-pin'
+import { CompanyInput } from './company-input'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
 import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, ChevronLeft, ChevronRight, Clock } from 'lucide-react'
@@ -71,6 +73,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
   const [isCorporate, setIsCorporate] = useState(false)
   const [notes, setNotes] = useState('')
   const [autoFilled, setAutoFilled] = useState(false)
+  const [outstanding, setOutstanding] = useState(0)
   const [saving, setSaving] = useState(false)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
@@ -91,6 +94,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
       setIsCorporate(false)
       setNotes('')
       setAutoFilled(false)
+      setOutstanding(0)
       setError('')
 
       api<Record<string, string>>('/api/settings')
@@ -149,9 +153,10 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     if (clean.length >= 4) {
       setSearching(true)
       try {
-        const guest = await api<{ name: string; company?: string; gst?: string; address?: string } | null>(
+        const guest = await api<{ name: string; company?: string; gst?: string; address?: string; outstanding?: number } | null>(
           `/api/guests?phone=${encodeURIComponent(clean)}`
         )
+        setOutstanding(guest?.outstanding || 0)
         if (guest) {
           setName(guest.name)
           setCompany(guest.company || '')
@@ -161,6 +166,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           setAutoFilled(true)
         } else {
           setAutoFilled(false)
+          setOutstanding(0)
         }
       } catch {
         // ignore lookup errors
@@ -214,9 +220,11 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     setError('')
     try {
       const isAdvance = bookingMode === 'BOOKING'
-      await apiAs('/api/bookings', getCachedUser(), {
+      // A guest with dues from earlier stays needs the Admin PIN to check in (asked and retried)
+      const created = await runWithAdminPin((adminPin) => apiAs('/api/bookings', getCachedUser(), {
         method: 'POST',
         body: JSON.stringify({
+          adminPin,
           roomId: room.id,
           phone: cleanPhone,
           name: name.trim(),
@@ -234,7 +242,8 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           bookingType: isAdvance ? 'BOOKING' : 'CHECKIN',
           status: isAdvance ? 'BOOKED' : 'ACTIVE',
         }),
-      })
+      }))
+      if (created === null) return
       onSuccess()
       onOpenChange(false)
       if (isAdvance) {
@@ -468,6 +477,12 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 ✓ Valid 10-digit mobile number
               </p>
             )}
+            {outstanding > 0 && (
+              <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
+                ⚠ Outstanding from earlier stay(s): ₹{outstanding.toLocaleString('en-IN')}. Check-in needs the Admin PIN, and this amount
+                will be added to the next bill.
+              </p>
+            )}
             {autoFilled && (
               <p className="text-xs text-emerald-600 font-medium">
                 ✓ Returning customer found — details auto-filled!
@@ -495,12 +510,15 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 <Label htmlFor="company" className="text-xs font-semibold text-foreground">
                   Company Name <span className="text-red-500">*</span>
                 </Label>
-                <Input
+                <CompanyInput
                   id="company"
-                  placeholder="Company name"
                   value={company}
+                  onChange={setCompany}
+                  onPick={(c) => {
+                    if (c.gst) setGst(c.gst)
+                    if (c.address && !address) setAddress(c.address)
+                  }}
                   className="h-9 text-xs"
-                  onChange={(e) => setCompany(e.target.value)}
                 />
               </div>
               <div className="space-y-1.5">

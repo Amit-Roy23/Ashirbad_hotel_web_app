@@ -105,7 +105,9 @@ model Bill {
   billedRoomTotal Float    // printed on bill (can be custom corporate rate)
   roomNumber      String?  // text printed on the invoice as room number (defaults to booking.room.number if null)
   roomDescription String?  // text printed on the invoice as room description (defaults to room.type if null)
-  gstPercent      Float    @default(0)
+  gstPercent      Float    @default(0) // combined rate = cgstPercent + sgstPercent
+  cgstPercent     Float    @default(0) // 0 | 2.5
+  sgstPercent     Float    @default(0) // 0 | 2.5
   actualGst       Float    // GST printed on the customer invoice (calculated on customer-facing billed amount)
   internalGst     Float    @default(0) // hotel's internal accounting GST (calculated on actual room tariff)
   internalTotal   Float    @default(0) // hotel's internal accounting total (actual room + food + extra - disc + internalGst)
@@ -117,6 +119,10 @@ model Bill {
   payUpi          Float    @default(0)
   payCard         Float    @default(0)
   advanceApplied  Float    @default(0) // advance deducted from full grandTotal to compute payable amount
+  previousDue     Float    @default(0) // unpaid balance of the guest's earlier bills added to this bill (included in grandTotal, not taxed)
+  carriedFrom     String?  // JSON [{ id, billNumber, amount }] of earlier bills whose balance was moved here
+  carriedForward  Float    @default(0) // part of this bill's balance moved into a later bill
+  carriedToBillNumber String? // the later bill that now holds this bill's balance
   isCorporate     Boolean  @default(false)
   corporateName   String?
   gstNumber       String?
@@ -154,7 +160,11 @@ model FoodOrder {
   bookingId String?     // attached to in-house guest => can merge to room bill
   roomId    String?
   tableNo   String?     // walk-in restaurant table
-  total     Float       @default(0)
+  subtotal    Float     @default(0) // items total before GST (0 on old orders = same as total)
+  cgstPercent Float     @default(0)
+  sgstPercent Float     @default(0)
+  taxAmount   Float     @default(0) // CGST + SGST charged on a restaurant (food) bill
+  total     Float       @default(0) // amount payable = subtotal + taxAmount
   status    String      @default("PENDING") // PENDING | ADDED_TO_BILL | PAID | CANCELLED
   createdBy String?     // user who took the order
   notes     String?
@@ -314,6 +324,7 @@ model BanquetBooking {
   foodPackageName String?
   foodTotal       Float         @default(0)
   decorCharges    Float         @default(0)
+  decorEnabled    Boolean       @default(true)
   extraCharges    Float         @default(0)
   discount        Float         @default(0)
   totalEstimated  Float         @default(0)
@@ -357,6 +368,8 @@ model BanquetBill {
   discount         Float          @default(0)
   taxableAmount    Float          @default(0)
   gstPercent       Float          @default(18)
+  cgstPercent      Float          @default(0)
+  sgstPercent      Float          @default(0)
   gstAmount        Float          @default(0)
   grandTotal       Float          @default(0)
   advanceApplied   Float          @default(0)
