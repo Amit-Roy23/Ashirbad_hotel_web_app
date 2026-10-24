@@ -139,8 +139,9 @@ function Shell() {
 
   useEffect(() => {
     fetch('/api/stats', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d: Stats) => setStats(d))
+      .then((r) => (r.ok ? r.json() : null))
+      // An error response has no counts; keep the fallback text instead of "undefined/undefined"
+      .then((d: Stats | null) => d && typeof d.totalRooms === 'number' && setStats(d))
       .catch(() => {})
     fetch('/api/settings', { cache: 'no-store' })
       .then((r) => r.json())
