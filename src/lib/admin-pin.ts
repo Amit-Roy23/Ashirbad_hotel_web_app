@@ -24,14 +24,42 @@ export function askAdminPin(message: string): Promise<string | null> {
   return showPinModal(message, async () => null)
 }
 
+export interface AdminPinRequest {
+  message: string
+  /** returns an error message to keep the dialog open, or null to accept */
+  validate: (pin: string) => Promise<string | null>
+  resolve: (pin: string | null) => void
+}
+
+// The app mounts <AdminPinHost /> which renders the prompt as a real dialog. That matters when
+// the prompt opens on top of another dialog: the open dialog blocks clicks and steals focus from
+// anything rendered outside the dialog system, so a plain DOM overlay could not be used.
+let pinHost: ((req: AdminPinRequest) => void) | null = null
+
+export function registerAdminPinHost(host: (req: AdminPinRequest) => void): () => void {
+  pinHost = host
+  return () => {
+    if (pinHost === host) pinHost = null
+  }
+}
+
 /** validate(pin) returns an error message to keep the dialog open, or null to accept */
 function showPinModal(message: string, validate: (pin: string) => Promise<string | null>): Promise<string | null> {
+  if (pinHost) {
+    const host = pinHost
+    return new Promise((resolve) => host({ message, validate, resolve }))
+  }
+  return showDomPinModal(message, validate)
+}
+
+/** Fallback when no host is mounted */
+function showDomPinModal(message: string, validate: (pin: string) => Promise<string | null>): Promise<string | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div')
     overlay.setAttribute('role', 'dialog')
     overlay.setAttribute('aria-modal', 'true')
     overlay.style.cssText =
-      'position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif'
+      'position:fixed;inset:0;z-index:9999;pointer-events:auto;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif'
     const box = document.createElement('div')
     box.style.cssText =
       'width:100%;max-width:340px;background:#fff;color:#111827;border-radius:12px;padding:18px;box-shadow:0 20px 40px rgba(0,0,0,.25)'

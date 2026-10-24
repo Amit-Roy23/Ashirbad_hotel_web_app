@@ -509,8 +509,8 @@ export function RestaurantTab({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <TabsList className="w-full grid grid-cols-3 sm:w-auto sm:inline-flex">
             <TabsTrigger value="order" className="gap-1.5">
-              <Utensils className="h-3.5 w-3.5" />
-              <span>Room Service Order</span>
+              <Utensils className="hidden h-3.5 w-3.5 min-[400px]:block" />
+              <span className="sm:hidden">New Order</span><span className="hidden sm:inline">Room Service Order</span>
               {cartItemCount > 0 && (
                 <span className="rounded-full bg-emerald-600 px-1.5 py-0.2 text-[11px] font-bold text-white">
                   {cartItemCount}
@@ -526,7 +526,7 @@ export function RestaurantTab({
               )}
             </TabsTrigger>
             <TabsTrigger value="menu" className="gap-1.5">
-              <span>Menu Items</span>
+              <span className="sm:hidden">Menu</span><span className="hidden sm:inline">Menu Items</span>
               <span className="text-[11px] text-muted-foreground">({menu.length})</span>
             </TabsTrigger>
           </TabsList>

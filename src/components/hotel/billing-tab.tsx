@@ -341,7 +341,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
     <div className="space-y-5">
       {/* Top Segmented Tabs: Checkout Bills vs Booking Bills */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-2 shadow-xs">
-        <div className="flex flex-wrap gap-2">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
           <Button
             variant={activeTab === 'CHECKOUT' ? 'default' : 'ghost'}
             className={
@@ -351,9 +351,10 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             }
             onClick={() => setActiveTab('CHECKOUT')}
           >
-            <Receipt className="mr-2 h-4 w-4" />
-            Checkout Bills (Final Settlement Invoices)
-            <Badge variant="secondary" className="ml-2 bg-white/20 text-current">
+            <Receipt className="h-4 w-4 max-sm:hidden sm:mr-2" />
+            <span className="sm:hidden">Checkout Bills</span>
+            <span className="hidden sm:inline">Checkout Bills (Final Settlement Invoices)</span>
+            <Badge variant="secondary" className="ml-1.5 bg-white/20 text-current sm:ml-2">
               {bills.length}
             </Badge>
           </Button>
@@ -367,9 +368,10 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             }
             onClick={() => setActiveTab('BOOKING')}
           >
-            <CalendarCheck className="mr-2 h-4 w-4" />
-            Booking Bills (Advance Receipts)
-            <Badge variant="secondary" className="ml-2 bg-white/20 text-current">
+            <CalendarCheck className="h-4 w-4 max-sm:hidden sm:mr-2" />
+            <span className="sm:hidden">Booking Bills</span>
+            <span className="hidden sm:inline">Booking Bills (Advance Receipts)</span>
+            <Badge variant="secondary" className="ml-1.5 bg-white/20 text-current sm:ml-2">
               {advanceBookings.length}
             </Badge>
           </Button>
@@ -390,7 +392,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
           {/* Summary Stat Cards for Checkout Invoices */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-transparent dark:border-blue-900 dark:from-blue-950/40">
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-blue-100 p-2.5 dark:bg-blue-900">
                   <Receipt className="h-5 w-5 text-blue-700 dark:text-blue-300" />
                 </div>
@@ -405,7 +407,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             </Card>
 
             <Card className="border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
                   <Banknote className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
                 </div>
@@ -422,7 +424,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             </Card>
 
             <Card className={`border-red-200 bg-gradient-to-br from-red-50 to-transparent dark:border-red-900 dark:from-red-950/40 ${outstandingBills.length > 0 ? 'ring-1 ring-red-400/50' : ''}`}>
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
                   <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
                 </div>
@@ -439,7 +441,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             </Card>
 
             <Card className="border-slate-200 bg-card dark:border-slate-800">
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-slate-100 p-2.5 dark:bg-slate-800">
                   <Building2 className="h-5 w-5 text-slate-700 dark:text-slate-300" />
                 </div>
@@ -849,7 +851,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
           {/* Summary Stat Cards for Advance Bookings */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Card className="border-amber-200 bg-gradient-to-br from-amber-50 to-transparent dark:border-amber-900 dark:from-amber-950/40">
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-amber-100 p-2.5 dark:bg-amber-900">
                   <Banknote className="h-5 w-5 text-amber-700 dark:text-amber-300" />
                 </div>
@@ -863,7 +865,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             </Card>
 
             <Card className="border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
                   <CalendarCheck className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
                 </div>
@@ -875,7 +877,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
             </Card>
 
             <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-transparent dark:border-blue-900 dark:from-blue-950/40 sm:col-span-1 col-span-2">
-              <CardContent className="flex items-center gap-3 p-4">
+              <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                 <div className="rounded-full bg-blue-100 p-2.5 dark:bg-blue-900">
                   <CheckCircle2 className="h-5 w-5 text-blue-700 dark:text-blue-300" />
                 </div>

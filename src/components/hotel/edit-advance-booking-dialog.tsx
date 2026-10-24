@@ -211,7 +211,7 @@ export function EditAdvanceBookingDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto max-w-2xl">
+      <DialogContent className="max-h-[92dvh] overflow-y-auto max-w-2xl">
         <DialogHeader>
           <div className="flex flex-wrap items-center justify-between gap-2 pr-6">
             <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
+import { api, formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
 import { billBalance, splitGst } from '@/lib/gst'
 import { requestAdminApproval } from '@/lib/admin-pin'
 
@@ -18,6 +18,16 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
   const hotelAddress = settings.hotelAddress || 'Station Road, Kolkata'
   const hotelPhone = settings.hotelPhone || '+91 90000 00000'
   const hotelGstin = settings.hotelGstin || ''
+
+  // Date-wise history of every payment on this bill (advance, part payments, checkout, dues collected)
+  let history: BillPaymentHistory | null = null
+  if (bill.id) {
+    try {
+      history = await api<BillPaymentHistory>(`/api/bills?paymentsFor=${encodeURIComponent(bill.id)}`)
+    } catch {
+      history = null
+    }
+  }
 
   const guest = bill.booking?.guest
   const room = bill.booking?.room
@@ -126,6 +136,12 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
       margin-bottom: 3px;
       color: #4b5563;
     }
+    .hist-title { margin-top: 18px; font-weight: 700; font-size: 13px; }
+    .hist { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+    .hist th, .hist td { border-bottom: 1px solid #e5e7eb; padding: 5px 4px; text-align: left; }
+    .hist th { background: #f9fafb; font-weight: 700; color: #374151; }
+    .hist td.num, .hist th.num { text-align: right; white-space: nowrap; }
+    .hist tfoot td { font-weight: 700; border-bottom: 0; }
     .footer-note {
       margin-top: 24px;
       text-align: center;
@@ -218,6 +234,8 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
       </div>
     </div>
 
+    ${history ? paymentHistoryHtml(history) : ''}
+
 
     <div class="footer-note">
       Thank you for staying with us! Please visit again.
@@ -250,6 +268,47 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
       document.body.removeChild(iframe)
     }, 1000)
   }, 300)
+}
+
+interface BillPaymentHistory {
+  payments: { date: string; label: string; cash: number; upi: number; card: number; amount: number }[]
+  totalPaid: number
+  balance: number
+}
+
+function paymentModeText(p: { cash: number; upi: number; card: number }): string {
+  const parts = [
+    p.cash > 0 ? ['Cash', p.cash] : null,
+    p.upi > 0 ? ['UPI', p.upi] : null,
+    p.card > 0 ? ['Card', p.card] : null,
+  ].filter(Boolean) as [string, number][]
+  if (parts.length === 1) return parts[0][0]
+  return parts.map(([mode, amount]) => `${mode} ${formatINR(amount)}`).join(' + ')
+}
+
+function paymentHistoryHtml(h: BillPaymentHistory): string {
+  const rows = h.payments
+    .map(
+      (p, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${formatDateTime(p.date)}</td>
+          <td>${escapeHtml(p.label)}</td>
+          <td>${escapeHtml(paymentModeText(p))}</td>
+          <td class="num">${formatINR(p.amount)}</td>
+        </tr>`
+    )
+    .join('')
+  return `
+    <div class="hist-title">Payment History</div>
+    <table class="hist">
+      <thead><tr><th>#</th><th>Date</th><th>Payment</th><th>Mode</th><th class="num">Amount</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#6b7280">No payments recorded yet</td></tr>'}</tbody>
+      <tfoot>
+        <tr><td colspan="4">Total Paid</td><td class="num green">${formatINR(h.totalPaid)}</td></tr>
+        <tr><td colspan="4">${h.balance > 0.01 ? 'Balance Due' : 'Status'}</td><td class="num ${h.balance > 0.01 ? 'red' : 'green'}">${h.balance > 0.01 ? formatINR(h.balance) : 'Fully Paid'}</td></tr>
+      </tfoot>
+    </table>`
 }
 
 export function triggerPrintFoodBill(order: any, settings: Record<string, string> = {}) {

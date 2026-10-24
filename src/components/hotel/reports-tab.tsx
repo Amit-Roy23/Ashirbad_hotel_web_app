@@ -235,7 +235,7 @@ function StatCard({
 }) {
   return (
     <Card>
-      <CardContent className="flex items-center gap-3 p-4">
+      <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
         <div className="rounded-full bg-muted p-2.5">
           <Icon className={iconClassName || 'h-5 w-5 text-emerald-700 dark:text-emerald-400'} />
         </div>
@@ -390,7 +390,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
               </div>
 
           <Tabs defaultValue="invoices">
-            <TabsList className="flex w-full flex-wrap gap-1 sm:w-auto">
+            <TabsList className="grid h-auto w-full grid-cols-4 gap-1 sm:flex sm:w-auto sm:flex-wrap [&>button]:h-8 max-sm:[&>button]:px-1 max-sm:[&>button]:text-xs">
               <TabsTrigger value="invoices">Invoices</TabsTrigger>
               <TabsTrigger value="collections">Collections</TabsTrigger>
               <TabsTrigger value="bookings">Bookings</TabsTrigger>
@@ -1326,7 +1326,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
 
       {/* ===== Guest & GST Bill Details Dialog ===== */}
       <Dialog open={!!selectedGstBill} onOpenChange={(open) => !open && setSelectedGstBill(null)}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[90dvh] overflow-y-auto">
           {selectedGstBill && (
             <>
               <DialogHeader>

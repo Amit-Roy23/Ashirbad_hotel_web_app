@@ -147,7 +147,7 @@ export function BanquetBookingDialog({
       setFoodPackageName(booking.foodPackageName || (hasFood ? 'Standard Buffet' : ''))
 
       setDecorCharges(String(booking.decorCharges || 0))
-      setDecorOn(booking.decorEnabled !== false)
+      setDecorOn(booking.decorEnabled !== false || Number(booking.extraCharges) > 0 || Number(booking.discount) > 0)
       setExtraCharges(String(booking.extraCharges || 0))
       setDiscount(String(booking.discount || 0))
       setAdvancePaid(String(booking.advancePaid || 0))
@@ -204,10 +204,10 @@ export function BanquetBookingDialog({
   const numHallRent = includeVenueRent ? Math.max(0, parseFloat(hallRent) || 0) : 0
   const numFoodPerPlate = includeCatering ? Math.max(0, parseFloat(foodRatePerPlate) || 0) : 0
   const totalFood = includeCatering ? numGuests * numFoodPerPlate : 0
-  // Decor switched off = no decoration for this event, no charge
+  // "Decor, AV Services & Discounts" switched off = no decor, no sound/AV extras and no discount
   const numDecor = decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
-  const numExtra = Math.max(0, parseFloat(extraCharges) || 0)
-  const numDiscount = Math.max(0, parseFloat(discount) || 0)
+  const numExtra = decorOn ? Math.max(0, parseFloat(extraCharges) || 0) : 0
+  const numDiscount = decorOn ? Math.max(0, parseFloat(discount) || 0) : 0
   const numAdvance = Math.max(0, parseFloat(advancePaid) || 0)
 
   const grandEstimated = Math.max(0, numHallRent + totalFood + numDecor + numExtra - numDiscount)
@@ -318,7 +318,7 @@ export function BanquetBookingDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto p-0 sm:max-w-4xl">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto p-0 max-sm:p-0 sm:max-w-4xl">
         {/* Modal Header */}
         <div className="sticky top-0 z-10 border-b bg-background/95 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
           <div className="flex items-center justify-between">
@@ -793,69 +793,85 @@ export function BanquetBookingDialog({
               )}
             </div>
 
-            {/* 3C. Stage Decor, Sound/AV & Discounts */}
-            <div className="rounded-xl border bg-card p-4 shadow-xs">
-              <div className="mb-3.5 flex items-center justify-between border-b pb-2.5">
+            {/* 3C. Stage Decor, Sound/AV & Discounts (whole section can be switched off) */}
+            <div
+              className={`rounded-xl border shadow-xs transition-all ${
+                decorOn ? 'border-emerald-500/30 bg-card' : 'border-border bg-muted/20'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
                 <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
-                    Decor, AV Services &amp; Discounts
-                  </h3>
+                  <Sparkles
+                    className={`h-4 w-4 ${decorOn ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}
+                  />
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+                      Decor, AV Services &amp; Discounts
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      {decorOn
+                        ? 'Stage decor, sound / DJ / AV extras and any discount'
+                        : 'Switched off: no decor, AV services or discount (₹0)'}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Switch id="decor-section-toggle" checked={decorOn} onCheckedChange={setDecorOn} />
+                  <Label htmlFor="decor-section-toggle" className="cursor-pointer select-none text-xs font-medium text-foreground">
+                    {decorOn ? 'Included' : 'Excluded'}
+                  </Label>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-                {/* Decor Charges */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs font-medium text-foreground">
-                      Stage &amp; Decor Charges (₹)
-                    </Label>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
-                      <Switch checked={decorOn} onCheckedChange={setDecorOn} className="scale-75" aria-label="Decor on or off" />
+              <div className="grid grid-cols-1 gap-3.5 p-4 sm:grid-cols-2 lg:grid-cols-4">
+                {decorOn && (
+                  <>
+                    {/* Decor Charges */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-medium text-foreground">
+                        Stage &amp; Decor Charges (₹)
+                      </Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        value={decorCharges}
+                        onChange={(e) => setDecorCharges(e.target.value)}
+                        className="h-9 text-xs font-mono font-medium"
+                      />
                     </div>
-                  </div>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={decorOn ? decorCharges : '0'}
-                    onChange={(e) => setDecorCharges(e.target.value)}
-                    disabled={!decorOn}
-                    className="h-9 text-xs font-mono font-medium"
-                  />
-                </div>
 
-                {/* Extra / AV Services */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-foreground">
-                    Sound, DJ &amp; Extra AV (₹)
-                  </Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={extraCharges}
-                    onChange={(e) => setExtraCharges(e.target.value)}
-                    className="h-9 text-xs font-mono font-medium"
-                  />
-                </div>
+                    {/* Extra / AV Services */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-medium text-foreground">
+                        Sound, DJ &amp; Extra AV (₹)
+                      </Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        value={extraCharges}
+                        onChange={(e) => setExtraCharges(e.target.value)}
+                        className="h-9 text-xs font-mono font-medium"
+                      />
+                    </div>
 
-                {/* Discount */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-foreground">
-                    Discount / Concession (₹)
-                  </Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={discount}
-                    onChange={(e) => setDiscount(e.target.value)}
-                    className="h-9 text-xs font-mono font-semibold text-emerald-600 dark:text-emerald-400"
-                  />
-                </div>
+                    {/* Discount */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-medium text-foreground">
+                        Discount / Concession (₹)
+                      </Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        value={discount}
+                        onChange={(e) => setDiscount(e.target.value)}
+                        className="h-9 text-xs font-mono font-semibold text-emerald-600 dark:text-emerald-400"
+                      />
+                    </div>
+                  </>
+                )}
 
                 {/* Est Grand Total Card */}
-                <div className="space-y-1.5">
+                <div className={`space-y-1.5 ${decorOn ? '' : 'sm:col-span-2 lg:col-span-4'}`}>
                   <Label className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
                     Est. Grand Total (₹)
                   </Label>

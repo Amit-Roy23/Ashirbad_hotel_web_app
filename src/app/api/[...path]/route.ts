@@ -2143,6 +2143,99 @@ async function addBillPayment(body: Record<string, unknown>, user: RequestUser) 
   return NextResponse.json(updated)
 }
 
+type PaymentHistoryRow = {
+  date: Date
+  kind: 'ADVANCE' | 'PART_PAYMENT' | 'CHECKOUT' | 'DUE_COLLECTION'
+  label: string
+  cash: number
+  upi: number
+  card: number
+  amount: number
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100
+
+/**
+ * Every payment made against a lodging bill, oldest first:
+ * advance and part payments during the stay (ledger), the payment taken at checkout
+ * (bill totals less later collections) and dues collected later (audit trail of each payment).
+ */
+async function billPaymentHistory(billId: string) {
+  const bill = await prisma.bill.findUnique({ where: { id: billId } })
+  if (!bill) return NextResponse.json({ error: 'Bill not found' }, { status: 404 })
+
+  const rows: PaymentHistoryRow[] = []
+  const split = (method: string, amount: number) => ({
+    cash: method === 'CASH' ? amount : 0,
+    upi: method === 'UPI' ? amount : 0,
+    card: method === 'CARD' ? amount : 0,
+  })
+
+  const stayPayments = await prisma.ledgerEntry.findMany({
+    where: { refId: bill.bookingId, type: 'INCOME', category: 'ADVANCE' },
+    orderBy: { date: 'asc' },
+  })
+  for (const e of stayPayments) {
+    if (e.amount <= 0) continue
+    const part = /^Part payment/i.test(e.description)
+    rows.push({
+      date: e.date,
+      kind: part ? 'PART_PAYMENT' : 'ADVANCE',
+      label: part ? 'Part payment (during stay)' : 'Advance',
+      ...split(e.method, e.amount),
+      amount: r2(e.amount),
+    })
+  }
+
+  // Later collections on this bill are recorded one by one in the audit trail
+  const later = await prisma.auditLog.findMany({
+    where: { action: 'PAYMENT', entity: 'Bill', entityId: bill.id },
+    orderBy: { createdAt: 'asc' },
+  })
+  const pick = (text: string, mode: string) => {
+    const m = text.match(new RegExp(`${mode} ₹([0-9]+(?:\\.[0-9]+)?)`))
+    return m ? Number(m[1]) : 0
+  }
+  let laterCash = 0
+  let laterUpi = 0
+  let laterCard = 0
+  const laterRows: PaymentHistoryRow[] = []
+  for (const a of later) {
+    const text = a.details || ''
+    const cash = pick(text, 'Cash')
+    const upi = pick(text, 'UPI')
+    const card = pick(text, 'Card')
+    const amount = r2(cash + upi + card)
+    if (amount <= 0) continue
+    laterCash += cash
+    laterUpi += upi
+    laterCard += card
+    laterRows.push({ date: a.createdAt, kind: 'DUE_COLLECTION', label: 'Due collected', cash, upi, card, amount })
+  }
+
+  const atCheckout = {
+    cash: r2(Math.max(0, bill.payCash - laterCash)),
+    upi: r2(Math.max(0, bill.payUpi - laterUpi)),
+    card: r2(Math.max(0, bill.payCard - laterCard)),
+  }
+  const checkoutAmount = r2(atCheckout.cash + atCheckout.upi + atCheckout.card)
+  if (checkoutAmount > 0) {
+    rows.push({ date: bill.createdAt, kind: 'CHECKOUT', label: 'Paid at checkout', ...atCheckout, amount: checkoutAmount })
+  }
+  rows.push(...laterRows)
+  rows.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+  const totalPaid = r2(rows.reduce((sum, row) => sum + row.amount, 0))
+  return NextResponse.json({
+    billId: bill.id,
+    billNumber: bill.billNumber,
+    payments: rows,
+    totalPaid,
+    received: r2(billReceived(bill)),
+    balance: r2(billBalance(bill)),
+  })
+}
+
 async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   const {
     id, billedRoomTotal, roomDescription, roomNumber, gstPercent, cgstPercent, sgstPercent, extraCharges, discount,
@@ -4086,6 +4179,7 @@ async function dispatch(
       if (method === 'DELETE') return await deleteBooking(req, user)
       break
     case 'bills':
+      if (method === 'GET' && url.searchParams.get('paymentsFor')) return await billPaymentHistory(String(url.searchParams.get('paymentsFor')))
       if (method === 'GET') return await listBills(req)
       if (method === 'POST' && body.action === 'payment') return await addBillPayment(body, user)
       if (method === 'POST' && body.action === 'update') return await updateBill(body, user)

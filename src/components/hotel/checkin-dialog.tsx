@@ -365,7 +365,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-md max-h-[92dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {bookingMode === 'CHECKIN' ? 'Check-In' : 'Advance Booking'} — Room {room?.number}
@@ -598,6 +598,17 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                   lookupByName(e.target.value)
                 }
               }}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="address" className="text-xs font-semibold text-foreground">Address</Label>
+            <Input
+              id="address"
+              placeholder="Guest address (city, state)"
+              value={address}
+              className="h-9 text-xs"
+              onChange={(e) => setAddress(e.target.value)}
             />
           </div>
 

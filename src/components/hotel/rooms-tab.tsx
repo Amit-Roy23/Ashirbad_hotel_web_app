@@ -416,8 +416,8 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-lg font-bold">Rooms</h2>
           <p className="text-xs text-muted-foreground">
             {statusCounts.VACANT + statusCounts.VACANT_WITH_FUTURE} vacant ·{' '}
@@ -427,7 +427,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
             {statusCounts.MAINTENANCE} maintenance
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {/* View Mode Toggle */}
           <div className="flex items-center rounded-lg border bg-muted/40 p-0.5">
             <Button
@@ -436,7 +436,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
               className="h-8 gap-1.5 px-2.5 text-xs font-medium"
               onClick={() => setViewMode('grid')}
             >
-              <LayoutGrid className="h-3.5 w-3.5" /> Grid View
+              <LayoutGrid className="h-3.5 w-3.5" /> Grid<span className="hidden sm:inline"> View</span>
             </Button>
             <Button
               size="sm"
@@ -444,19 +444,19 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
               className="h-8 gap-1.5 px-2.5 text-xs font-medium"
               onClick={() => setViewMode('calendar')}
             >
-              <CalendarDays className="h-3.5 w-3.5" /> 📅 Schedule View
+              <CalendarDays className="h-3.5 w-3.5" /> Schedule<span className="hidden sm:inline"> View</span>
             </Button>
           </div>
 
-          <Button variant="outline" className="gap-2" onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" /> Add Room
+          <Button variant="outline" className="gap-2 max-sm:h-9 max-sm:px-3" onClick={() => setAddOpen(true)}>
+            <Plus className="h-4 w-4" /> <span className="max-[419px]:sr-only">Add<span className="hidden sm:inline"> Room</span></span>
           </Button>
           <Button
             variant="outline"
-            className="gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+            className="gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 max-sm:h-9 max-sm:px-3"
             onClick={() => setDeleteOpen(true)}
           >
-            <Trash2 className="h-4 w-4" /> Delete Room
+            <Trash2 className="h-4 w-4" /> <span className="max-[419px]:sr-only">Delete<span className="hidden sm:inline"> Room</span></span>
           </Button>
         </div>
       </div>
@@ -816,7 +816,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
 
       {/* Room detail modal */}
       <Dialog open={!!viewRoom} onOpenChange={(o) => !o && setViewRoom(null)}>
-        <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+        <DialogContent className="max-w-md max-h-[92dvh] overflow-y-auto">
           {viewRoom && (() => {
             const currentRoom = viewRoom
             const opState = getRoomOperationalState(currentRoom)

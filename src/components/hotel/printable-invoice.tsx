@@ -1,6 +1,7 @@
 'use client'
 
-import { formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
+import { useEffect, useState } from 'react'
+import { api, formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
 import { splitGst } from '@/lib/gst'
 import { Building2, Phone, MapPin, Receipt } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
@@ -195,9 +196,91 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
         </div>
       </div>
 
+      {bill.id && <PaymentHistorySection billId={bill.id} />}
+
       <p className="mt-5 text-center text-[11px] font-medium text-slate-500 dark:text-slate-400">
         Thank you for staying with us! Please visit again.
       </p>
+    </div>
+  )
+}
+
+interface PaymentHistory {
+  billId: string
+  payments: { date: string; label: string; cash: number; upi: number; card: number; amount: number }[]
+  totalPaid: number
+  balance: number
+}
+
+function modeText(p: { cash: number; upi: number; card: number }) {
+  const parts = [
+    p.cash > 0 ? `Cash ${formatINR(p.cash)}` : '',
+    p.upi > 0 ? `UPI ${formatINR(p.upi)}` : '',
+    p.card > 0 ? `Card ${formatINR(p.card)}` : '',
+  ].filter(Boolean)
+  return parts.length === 1 ? parts[0].split(' ')[0] : parts.join(' + ')
+}
+
+/** Date-wise payments on the bill, same as the printed invoice */
+function PaymentHistorySection({ billId }: { billId: string }) {
+  const [history, setHistory] = useState<PaymentHistory | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    api<PaymentHistory>(`/api/bills?paymentsFor=${encodeURIComponent(billId)}`)
+      .then((h) => alive && setHistory(h))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [billId])
+
+  if (!history || history.billId !== billId) return null
+  return (
+    <div className="mt-4 text-xs">
+      <p className="mb-1.5 font-bold text-slate-900 dark:text-white">Payment History</p>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b bg-slate-50 text-left dark:bg-slate-900">
+              <th className="px-1.5 py-1 font-semibold">Date</th>
+              <th className="px-1.5 py-1 font-semibold">Payment</th>
+              <th className="px-1.5 py-1 font-semibold">Mode</th>
+              <th className="px-1.5 py-1 text-right font-semibold">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history.payments.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-1.5 py-2 text-center text-slate-500">
+                  No payments recorded yet
+                </td>
+              </tr>
+            ) : (
+              history.payments.map((p, i) => (
+                <tr key={i} className="border-b">
+                  <td className="whitespace-nowrap px-1.5 py-1">{formatDateTime(p.date)}</td>
+                  <td className="px-1.5 py-1">{p.label}</td>
+                  <td className="px-1.5 py-1">{modeText(p)}</td>
+                  <td className="whitespace-nowrap px-1.5 py-1 text-right font-semibold">{formatINR(p.amount)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={3} className="px-1.5 pt-1.5 font-bold">Total Paid</td>
+              <td className="px-1.5 pt-1.5 text-right font-bold text-emerald-700 dark:text-emerald-400">{formatINR(history.totalPaid)}</td>
+            </tr>
+            <tr>
+              <td colSpan={3} className="px-1.5 py-0.5 font-bold">{history.balance > 0.01 ? 'Balance Due' : 'Status'}</td>
+              <td className={`px-1.5 py-0.5 text-right font-bold ${history.balance > 0.01 ? 'text-red-600' : 'text-emerald-700 dark:text-emerald-400'}`}>
+                {history.balance > 0.01 ? formatINR(history.balance) : 'Fully Paid'}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   )
 }

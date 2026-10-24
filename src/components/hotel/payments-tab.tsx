@@ -275,7 +275,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
               <Banknote className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
             </div>
@@ -286,7 +286,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-violet-100 p-2.5 dark:bg-violet-900">
               <Smartphone className="h-5 w-5 text-violet-700 dark:text-violet-300" />
             </div>
@@ -297,7 +297,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-orange-100 p-2.5 dark:bg-orange-900">
               <CreditCard className="h-5 w-5 text-orange-700 dark:text-orange-300" />
             </div>
@@ -308,7 +308,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           </CardContent>
         </Card>
         <Card className="border-emerald-200 dark:border-emerald-900">
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
               <Wallet className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
             </div>

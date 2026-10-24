@@ -113,6 +113,7 @@ export function BookingDialog({
   const [idNumber, setIdNumber] = useState('')
   const [company, setCompany] = useState('')
   const [gst, setGst] = useState('')
+  const [address, setAddress] = useState('')
   const [guestCount, setGuestCount] = useState('1')
   const [advance, setAdvance] = useState('')
   const [advanceMethod, setAdvanceMethod] = useState('CASH')
@@ -232,6 +233,7 @@ export function BookingDialog({
         if (!name || autoFilled) setName(guest.name)
         if (!company || autoFilled) setCompany(guest.company || '')
         if (!gst || autoFilled) setGst(guest.gst || '')
+        if (!address || autoFilled) setAddress(guest.address || '')
         if (guest.idProof && (!idNumber || autoFilled)) {
           const parsed = parseGovId(guest.idProof)
           setIdType(parsed.idType)
@@ -269,6 +271,7 @@ export function BookingDialog({
         if (!name || autoFilled) setName(guest.name)
         if (!company || autoFilled) setCompany(guest.company || '')
         if (!gst || autoFilled) setGst(guest.gst || '')
+        if (!address || autoFilled) setAddress(guest.address || '')
         if (guest.company) setIsCorporate(true)
         if (guest.totalDue && guest.totalDue > 0.01 && guest.dueHistory && guest.dueHistory.length > 0) {
           setGuestDueInfo({ totalDue: guest.totalDue, dueHistory: guest.dueHistory })
@@ -364,6 +367,7 @@ export function BookingDialog({
           idProof: idCheck.formatted,
           company: company.trim() || undefined,
           gst: gst.trim() || undefined,
+          address: address.trim() || undefined,
           checkIn: isAdvance ? checkInDate : new Date().toISOString(),
           checkOut,
           checkOutTime: checkOutTime || '08:00',
@@ -401,7 +405,7 @@ export function BookingDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] max-w-md overflow-y-auto">
+      <DialogContent className="max-h-[92dvh] max-w-md overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {bookingMode === 'BOOKING' ? 'Advance Room Booking' : 'Direct Check-In'}
@@ -662,6 +666,17 @@ export function BookingDialog({
             />
           </div>
 
+          <div className="space-y-1.5">
+            <Label htmlFor="bk-address" className="text-xs font-semibold text-foreground">Address</Label>
+            <Input
+              id="bk-address"
+              placeholder="Guest address (city, state)"
+              value={address}
+              className="h-9 text-xs"
+              onChange={(e) => setAddress(e.target.value)}
+            />
+          </div>
+
           {/* Outstanding Past Due Alert Banner */}
           {guestDueInfo && guestDueInfo.totalDue > 0.01 && (
             <div className="rounded-lg border-2 border-red-500/80 bg-red-50 p-3 dark:border-red-600 dark:bg-red-950/40 text-red-950 dark:text-red-100 space-y-2 animate-in fade-in duration-200">
@@ -784,7 +799,10 @@ export function BookingDialog({
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="bk-company" className="text-xs font-semibold text-foreground">Company</Label>
-                <CompanyInput id="bk-company" value={company} onChange={setCompany} onPick={(c) => c.gst && setGst(c.gst)} className="h-9 text-xs" />
+                <CompanyInput id="bk-company" value={company} onChange={setCompany} onPick={(c) => {
+                  if (c.gst) setGst(c.gst)
+                  if (c.address && !address) setAddress(c.address)
+                }} className="h-9 text-xs" />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="bk-gst" className="text-xs font-semibold text-foreground">GST Number</Label>

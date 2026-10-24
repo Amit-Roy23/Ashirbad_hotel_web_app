@@ -490,7 +490,7 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
 
       {/* Categories manager */}
       <Dialog open={catOpen} onOpenChange={setCatOpen}>
-        <DialogContent className="max-w-sm max-h-[85vh] flex flex-col overflow-hidden">
+        <DialogContent className="max-w-sm max-h-[85dvh] flex flex-col overflow-hidden">
           <DialogHeader>
             <DialogTitle>Expense Categories</DialogTitle>
             <DialogDescription>Configurable categories for organizing expenses</DialogDescription>
@@ -517,7 +517,7 @@ export function ExpensesTab({ refreshKey, onDataChanged }: TabProps) {
       </Dialog>
       {/* Edit expense dialog */}
       <Dialog open={!!editEntry} onOpenChange={(o) => !o && setEditEntry(null)}>
-        <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+        <DialogContent className="max-w-md max-h-[92dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Expense</DialogTitle>
             <DialogDescription>Modify operational expense details</DialogDescription>

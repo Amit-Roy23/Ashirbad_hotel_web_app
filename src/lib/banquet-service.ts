@@ -406,11 +406,12 @@ export async function createBanquetBooking(
   const hallRent = Number(data.hallRent) || 0
   const foodRatePerPlate = Number(data.foodRatePerPlate) || 0
   const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : foodRatePerPlate * guestCount
-  // Decoration can be switched off for an event; then it carries no charge
+  // The "Decor, AV Services & Discounts" section can be switched off for an event;
+  // then decor, sound/AV extras and the discount all carry nothing
   const decorEnabled = data.decorEnabled !== false
   const decorCharges = decorEnabled ? Number(data.decorCharges) || 0 : 0
-  const extraCharges = Number(data.extraCharges) || 0
-  const discount = Number(data.discount) || 0
+  const extraCharges = decorEnabled ? Number(data.extraCharges) || 0 : 0
+  const discount = decorEnabled ? Number(data.discount) || 0 : 0
   const advancePaid = Number(data.advancePaid) || 0
 
   const subtotal = Math.max(0, hallRent + foodTotal + decorCharges + extraCharges - discount)
@@ -527,8 +528,12 @@ export async function updateBanquetBooking(
     : data.decorCharges !== undefined
       ? Number(data.decorCharges)
       : Number(existing.decorCharges)
-  const extraCharges = data.extraCharges !== undefined ? Number(data.extraCharges) : Number(existing.extraCharges)
-  const discount = data.discount !== undefined ? Number(data.discount) : Number(existing.discount)
+  const extraCharges = !decorEnabled
+    ? 0
+    : data.extraCharges !== undefined
+      ? Number(data.extraCharges)
+      : Number(existing.extraCharges)
+  const discount = !decorEnabled ? 0 : data.discount !== undefined ? Number(data.discount) : Number(existing.discount)
 
   const totalEstimated = Math.max(0, hallRent + foodTotal + decorCharges + extraCharges - discount)
   const currentAdvance = newAdvance
@@ -616,11 +621,11 @@ export async function updateBanquetBooking(
   }
   updates.push(`"decorEnabled" = $${pIdx++}`)
   params.push(decorEnabled)
-  if (data.extraCharges !== undefined) {
+  if (data.extraCharges !== undefined || !decorEnabled) {
     updates.push(`"extraCharges" = $${pIdx++}`)
     params.push(extraCharges)
   }
-  if (data.discount !== undefined) {
+  if (data.discount !== undefined || !decorEnabled) {
     updates.push(`"discount" = $${pIdx++}`)
     params.push(discount)
   }
@@ -872,11 +877,12 @@ export async function createBanquetBill(
 
   const hallRent = data.hallRent !== undefined ? Number(data.hallRent) : Number(booking.hallRent)
   const foodCharges = data.foodCharges !== undefined ? Number(data.foodCharges) : Number(booking.foodTotal)
-  const decorCharges =
-    booking.decorEnabled === false ? 0 : data.decorCharges !== undefined ? Number(data.decorCharges) : Number(booking.decorCharges)
-  const soundAvCharges = Number(data.soundAvCharges) || 0
-  const extraCharges = data.extraCharges !== undefined ? Number(data.extraCharges) : Number(booking.extraCharges)
-  const discount = data.discount !== undefined ? Number(data.discount) : Number(booking.discount)
+  // Decor, AV services and discount switched off on the booking = none of them on the invoice
+  const sectionOn = booking.decorEnabled !== false
+  const decorCharges = !sectionOn ? 0 : data.decorCharges !== undefined ? Number(data.decorCharges) : Number(booking.decorCharges)
+  const soundAvCharges = sectionOn ? Number(data.soundAvCharges) || 0 : 0
+  const extraCharges = !sectionOn ? 0 : data.extraCharges !== undefined ? Number(data.extraCharges) : Number(booking.extraCharges)
+  const discount = !sectionOn ? 0 : data.discount !== undefined ? Number(data.discount) : Number(booking.discount)
 
   const taxableAmount = Math.max(0, hallRent + foodCharges + decorCharges + soundAvCharges + extraCharges - discount)
   // GST as CGST + SGST, each 0% or 2.5% (legacy combined gstPercent 0/5 is split in halves)
