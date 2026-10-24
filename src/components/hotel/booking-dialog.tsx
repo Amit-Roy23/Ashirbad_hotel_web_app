@@ -401,7 +401,7 @@ export function BookingDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] max-w-md overflow-y-auto">
+      <DialogContent className="max-h-[92dvh] max-w-md overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {bookingMode === 'BOOKING' ? 'Advance Room Booking' : 'Direct Check-In'}

@@ -365,7 +365,7 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-md max-h-[92dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {bookingMode === 'CHECKIN' ? 'Check-In' : 'Advance Booking'} — Room {room?.number}

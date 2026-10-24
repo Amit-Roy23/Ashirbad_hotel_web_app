@@ -340,7 +340,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
       {/* Stat Cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Card className="border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
               <IndianRupee className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
             </div>
@@ -353,7 +353,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         </Card>
 
         <Card className="border-teal-200 bg-gradient-to-br from-teal-50 to-transparent dark:border-teal-900 dark:from-teal-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-teal-100 p-2.5 dark:bg-teal-900">
               <PartyPopper className="h-5 w-5 text-teal-700 dark:text-teal-300" />
             </div>
@@ -366,7 +366,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         </Card>
 
         <Card className="border-indigo-200 bg-gradient-to-br from-indigo-50 to-transparent dark:border-indigo-900 dark:from-indigo-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-indigo-100 p-2.5 dark:bg-indigo-900">
               <Building2 className="h-5 w-5 text-indigo-700 dark:text-indigo-300" />
             </div>
@@ -379,7 +379,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         </Card>
 
         <Card className="border-red-200 bg-gradient-to-br from-red-50 to-transparent dark:border-red-900 dark:from-red-950/40">
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
             <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
               <AlertCircle className="h-5 w-5 text-red-700 dark:text-red-300" />
             </div>
@@ -394,18 +394,18 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
 
       {/* Main Tabs */}
       <Tabs value={activeSubTab} onValueChange={(v) => setActiveSubTab(v as any)}>
-        <TabsList className="flex w-full flex-wrap gap-1 sm:w-auto">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:w-auto sm:flex-wrap [&>button]:h-8">
           <TabsTrigger value="overview" className="gap-1.5">
-            <PartyPopper className="h-4 w-4" /> Overview &amp; Today&apos;s Events
+            <PartyPopper className="h-4 w-4" /> <span className="sm:hidden">Overview</span><span className="hidden sm:inline">Overview &amp; Today&apos;s Events</span>
           </TabsTrigger>
           <TabsTrigger value="bookings" className="gap-1.5">
-            <CalendarDays className="h-4 w-4" /> Bookings &amp; Inquiries ({bookings.length})
+            <CalendarDays className="h-4 w-4" /> <span className="sm:hidden">Bookings</span><span className="hidden sm:inline">Bookings &amp; Inquiries</span> ({bookings.length})
           </TabsTrigger>
           <TabsTrigger value="bills" className="gap-1.5">
-            <Receipt className="h-4 w-4" /> Banquet Billing &amp; Invoices ({bills.length})
+            <Receipt className="h-4 w-4" /> <span className="sm:hidden">Billing</span><span className="hidden sm:inline">Banquet Billing &amp; Invoices</span> ({bills.length})
           </TabsTrigger>
           <TabsTrigger value="halls" className="gap-1.5">
-            <Building2 className="h-4 w-4" /> Venues &amp; Halls ({halls.length})
+            <Building2 className="h-4 w-4" /> <span className="sm:hidden">Halls</span><span className="hidden sm:inline">Venues &amp; Halls</span> ({halls.length})
           </TabsTrigger>
         </TabsList>
 

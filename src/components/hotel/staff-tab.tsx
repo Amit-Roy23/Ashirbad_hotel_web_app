@@ -350,7 +350,7 @@ export function StaffTab({ refreshKey, onDataChanged }: { refreshKey: number; on
 
       {/* Add staff dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+        <DialogContent className="max-w-md max-h-[92dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add Staff Member</DialogTitle>
             <DialogDescription>Staff details, role and salary information</DialogDescription>

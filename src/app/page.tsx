@@ -358,7 +358,7 @@ function Shell() {
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
         aria-label="Mobile navigation"
       >
-        <div className="grid grid-cols-5">
+        <div className="grid grid-cols-6">
           {MOBILE_PRIMARY.map((id) => mobileNavButton(TABS.find((t) => t.id === id)!))}
           <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
             <SheetTrigger asChild>

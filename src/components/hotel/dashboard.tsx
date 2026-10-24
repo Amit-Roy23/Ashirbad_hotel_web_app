@@ -326,7 +326,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                 className="cursor-pointer transition-all hover:shadow-md border-emerald-200 bg-gradient-to-br from-emerald-50 to-transparent dark:border-emerald-900 dark:from-emerald-950/40"
                 onClick={() => onNavigate({ tab: 'rooms' })}
               >
-                <CardContent className="flex items-center gap-3 p-4">
+                <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                   <div className="rounded-full bg-emerald-100 p-2.5 dark:bg-emerald-900">
                     <DoorOpen className="h-5 w-5 text-emerald-700 dark:text-emerald-300" />
                   </div>
@@ -343,7 +343,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                 className="cursor-pointer transition-all hover:shadow-md border-amber-300 bg-gradient-to-br from-amber-50 to-transparent dark:border-amber-800 dark:from-amber-950/40"
                 onClick={() => onNavigate({ tab: 'rooms' })}
               >
-                <CardContent className="flex items-center gap-3 p-4">
+                <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                   <div className="rounded-full bg-amber-100 p-2.5 dark:bg-amber-900">
                     <CalendarCheck className="h-5 w-5 text-amber-700 dark:text-amber-300" />
                   </div>
@@ -363,7 +363,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                 className="cursor-pointer transition-all hover:shadow-md border-red-200 bg-gradient-to-br from-red-50 to-transparent dark:border-red-900 dark:from-red-950/40"
                 onClick={() => onNavigate({ tab: 'rooms' })}
               >
-                <CardContent className="flex items-center gap-3 p-4">
+                <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                   <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
                     <BedDouble className="h-5 w-5 text-red-700 dark:text-red-300" />
                   </div>
@@ -376,7 +376,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
               </Card>
 
               <Card className="border-teal-200 bg-gradient-to-br from-teal-50 to-transparent dark:border-teal-900 dark:from-teal-950/40">
-                <CardContent className="flex items-center gap-3 p-4">
+                <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                   <div className="rounded-full bg-teal-100 p-2.5 dark:bg-teal-900">
                     <IndianRupee className="h-5 w-5 text-teal-700 dark:text-teal-300" />
                   </div>
@@ -391,7 +391,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
                 className="cursor-pointer transition-all hover:shadow-md border-indigo-200 bg-gradient-to-br from-indigo-50 to-transparent dark:border-indigo-900 dark:from-indigo-950/40 sm:col-span-2 lg:col-span-1"
                 onClick={() => onNavigate({ tab: 'guests' })}
               >
-                <CardContent className="flex items-center gap-3 p-4">
+                <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                   <div className="rounded-full bg-indigo-100 p-2.5 dark:bg-indigo-900">
                     <Users className="h-5 w-5 text-indigo-700 dark:text-indigo-300" />
                   </div>
@@ -444,7 +444,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
 
               <div className="grid grid-rows-2 gap-3">
                 <Card className="border-red-200 dark:border-red-900">
-                  <CardContent className="flex items-center gap-3 p-4">
+                  <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
                     <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-900">
                       <AlertCircle className="h-5 w-5 text-red-700 dark:text-red-300" />
                     </div>
@@ -619,7 +619,7 @@ export function Dashboard({ refreshKey, onDataChanged, onNavigate }: DashboardPr
       />
       {/* Occupied/Booked/Maintenance/Dirty/Vacant room view */}
       <Dialog open={!!viewRoom} onOpenChange={(open) => !open && setViewRoom(null)}>
-        <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+        <DialogContent className="max-w-md max-h-[92dvh] overflow-y-auto">
           {viewRoom && (() => {
             const currentRoom = viewRoom
             const opState = getRoomOperationalState(currentRoom)

@@ -318,7 +318,7 @@ export function BanquetBookingDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto p-0 sm:max-w-4xl">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto p-0 max-sm:p-0 sm:max-w-4xl">
         {/* Modal Header */}
         <div className="sticky top-0 z-10 border-b bg-background/95 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
           <div className="flex items-center justify-between">
