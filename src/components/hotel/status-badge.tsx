@@ -72,7 +72,7 @@ export function RoomStatusBadge({
     return (
       <span
         className={cn(
-          'inline-flex items-center gap-1 rounded-full border border-violet-300 bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800 dark:border-transparent dark:bg-orange-950 dark:text-orange-300',
+          'inline-flex items-center gap-1 rounded-full border border-violet-300 bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800 dark:border-violet-700 dark:bg-violet-950 dark:text-violet-300',
           className
         )}
       >

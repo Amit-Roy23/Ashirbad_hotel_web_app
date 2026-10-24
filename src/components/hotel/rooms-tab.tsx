@@ -493,11 +493,11 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
       {viewMode === 'grid' && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs" aria-label="Room colour key">
           {[
-            ['bg-emerald-500 dark:bg-emerald-600', 'Vacant'],
-            ['bg-red-600 dark:bg-red-700', 'Occupied'],
-            ['bg-amber-400 dark:bg-amber-600', 'Booked (arriving today)'],
-            ['bg-violet-600 dark:bg-orange-600', 'To Clean'],
-            ['bg-zinc-500', 'Maintenance'],
+            ['bg-emerald-500', 'Vacant'],
+            ['bg-red-600 dark:bg-red-500', 'Occupied'],
+            ['bg-amber-400', 'Booked (arriving today)'],
+            ['bg-violet-600 dark:bg-violet-500', 'To Clean'],
+            ['bg-zinc-500 dark:bg-zinc-400', 'Maintenance'],
           ].map(([cls, label]) => (
             <span key={label} className="flex items-center gap-1.5">
               <span className={`inline-block h-3 w-3 rounded-sm ${cls}`} />
@@ -517,16 +517,16 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                 // Light theme uses deep, clearly different colours per status; dark theme unchanged
                 const borderCls =
                   opState.displayStatus === 'OCCUPIED'
-                    ? 'border-red-600 bg-red-200 hover:border-red-700 hover:bg-red-300/70 dark:border-red-800 dark:bg-red-950/40'
+                    ? 'border-red-600 bg-red-200 hover:border-red-700 hover:bg-red-300/70 dark:border-red-500 dark:bg-red-900/60 dark:hover:border-red-400 dark:hover:bg-red-900/80'
                     : opState.displayStatus === 'BOOKED'
-                      ? 'border-amber-600 bg-amber-300 hover:border-amber-700 hover:bg-amber-400/70 dark:border-amber-700 dark:bg-amber-950/60'
+                      ? 'border-amber-600 bg-amber-300 hover:border-amber-700 hover:bg-amber-400/70 dark:border-amber-400 dark:bg-amber-800/50 dark:hover:border-amber-300 dark:hover:bg-amber-800/70'
                       : opState.displayStatus === 'VACANT_WITH_FUTURE'
-                        ? 'border-emerald-600 bg-gradient-to-b from-emerald-100 to-amber-100 hover:border-emerald-700 dark:border-emerald-700 dark:from-emerald-950/60 dark:to-amber-950/30'
+                        ? 'border-emerald-600 bg-gradient-to-b from-emerald-100 to-amber-100 hover:border-emerald-700 dark:border-emerald-500 dark:from-emerald-900/50 dark:to-amber-900/40 dark:hover:border-emerald-400'
                         : opState.displayStatus === 'DIRTY'
-                          ? 'border-violet-600 bg-violet-200 hover:border-violet-700 hover:bg-violet-300/70 dark:border-orange-800 dark:bg-orange-950/40'
+                          ? 'border-violet-600 bg-violet-200 hover:border-violet-700 hover:bg-violet-300/70 dark:border-violet-500 dark:bg-violet-900/50 dark:hover:border-violet-400 dark:hover:bg-violet-900/70'
                           : opState.displayStatus === 'MAINTENANCE'
-                            ? 'border-zinc-600 bg-zinc-300 hover:border-zinc-700 dark:border-zinc-600 dark:bg-zinc-800/60'
-                            : 'border-emerald-600 bg-emerald-100 hover:border-emerald-700 hover:bg-emerald-200/70 dark:border-emerald-800 dark:bg-emerald-950/40'
+                            ? 'border-zinc-600 bg-zinc-300 hover:border-zinc-700 dark:border-zinc-500 dark:bg-zinc-700/60 dark:hover:border-zinc-400'
+                            : 'border-emerald-600 bg-emerald-100 hover:border-emerald-700 hover:bg-emerald-200/70 dark:border-emerald-600 dark:bg-emerald-950/50 dark:hover:border-emerald-400 dark:hover:bg-emerald-900/50'
 
                 return (
                   <button
@@ -543,7 +543,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                     <div className="flex items-center justify-between">
                       <span className="text-base font-bold">{room.number}</span>
                       {opState.hasFutureBooking ? (
-                        <span className="rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold text-amber-950 dark:bg-amber-900 dark:text-amber-200">
+                        <span className="rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold text-amber-950 dark:bg-amber-500 dark:text-amber-950">
                           {opState.availableUntilFormatted ? `Till ${opState.availableUntilFormatted.slice(0, 6)}` : 'Reserved'}
                         </span>
                       ) : (
@@ -553,7 +553,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                     <p className="mt-0.5 truncate text-[10px] text-slate-700 dark:text-muted-foreground">{room.type}</p>
                     {opState.displayStatus === 'OCCUPIED' && opState.activeBooking ? (
                       <div className="mt-1">
-                        <p className="truncate text-[10px] font-bold text-red-800 dark:text-red-400">
+                        <p className="truncate text-[10px] font-bold text-red-800 dark:text-red-300">
                           {opState.activeBooking.guest?.name || 'Guest'}
                         </p>
                         {opState.hasFutureBooking && (
@@ -576,7 +576,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                         </p>
                       </div>
                     ) : opState.displayStatus === 'DIRTY' ? (
-                      <p className="mt-1 text-[10px] font-bold text-violet-800 dark:text-orange-400">To Clean</p>
+                      <p className="mt-1 text-[10px] font-bold text-violet-800 dark:text-violet-300">To Clean</p>
                     ) : opState.displayStatus === 'MAINTENANCE' ? (
                       <p className="mt-1 text-[10px] font-bold text-zinc-700 dark:text-zinc-300">Maintenance</p>
                     ) : (
