@@ -84,6 +84,10 @@ export interface GstBillRow {
   taxableAmount: number
   gstPercent: number
   actualGst: number
+  cgstPercent?: number
+  sgstPercent?: number
+  cgst?: number
+  sgst?: number
   internalGst: number
   grandTotal: number
   internalTotal: number
@@ -118,6 +122,8 @@ interface ReportData {
     actualRoomRevenue: number
     billedRoomRevenue: number
     gst: number
+    cgst?: number
+    sgst?: number
     foodRoomPosted: number
     foodDirect: number
     discounts: number
@@ -138,6 +144,10 @@ interface ReportData {
       roomDescription?: string | null
       foodTotal: number
       gst: number
+      cgst?: number
+      sgst?: number
+      cgstPercent?: number
+      sgstPercent?: number
       internalGst: number
       grandTotal: number
       internalTotal: number
@@ -238,6 +248,9 @@ function StatCard({
     </Card>
   )
 }
+
+/** GST bill report columns: billing room, rent, CGST/SGST and company details — amounts paid are not printed */
+const GST_REPORT_HEADERS = ['Customer Name', 'Invoice Number', 'Billing Room No', 'Room Rent', 'CGST', 'SGST', 'Company Name', 'Company GSTIN']
 
 export function ReportsTab({ refreshKey }: TabProps) {
   const [data, setData] = useState<ReportData | null>(null)
@@ -402,10 +415,10 @@ export function ReportsTab({ refreshKey }: TabProps) {
                     onClick={() =>
                       printTableReport(
                         'Invoice Report',
-                        ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'GST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
+                        ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'CGST', 'SGST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
                         data.invoices.rows.map((r) => [
                           r.billNumber, formatDateTime(r.date), r.guestName, r.originalRoomNumber || r.roomNumber, r.roomNumber,
-                          formatINR(r.actualRoomTotal), formatINR(r.billedRoomTotal), r.roomDescription || '', formatINR(r.gst), formatINR(r.internalGst), formatINR(r.grandTotal), formatINR(r.internalTotal),
+                          formatINR(r.actualRoomTotal), formatINR(r.billedRoomTotal), r.roomDescription || '', formatINR(r.cgst ?? r.gst / 2), formatINR(r.sgst ?? r.gst / 2), formatINR(r.internalGst), formatINR(r.grandTotal), formatINR(r.internalTotal),
                           r.isCustom ? 'Yes' : 'No', r.approvedBy || '',
                         ]),
                         `Date Range: ${formatDate(from)} to ${formatDate(to)}`
@@ -421,10 +434,10 @@ export function ReportsTab({ refreshKey }: TabProps) {
                     onClick={() =>
                       exportCSV(
                         'invoice-report.csv',
-                        ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'GST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
+                        ['Invoice', 'Date', 'Guest', 'Original Room', 'Billed Room', 'Actual Room', 'Billed Room Tariff', 'Room Description', 'CGST', 'SGST', 'Internal GST', 'Invoice Total', 'Internal Total', 'Custom', 'Approved By'],
                         data.invoices.rows.map((r) => [
                           r.billNumber, formatDateTime(r.date), r.guestName, r.originalRoomNumber || r.roomNumber, r.roomNumber,
-                          r.actualRoomTotal, r.billedRoomTotal, r.roomDescription || '', r.gst, r.internalGst, r.grandTotal, r.internalTotal,
+                          r.actualRoomTotal, r.billedRoomTotal, r.roomDescription || '', r.cgst ?? r.gst / 2, r.sgst ?? r.gst / 2, r.internalGst, r.grandTotal, r.internalTotal,
                           r.isCustom ? 'Yes' : 'No', r.approvedBy || '',
                         ])
                       )
@@ -446,7 +459,8 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       <TableHead>Actual</TableHead>
                       <TableHead>Billed</TableHead>
                       <TableHead>Food</TableHead>
-                      <TableHead>GST</TableHead>
+                      <TableHead>CGST</TableHead>
+                      <TableHead>SGST</TableHead>
                       <TableHead>Invoice Total</TableHead>
                       <TableHead>Internal Total</TableHead>
                     </TableRow>
@@ -485,7 +499,8 @@ export function ReportsTab({ refreshKey }: TabProps) {
                           {formatINR(r.billedRoomTotal)}
                         </TableCell>
                         <TableCell className="text-xs">{formatINR(r.foodTotal)}</TableCell>
-                        <TableCell className="text-xs">{formatINR(r.gst)}</TableCell>
+                        <TableCell className="text-xs">{formatINR(r.cgst ?? r.gst / 2)}</TableCell>
+                        <TableCell className="text-xs">{formatINR(r.sgst ?? r.gst / 2)}</TableCell>
                         <TableCell className="text-xs font-bold">{formatINR(r.grandTotal)}</TableCell>
                         <TableCell className="text-xs font-medium text-muted-foreground">{formatINR(r.internalTotal)}</TableCell>
                       </TableRow>
@@ -495,7 +510,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
               </div>
               <p className="text-[11px] text-muted-foreground">
                 Internal room revenue kept at actual tariff: <b>{formatINR(data.revenue.actualRoomRevenue)}</b> · Internal revenue (total):{' '}
-                <b>{formatINR(data.revenue.grandTotal)}</b> · Internal GST: <b>{formatINR(data.revenue.gst)}</b> · Discounts given: <b>{formatINR(data.revenue.discounts)}</b>
+                <b>{formatINR(data.revenue.grandTotal)}</b> · CGST: <b>{formatINR(data.revenue.cgst ?? data.revenue.gst / 2)}</b> · SGST: <b>{formatINR(data.revenue.sgst ?? data.revenue.gst / 2)}</b> · Discounts given: <b>{formatINR(data.revenue.discounts)}</b>
               </p>
             </TabsContent>
 
@@ -1093,19 +1108,18 @@ export function ReportsTab({ refreshKey }: TabProps) {
                     onClick={() =>
                       printTableReport(
                         'GST Tax Invoices Report',
-                        [
-                          'Customer Name',
-                          'Invoice Number',
-                          'How Much Guest Paid',
-                          'How Much GST Paid',
-                        ],
+                        GST_REPORT_HEADERS,
                         filteredGstRows.map((r) => [
                           r.guestName,
                           r.billNumber,
-                          formatINR(r.paid),
-                          formatINR(r.actualGst),
+                          r.roomNumber,
+                          formatINR(r.billedRoomTotal),
+                          `${formatINR(r.cgst ?? r.actualGst / 2)} (${r.cgstPercent ?? r.gstPercent / 2}%)`,
+                          `${formatINR(r.sgst ?? r.actualGst / 2)} (${r.sgstPercent ?? r.gstPercent / 2}%)`,
+                          r.company || '—',
+                          r.guestGst || '—',
                         ]),
-                        `Date Range: ${formatDate(from)} to ${formatDate(to)} · Total GST Paid: ${formatINR(data.gstBills?.totalGstAmount || 0)}`
+                        `Date Range: ${formatDate(from)} to ${formatDate(to)} · Total CGST + SGST: ${formatINR(data.gstBills?.totalGstAmount || 0)}`
                       )
                     }
                   >
@@ -1118,17 +1132,16 @@ export function ReportsTab({ refreshKey }: TabProps) {
                     onClick={() =>
                       exportCSV(
                         'gst-bills-report.csv',
-                        [
-                          'Customer Name',
-                          'Invoice Number',
-                          'How Much Guest Paid',
-                          'How Much GST Paid',
-                        ],
+                        GST_REPORT_HEADERS,
                         filteredGstRows.map((r) => [
                           r.guestName,
                           r.billNumber,
-                          r.paid,
-                          r.actualGst,
+                          r.roomNumber,
+                          r.billedRoomTotal,
+                          r.cgst ?? r.actualGst / 2,
+                          r.sgst ?? r.actualGst / 2,
+                          r.company || '',
+                          r.guestGst || '',
                         ])
                       )
                     }
@@ -1236,7 +1249,9 @@ export function ReportsTab({ refreshKey }: TabProps) {
                           <div className="font-bold text-emerald-700 dark:text-emerald-400">
                             {formatINR(r.actualGst)}
                           </div>
-                          <div className="text-[10px] text-muted-foreground">({r.gstPercent}%)</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            CGST {formatINR(r.cgst ?? r.actualGst / 2)} + SGST {formatINR(r.sgst ?? r.actualGst / 2)}
+                          </div>
                           {r.isCustom && r.internalGst !== r.actualGst && (
                             <div className="text-[9px] text-muted-foreground">
                               Int: {formatINR(r.internalGst)}
@@ -1445,8 +1460,12 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       <span>{formatINR(selectedGstBill.taxableAmount)}</span>
                     </div>
                     <div className="flex justify-between text-emerald-700 dark:text-emerald-400 font-semibold">
-                      <span>GST Applied ({selectedGstBill.gstPercent}%)</span>
-                      <span>+{formatINR(selectedGstBill.actualGst)}</span>
+                      <span>CGST ({selectedGstBill.cgstPercent ?? selectedGstBill.gstPercent / 2}%)</span>
+                      <span>+{formatINR(selectedGstBill.cgst ?? selectedGstBill.actualGst / 2)}</span>
+                    </div>
+                    <div className="flex justify-between text-emerald-700 dark:text-emerald-400 font-semibold">
+                      <span>SGST ({selectedGstBill.sgstPercent ?? selectedGstBill.gstPercent / 2}%)</span>
+                      <span>+{formatINR(selectedGstBill.sgst ?? selectedGstBill.actualGst / 2)}</span>
                     </div>
                     {selectedGstBill.isCustom && (
                       <div className="flex justify-between text-muted-foreground text-[11px]">

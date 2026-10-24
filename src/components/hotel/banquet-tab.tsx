@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
+import { splitGst } from '@/lib/gst'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking, BanquetBill, BanquetStats } from '@/types/banquet'
@@ -802,7 +803,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               variant="outline"
               className="gap-1 text-xs"
               onClick={() => {
-                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'GST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
+                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'CGST', 'SGST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
                 exportCSV(
                   'banquet_invoices.csv',
                   headers,
@@ -817,7 +818,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       b.eventName,
                       b.hallName,
                       b.taxableAmount,
-                      b.gstAmount,
+                      splitGst({ ...b, actualGst: b.gstAmount }).cgst,
+                      splitGst({ ...b, actualGst: b.gstAmount }).sgst,
                       b.grandTotal,
                       b.advanceApplied,
                       paid - b.advanceApplied,
@@ -836,7 +838,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               variant="outline"
               className="gap-1 text-xs"
               onClick={() => {
-                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'GST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
+                const headers = ['Invoice No', 'Date', 'Customer', 'Phone', 'Event', 'Hall', 'Taxable', 'CGST', 'SGST', 'Grand Total', 'Advance Deducted', 'Paid at Completion', 'Balance Due', 'Status']
                 printTableReport(
                   'Banquet Invoices Report',
                   headers,
@@ -851,7 +853,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       b.eventName,
                       b.hallName,
                       formatINR(b.taxableAmount),
-                      formatINR(b.gstAmount),
+                      formatINR(splitGst({ ...b, actualGst: b.gstAmount }).cgst),
+                      formatINR(splitGst({ ...b, actualGst: b.gstAmount }).sgst),
                       formatINR(b.grandTotal),
                       formatINR(b.advanceApplied),
                       formatINR(paid - b.advanceApplied),
@@ -877,7 +880,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                   <TableHead>Host / Client</TableHead>
                   <TableHead>Event &amp; Hall</TableHead>
                   <TableHead className="text-right">Taxable</TableHead>
-                  <TableHead className="text-right">GST ({bills[0]?.gstPercent || 18}%)</TableHead>
+                  <TableHead className="text-right">CGST + SGST</TableHead>
                   <TableHead className="text-right">Total Bill</TableHead>
                   <TableHead className="text-right">Total Paid</TableHead>
                   <TableHead className="text-right">Balance Due</TableHead>
@@ -913,7 +916,9 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                           <div className="text-[11px] text-muted-foreground">{b.hallName}</div>
                         </TableCell>
                         <TableCell className="text-right text-xs">{formatINR(b.taxableAmount)}</TableCell>
-                        <TableCell className="text-right text-xs">{formatINR(b.gstAmount)}</TableCell>
+                        <TableCell className="text-right text-xs">
+                          {formatINR(splitGst({ ...b, actualGst: b.gstAmount }).cgst)} + {formatINR(splitGst({ ...b, actualGst: b.gstAmount }).sgst)}
+                        </TableCell>
                         <TableCell className="text-right text-xs font-bold text-foreground">
                           {formatINR(b.grandTotal)}
                         </TableCell>

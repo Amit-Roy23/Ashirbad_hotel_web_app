@@ -26,6 +26,7 @@ import {
   adjustBanquetAdvance,
   BanquetError,
 } from '@/lib/banquet-service'
+import { isValidHalfRate, normalizeHalfRate, computeGst, billBalance, billReceived, splitGst } from '@/lib/gst'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -90,6 +91,14 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   restaurantGstin: '',
   restaurantFssai: '',
   gstPercent: '5',
+  // Lodging bill GST (CGST + SGST, each 0 or 2.5) with an on/off switch
+  lodgingGstEnabled: 'true',
+  lodgingCgst: '2.5',
+  lodgingSgst: '2.5',
+  // Restaurant (food) bill GST with an on/off switch
+  foodGstEnabled: 'false',
+  foodCgst: '2.5',
+  foodSgst: '2.5',
   invoicePrefix: 'INV',
   invoiceCounter: '1',
   checkoutTime: '08:00',
@@ -97,19 +106,115 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   autoExtendEnabled: 'true',
 }
 
+/**
+ * Columns added after the first deployment. Deploys do not run `prisma db push`, so make sure
+ * they exist (idempotent) before any query that uses them.
+ */
+let schemaReady: Promise<void> | null = null
+function ensureSchema(): Promise<void> {
+  if (!schemaReady) {
+    const stmts = [
+      `ALTER TABLE "Bill" ADD COLUMN IF NOT EXISTS "cgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Bill" ADD COLUMN IF NOT EXISTS "sgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Bill" ADD COLUMN IF NOT EXISTS "previousDue" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Bill" ADD COLUMN IF NOT EXISTS "carriedFrom" TEXT`,
+      `ALTER TABLE "Bill" ADD COLUMN IF NOT EXISTS "carriedForward" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Bill" ADD COLUMN IF NOT EXISTS "carriedToBillNumber" TEXT`,
+      `ALTER TABLE "FoodOrder" ADD COLUMN IF NOT EXISTS "subtotal" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "FoodOrder" ADD COLUMN IF NOT EXISTS "cgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "FoodOrder" ADD COLUMN IF NOT EXISTS "sgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "FoodOrder" ADD COLUMN IF NOT EXISTS "taxAmount" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "cgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "sgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "decorEnabled" BOOLEAN NOT NULL DEFAULT true`,
+    ]
+    schemaReady = (async () => {
+      for (const sql of stmts) await prisma.$executeRawUnsafe(sql)
+    })().catch((e) => {
+      schemaReady = null
+      throw e
+    })
+  }
+  return schemaReady
+}
+
+/** Lodging CGST / SGST defaults from Settings (0/0 when lodging GST is switched off) */
+function lodgingGstDefaults(settings: Record<string, string>) {
+  if (settings.lodgingGstEnabled === 'false') return { cgst: 0, sgst: 0 }
+  return { cgst: normalizeHalfRate(settings.lodgingCgst), sgst: normalizeHalfRate(settings.lodgingSgst) }
+}
+
+/** Food bill CGST / SGST from Settings (null when food GST is switched off) */
+function foodGstDefaults(settings: Record<string, string>) {
+  return { enabled: settings.foodGstEnabled === 'true', cgst: normalizeHalfRate(settings.foodCgst), sgst: normalizeHalfRate(settings.foodSgst) }
+}
+
+/**
+ * CGST / SGST for a lodging bill from the request: explicit cgstPercent/sgstPercent (each 0 or 2.5),
+ * or a legacy combined gstPercent (0 or 5, split in halves), else the Settings default.
+ */
+function resolveLodgingGst(
+  body: Record<string, unknown>,
+  settings: Record<string, string>,
+  current?: { cgst: number; sgst: number }
+): { cgst: number; sgst: number } | { error: string } {
+  const { cgstPercent, sgstPercent, gstPercent } = body
+  const given = (v: unknown) => v !== undefined && v !== null && v !== ''
+  if (given(cgstPercent) || given(sgstPercent)) {
+    const c = given(cgstPercent) ? cgstPercent : current?.cgst ?? 0
+    const s = given(sgstPercent) ? sgstPercent : current?.sgst ?? 0
+    if (!isValidHalfRate(c) || !isValidHalfRate(s)) return { error: 'CGST and SGST can each only be 0% or 2.5%' }
+    return { cgst: Number(c), sgst: Number(s) }
+  }
+  if (given(gstPercent)) {
+    const g = Number(gstPercent)
+    if (g === 0) return { cgst: 0, sgst: 0 }
+    if (g === 5) return { cgst: 2.5, sgst: 2.5 }
+    return { error: 'GST on lodging bills is CGST 2.5% + SGST 2.5% (or 0%)' }
+  }
+  return current || lodgingGstDefaults(settings)
+}
+
+/** Unpaid balance across a guest's bills (optionally ignoring one booking's own bills) */
+async function guestOutstanding(guestId: string, excludeBookingId?: string) {
+  const bills = await prisma.bill.findMany({
+    where: { booking: { guestId }, ...(excludeBookingId ? { bookingId: { not: excludeBookingId } } : {}) },
+    orderBy: { createdAt: 'asc' },
+  })
+  const open = bills.filter((b) => billBalance(b) > 0.01)
+  return { total: Math.round(open.reduce((s, b) => s + billBalance(b), 0) * 100) / 100, bills: open }
+}
+
+/** Gives carried-in dues back to the earlier bills (used when the bill holding them is deleted) */
+async function revertCarriedFrom(db: Db, bill: { carriedFrom: string | null }) {
+  if (!bill.carriedFrom) return
+  let rows: { id: string; amount: number }[] = []
+  try {
+    rows = JSON.parse(bill.carriedFrom)
+  } catch {
+    return
+  }
+  for (const r of rows) {
+    const old = await db.bill.findUnique({ where: { id: r.id } })
+    if (!old) continue
+    const left = Math.max(0, Math.round(((old.carriedForward || 0) - Number(r.amount || 0)) * 100) / 100)
+    await db.bill.update({
+      where: { id: old.id },
+      data: { carriedForward: left, carriedToBillNumber: left > 0.01 ? old.carriedToBillNumber : null },
+    })
+  }
+}
+
+async function verifyAdminPin(pin: unknown) {
+  if (!pin) return null
+  return prisma.user.findFirst({ where: { pin: String(pin), active: true, role: 'ADMIN' } })
+}
+
 async function getSettingsMap(): Promise<Record<string, string>> {
   const rows = await prisma.setting.findMany()
   const map = { ...DEFAULT_SETTINGS }
   for (const r of rows) map[r.key] = r.value
   return map
-}
-
-/** Lodging (room) invoices are issued at 0% or 5% GST only */
-const LODGING_GST_RATES = [0, 5]
-
-/** Default lodging GST from settings, mapped onto an allowed rate (legacy 12/18 → 5) */
-function defaultLodgingGst(settingValue: string | undefined): number {
-  return Number(settingValue) === 0 ? 0 : 5
 }
 
 /**
@@ -273,9 +378,10 @@ async function refreshBookingPaymentStatus(bookingId: string) {
       orderBy: { createdAt: 'desc' },
     })
     if (bill) {
-      const paid = (bill.advanceApplied || 0) + bill.payCash + bill.payUpi + bill.payCard
-      if (paid >= bill.grandTotal - 0.01) paymentStatus = 'PAID'
-      else if (paid > 0.01) paymentStatus = 'PARTIAL'
+      // Dues carried into a later bill are no longer owed here
+      const received = billReceived(bill)
+      if (billBalance(bill) <= 0.01) paymentStatus = 'PAID'
+      else if (received > 0.01) paymentStatus = 'PARTIAL'
       else paymentStatus = 'UNPAID'
     } else {
       paymentStatus = (booking.advance || 0) > 0 ? 'PARTIAL' : 'UNPAID'
@@ -371,6 +477,8 @@ interface BillLedgerInput {
   extraCharges: number
   discount: number
   gstPercent: number
+  cgstPercent?: number
+  sgstPercent?: number
   internalGst: number
 }
 
@@ -416,7 +524,10 @@ function buildBillLedgerEntries(b: BillLedgerInput): Prisma.LedgerEntryCreateMan
     entries.push({
       ...base,
       category: 'GST',
-      description: `GST ${b.gstPercent}% on bill ${b.billNumber}`,
+      description:
+        b.cgstPercent !== undefined && b.sgstPercent !== undefined
+          ? `CGST ${b.cgstPercent}% + SGST ${b.sgstPercent}% on bill ${b.billNumber}`
+          : `GST ${b.gstPercent}% on bill ${b.billNumber}`,
       amount: b.internalGst,
     })
   }
@@ -572,8 +683,9 @@ function attachGuestDueInfo(guest: any) {
 
   for (const b of guest.bookings || []) {
     for (const bill of b.bills || []) {
-      const totalPaid = Math.round(((bill.advanceApplied || 0) + (bill.payCash || 0) + (bill.payUpi || 0) + (bill.payCard || 0)) * 100) / 100
-      const balanceDue = Math.max(0, Math.round(((bill.grandTotal || 0) - totalPaid) * 100) / 100)
+      const totalPaid = billReceived(bill)
+      // Dues moved into a later bill (carriedForward) are owed on that bill, not here
+      const balanceDue = billBalance(bill)
       if (balanceDue > 0.01) {
         dueHistory.push({
           billId: bill.id,
@@ -607,6 +719,9 @@ function attachGuestDueInfo(guest: any) {
     ...guest,
     totalDue: Math.round(totalDue * 100) / 100,
     dueHistory,
+    // used by the check-in dialogs and the lodging bill (dues are added to the next bill)
+    outstanding: Math.round(totalDue * 100) / 100,
+    outstandingBills: dueHistory.map((d) => ({ billNumber: d.billNumber, balance: d.balanceDue })),
   }
 }
 
@@ -735,6 +850,47 @@ async function deleteGuest(req: NextRequest, user: RequestUser) {
   return NextResponse.json({ success: true, message: `Guest ${guest.name} deleted successfully` })
 }
 
+/**
+ * Companies seen before (guest profiles + issued bills) with their latest GSTIN,
+ * so a returning company's GSTIN autofills.
+ */
+async function listCompanies(req: NextRequest) {
+  const q = (new URL(req.url).searchParams.get('q') || '').trim()
+  const [guests, bills] = await Promise.all([
+    prisma.guest.findMany({
+      where: { company: q ? { contains: q, mode: 'insensitive' } : { not: null } },
+      select: { company: true, gst: true, address: true, updatedAt: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 200,
+    }),
+    prisma.bill.findMany({
+      where: { corporateName: q ? { contains: q, mode: 'insensitive' } : { not: null } },
+      select: { corporateName: true, gstNumber: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    }),
+  ])
+  const byName = new Map<string, { company: string; gst: string | null; address: string | null; at: number }>()
+  const add = (company: string | null, gst: string | null, address: string | null, at: Date) => {
+    const name = (company || '').trim()
+    if (!name) return
+    const key = name.toLowerCase()
+    const cur = byName.get(key)
+    if (!cur) {
+      byName.set(key, { company: name, gst: gst || null, address: address || null, at: at.getTime() })
+    } else {
+      // keep the most recent non-empty GSTIN / address
+      if (gst && (!cur.gst || at.getTime() > cur.at)) cur.gst = gst
+      if (address && !cur.address) cur.address = address
+      cur.at = Math.max(cur.at, at.getTime())
+    }
+  }
+  for (const g of guests) add(g.company, g.gst, g.address, g.updatedAt)
+  for (const b of bills) add(b.corporateName, b.gstNumber, null, b.createdAt)
+  const list = [...byName.values()].sort((a, b) => b.at - a.at).slice(0, 50).map(({ at: _at, ...rest }) => rest)
+  return NextResponse.json(list)
+}
+
 // ============ BOOKINGS ============
 async function listBookings(req: NextRequest) {
   await refreshOperationalState()
@@ -840,6 +996,30 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
   const checkInDateStrIST = istDateStr(checkInDate)
   const isFuture = checkInDateStrIST > todayStrIST
   const isAdvanceBooking = bookingType === 'BOOKING' || reqStatus === 'BOOKED' || isFuture
+
+  let outstandingApprovedBy: string | null = null
+  let outstandingAmount = 0
+  if (!isAdvanceBooking) {
+    const existingGuest = await prisma.guest.findUnique({ where: { phone: cleanPhone } })
+    if (existingGuest) {
+      const due = await guestOutstanding(existingGuest.id)
+      if (due.total > 0.01) {
+        const admin = await verifyAdminPin(body.adminPin)
+        if (!admin) {
+          return NextResponse.json(
+            {
+              error: `${existingGuest.name} has ₹${due.total.toFixed(2)} outstanding from earlier stay(s). Admin PIN is required to check in.`,
+              code: body.adminPin ? 'INVALID_ADMIN_PIN' : 'OUTSTANDING_PIN_REQUIRED',
+              outstanding: due.total,
+            },
+            { status: 403 }
+          )
+        }
+        outstandingApprovedBy = admin.name
+        outstandingAmount = due.total
+      }
+    }
+  }
 
   if (!isAdvanceBooking) {
     const inHouse = await prisma.booking.findFirst({
@@ -968,6 +1148,15 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
     return newBooking
   })
 
+  if (outstandingApprovedBy) {
+    await logAudit(
+      'OUTSTANDING_CHECKIN_APPROVED',
+      'Booking',
+      booking.id,
+      `${name} checked in with ₹${outstandingAmount.toFixed(2)} outstanding (Room ${room.number}). Approved by Admin ${outstandingApprovedBy}. Dues will be added to the next bill.`,
+      { name: outstandingApprovedBy, role: 'ADMIN' }
+    )
+  }
   await logAudit(
     'BOOKING_CREATE',
     'Booking',
@@ -987,6 +1176,27 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
   if (action === 'checkin') {
     if (booking.status !== 'BOOKED') {
       return NextResponse.json({ error: 'Only booked reservations can be checked in' }, { status: 400 })
+    }
+    const due = await guestOutstanding(booking.guestId)
+    if (due.total > 0.01) {
+      const admin = await verifyAdminPin(body.adminPin)
+      if (!admin) {
+        return NextResponse.json(
+          {
+            error: `${booking.guest.name} has ₹${due.total.toFixed(2)} outstanding from earlier stay(s). Admin PIN is required to check in.`,
+            code: body.adminPin ? 'INVALID_ADMIN_PIN' : 'OUTSTANDING_PIN_REQUIRED',
+            outstanding: due.total,
+          },
+          { status: 403 }
+        )
+      }
+      await logAudit(
+        'OUTSTANDING_CHECKIN_APPROVED',
+        'Booking',
+        booking.id,
+        `${booking.guest.name} checked in with ₹${due.total.toFixed(2)} outstanding (Room ${booking.room.number}). Approved by Admin ${admin.name}. Dues will be added to the next bill.`,
+        { name: admin.name, role: 'ADMIN' }
+      )
     }
     if (booking.room.status === 'MAINTENANCE') {
       return NextResponse.json({ error: `Room ${booking.room.number} is under maintenance` }, { status: 400 })
@@ -1272,6 +1482,44 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     return NextResponse.json(updated)
   }
 
+  if (action === 'add-payment') {
+    // Part payment while the guest is staying: counts towards the final bill like an advance
+    if (booking.status !== 'ACTIVE') {
+      return NextResponse.json({ error: 'Part payments can only be taken while the guest is in-house' }, { status: 400 })
+    }
+    const amount = Math.round(num(body.amount) * 100) / 100
+    if (amount <= 0) return NextResponse.json({ error: 'Enter a payment amount' }, { status: 400 })
+    const payMethod = ['CASH', 'UPI', 'CARD'].includes(String(body.method)) ? String(body.method) : 'CASH'
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.ledgerEntry.create({
+        data: {
+          date: new Date(),
+          type: 'INCOME',
+          category: 'ADVANCE',
+          description: `Part payment from ${booking.guest.name} (Room ${booking.room.number})`,
+          amount,
+          method: payMethod,
+          source: 'AUTO',
+          refId: booking.id,
+        },
+      })
+      return tx.booking.update({
+        where: { id: booking.id },
+        data: { advance: { increment: amount } },
+        include: { room: true, guest: true },
+      })
+    })
+    await syncBillAdvance(booking.id)
+    await logAudit(
+      'PART_PAYMENT',
+      'Booking',
+      booking.id,
+      `Part payment ₹${amount} via ${payMethod} from ${booking.guest.name} (Room ${booking.room.number}). Total paid during stay: ₹${updated.advance}`,
+      user
+    )
+    return NextResponse.json(updated)
+  }
+
   if (action === 'update') {
     const {
       name,
@@ -1320,7 +1568,7 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
       const latestBill = await prisma.bill.findFirst({ where: { bookingId: booking.id }, orderBy: { createdAt: 'desc' } })
       if (latestBill) {
         const nextApplied = Math.min(num(advance), latestBill.grandTotal)
-        const received = nextApplied + latestBill.payCash + latestBill.payUpi + latestBill.payCard
+        const received = nextApplied + latestBill.payCash + latestBill.payUpi + latestBill.payCard + (latestBill.carriedForward || 0)
         if (received > latestBill.grandTotal + 0.01) {
           return NextResponse.json(
             { error: `Advance too high: invoice ${latestBill.billNumber} would be overpaid (₹${received.toFixed(2)} received vs ₹${latestBill.grandTotal} total).` },
@@ -1405,36 +1653,43 @@ async function updateBooking(body: Record<string, unknown>, user: RequestUser) {
     }
 
     if (advance !== undefined) {
-      const advNum = num(advance)
-      const existingLedger = await prisma.ledgerEntry.findFirst({
-        where: { refId: booking.id, category: 'ADVANCE' },
-      })
-      if (existingLedger) {
-        if (advNum > 0) {
-          await prisma.ledgerEntry.update({
-            where: { id: existingLedger.id },
-            data: {
-              amount: advNum,
-              description: `Advance from ${name || booking.guest.name} (Room ${booking.room.number})`,
-              ...(advanceMethod ? { method: String(advanceMethod) } : {}),
-            },
-          })
-        } else {
-          await prisma.ledgerEntry.delete({ where: { id: existingLedger.id } })
-        }
-      } else if (advNum > 0) {
+      // booking.advance = advance + part payments; it may be spread over several ledger rows.
+      // Record only the difference so earlier payment rows (and their dates/methods) stay intact.
+      const delta = Math.round((num(advance) - (booking.advance || 0)) * 100) / 100
+      if (delta > 0.001) {
         await prisma.ledgerEntry.create({
           data: {
             date: new Date(),
             type: 'INCOME',
             category: 'ADVANCE',
             description: `Advance from ${name || booking.guest.name} (Room ${booking.room.number})`,
-            amount: advNum,
+            amount: delta,
             method: advanceMethod ? String(advanceMethod) : 'CASH',
             source: 'AUTO',
             refId: booking.id,
           },
         })
+      } else if (delta < -0.001) {
+        let toRemove = -delta
+        const rows = await prisma.ledgerEntry.findMany({
+          where: { refId: booking.id, category: 'ADVANCE' },
+          orderBy: { date: 'desc' },
+        })
+        for (const row of rows) {
+          if (toRemove <= 0.001) break
+          if (row.amount <= toRemove + 0.001) {
+            await prisma.ledgerEntry.delete({ where: { id: row.id } })
+            toRemove -= row.amount
+          } else {
+            await prisma.ledgerEntry.update({ where: { id: row.id }, data: { amount: Math.round((row.amount - toRemove) * 100) / 100 } })
+            toRemove = 0
+          }
+        }
+      } else if (advanceMethod) {
+        const latest = await prisma.ledgerEntry.findFirst({ where: { refId: booking.id, category: 'ADVANCE' }, orderBy: { date: 'desc' } })
+        if (latest && latest.method !== String(advanceMethod)) {
+          await prisma.ledgerEntry.update({ where: { id: latest.id }, data: { method: String(advanceMethod) } })
+        }
       }
       await syncBillAdvance(booking.id)
     }
@@ -1483,7 +1738,7 @@ async function listBills(req: NextRequest) {
 async function createBill(body: Record<string, unknown>, user: RequestUser) {
   await applyAutoExtensions()
   const {
-    bookingId, days, billedRoomTotal, roomDescription, roomNumber, gstPercent, extraCharges, discount,
+    bookingId, days, billedRoomTotal, roomDescription, roomNumber, extraCharges, discount,
     payCash, payUpi, payCard, includeFood, foodOrderIds, corporateName, gstNumber, notes, checkout,
     managerPin,
   } = body
@@ -1509,6 +1764,17 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       )
     }
   }
+  // With the fooding bill switched off, pending room-service orders would be left behind on a closed stay
+  if (checkout !== false && includeFood === false) {
+    const pendingCount = await prisma.foodOrder.count({ where: { bookingId: booking.id, status: 'PENDING' } })
+    if (pendingCount > 0) {
+      return NextResponse.json(
+        { error: `${pendingCount} pending room-service order(s) exist. Turn on the Fooding Bill to settle them at checkout, or settle them in Restaurant first.` },
+        { status: 400 }
+      )
+    }
+  }
+
   const settings = await getSettingsMap()
   const billDays = parseInt(String(days)) || booking.days
   const actualRoomTotal = booking.ratePerDay * billDays
@@ -1556,17 +1822,18 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const extra = num(extraCharges)
   const disc = num(discount)
 
-  if (gstPercent !== undefined && gstPercent !== null && gstPercent !== '') {
-    const parsedGst = parseFloat(String(gstPercent))
-    if (!LODGING_GST_RATES.includes(parsedGst)) {
-      return NextResponse.json({ error: 'GST on lodging bills can only be 0% or 5%' }, { status: 400 })
-    }
-  }
+  const gstRates = resolveLodgingGst(body, settings)
+  if ('error' in gstRates) return NextResponse.json({ error: gstRates.error }, { status: 400 })
+  const gstPct = gstRates.cgst + gstRates.sgst
 
-  const gstPct = gstPercent !== undefined && gstPercent !== null && gstPercent !== '' ? num(gstPercent) : defaultLodgingGst(settings.gstPercent)
+  // Unpaid balance of the guest's earlier bills is added to this bill (no GST on it — it was taxed already)
+  const outstanding = await guestOutstanding(booking.guestId, booking.id)
+  const previousDue = outstanding.total
+  const carriedFrom = outstanding.bills.map((b) => ({ id: b.id, billNumber: b.billNumber, amount: billBalance(b) }))
 
   // Determine food orders to include in bill
   let foodTotal = 0
+  let foodTax = 0
   let foodOrderIdsToUpdate: string[] = []
 
   if (includeFood !== false) {
@@ -1583,14 +1850,17 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
     })
     const uniqueOrders = Array.from(new Map(orders.map((o) => [o.id, o])).values())
     foodOrderIdsToUpdate = uniqueOrders.map((o) => o.id)
-    foodTotal = uniqueOrders.reduce((sum, o) => sum + o.total, 0)
+    foodTotal = Math.round(uniqueOrders.reduce((sum, o) => sum + o.total, 0) * 100) / 100
+    foodTax = Math.round(uniqueOrders.reduce((sum, o) => sum + (o.taxAmount || 0), 0) * 100) / 100
   }
 
-  // Full lodging stay calculation (Room + Extra - Disc + GST on lodging)
-  // Food amount is settled as separate restaurant dining revenue and not added to final lodging bill invoice
+  // Full lodging stay calculation (Room + Extra - Disc, with CGST and SGST computed separately)
+  // Food is settled as separate restaurant dining revenue (with its own food GST) and not added to the lodging invoice
   const taxable = Math.max(0, billedRoom + extra - disc)
-  const billedGst = Math.round(taxable * gstPct) / 100
-  const grandTotal = Math.max(0, Math.round((taxable + billedGst) * 100) / 100)
+  const gstSplit = computeGst(taxable, gstRates.cgst, gstRates.sgst)
+  const billedGst = gstSplit.total
+  // Unpaid balance of earlier bills is added on top (already taxed, so no GST on it)
+  const grandTotal = Math.max(0, Math.round((taxable + billedGst + previousDue) * 100) / 100)
   const advanceApplied = Math.min(booking.advance || 0, grandTotal)
   const lodgingPayable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
   const totalPayableNow = Math.max(0, Math.round((lodgingPayable + foodTotal) * 100) / 100)
@@ -1607,6 +1877,13 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   if (paidTotal > totalPayableNow + 0.01) {
     return NextResponse.json(
       { error: `Payment split (₹${paidTotal}) cannot exceed payable amount (₹${totalPayableNow})` },
+      { status: 400 }
+    )
+  }
+  // Food orders are marked paid at checkout, so the food bill must be fully collected; lodging may stay due
+  if (foodTotal > 0 && paidTotal < foodTotal - 0.01) {
+    return NextResponse.json(
+      { error: `Collect at least the food bill (₹${foodTotal.toFixed(2)}) at checkout. The lodging amount may be left as due.` },
       { status: 400 }
     )
   }
@@ -1647,6 +1924,8 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         roomNumber: cleanRoomNumber || null,
         roomDescription: cleanRoomDesc || null,
         gstPercent: gstPct,
+        cgstPercent: gstRates.cgst,
+        sgstPercent: gstRates.sgst,
         actualGst: billedGst,
         internalGst,
         internalTotal,
@@ -1658,6 +1937,8 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         payUpi: lodgingUpi,
         payCard: lodgingCard,
         advanceApplied,
+        previousDue,
+        carriedFrom: carriedFrom.length ? JSON.stringify(carriedFrom) : null,
         isCorporate: isCustom || !!booking.isCorporate,
         corporateName: corporateName ? String(corporateName) : booking.guest.company || null,
         gstNumber: gstNumber ? String(gstNumber) : booking.guest.gst || null,
@@ -1684,18 +1965,34 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
                 ? 'CARD'
                 : 'SPLIT'
 
+        // Food GST (CGST + SGST on the food orders) is booked as GST, the rest as FOOD revenue
+        const foodGstCollected = foodTotal > 0 ? Math.round(((foodTax * foodCollected) / foodTotal) * 100) / 100 : 0
         await tx.ledgerEntry.create({
           data: {
             date: new Date(),
             type: 'INCOME',
             category: 'FOOD',
             description: `Room Dining / Fooding bill settled at checkout - Room ${booking.room.number} - ${booking.guest.name}`,
-            amount: foodCollected,
+            amount: Math.round((foodCollected - foodGstCollected) * 100) / 100,
             method: foodMethod,
             source: 'AUTO',
             refId: createdBill.id,
           },
         })
+        if (foodGstCollected > 0) {
+          await tx.ledgerEntry.create({
+            data: {
+              date: new Date(),
+              type: 'INCOME',
+              category: 'GST',
+              description: `CGST + SGST on fooding bill - Room ${booking.room.number} - ${booking.guest.name}`,
+              amount: foodGstCollected,
+              method: foodMethod,
+              source: 'AUTO',
+              refId: createdBill.id,
+            },
+          })
+        }
       }
     }
 
@@ -1704,11 +2001,28 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         action: body.status === 'DRAFT' ? 'BILL_DRAFT_CREATED' : 'BILL_FINALIZED',
         entity: 'Bill',
         entityId: createdBill.id,
-        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Tariff: ₹${actualRoomTotal}, Billed Room: ₹${billedRoom}, Food Settled: ₹${foodCollected}, GST: ${gstPct}% (₹${billedGst}), Lodging Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
+        details: `Bill ${billNumber} (${body.status === 'DRAFT' ? 'Draft' : 'Final'}) created by ${user.name || 'Staff'}. Real Tariff: ₹${actualRoomTotal}, Billed Room: ₹${billedRoom}, Food Settled: ₹${foodCollected}, CGST: ${gstRates.cgst}% (₹${gstSplit.cgst}), SGST: ${gstRates.sgst}% (₹${gstSplit.sgst}),${previousDue > 0 ? ` Previous due: ₹${previousDue},` : ''} Lodging Total: ₹${grandTotal}, Room: ${cleanRoomNumber || booking.room.number}`,
         userName: user.name || 'Staff',
         userRole: user.role || 'RECEPTION',
       },
     })
+
+    // Earlier bills' balances now live on this bill
+    for (const c of carriedFrom) {
+      await tx.bill.update({
+        where: { id: c.id },
+        data: { carriedForward: { increment: c.amount }, carriedToBillNumber: billNumber },
+      })
+    }
+    // Remember the company / GSTIN on the guest profile so they autofill next time
+    const companyName = corporateName ? String(corporateName).trim() : ''
+    const gstin = gstNumber ? String(gstNumber).trim().toUpperCase() : ''
+    if ((companyName && companyName !== booking.guest.company) || (gstin && gstin !== booking.guest.gst)) {
+      await tx.guest.update({
+        where: { id: booking.guestId },
+        data: { ...(companyName ? { company: companyName } : {}), ...(gstin ? { gst: gstin } : {}) },
+      })
+    }
 
     if (isWaivingOverstay) {
       await tx.auditLog.create({
@@ -1736,6 +2050,8 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
       extraCharges: extra,
       discount: disc,
       gstPercent: gstPct,
+      cgstPercent: gstRates.cgst,
+      sgstPercent: gstRates.sgst,
       internalGst,
     })
     if (ledgerEntries.length > 0) {
@@ -1793,11 +2109,15 @@ async function addBillPayment(body: Record<string, unknown>, user: RequestUser) 
   const adding = cash + upi + card
   if (adding <= 0) return NextResponse.json({ error: 'Payment amount required' }, { status: 400 })
 
-  const alreadyPaid = bill.payCash + bill.payUpi + bill.payCard
-  const payableNow = bill.grandTotal - bill.advanceApplied
-  const outstanding = Math.max(0, Math.round((payableNow - alreadyPaid) * 100) / 100)
+  const outstanding = billBalance(bill)
+  if (outstanding <= 0.01 && (bill.carriedForward || 0) > 0) {
+    return NextResponse.json(
+      { error: `This balance was moved to bill ${bill.carriedToBillNumber}. Collect the payment on that bill.` },
+      { status: 400 }
+    )
+  }
 
-  if (alreadyPaid + adding > payableNow + 0.01) {
+  if (adding > outstanding + 0.01) {
     return NextResponse.json(
       { error: `Payment exceeds outstanding balance (₹${outstanding.toFixed(2)})` },
       { status: 400 }
@@ -1825,7 +2145,7 @@ async function addBillPayment(body: Record<string, unknown>, user: RequestUser) 
 
 async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   const {
-    id, billedRoomTotal, roomDescription, roomNumber, gstPercent, extraCharges, discount,
+    id, billedRoomTotal, roomDescription, roomNumber, gstPercent, cgstPercent, sgstPercent, extraCharges, discount,
     payCash, payUpi, payCard, corporateName, gstNumber, notes, roomId, managerPin,
   } = body
 
@@ -1837,15 +2157,15 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   })
   if (!bill) return NextResponse.json({ error: 'Bill not found' }, { status: 404 })
 
-  // Validate gstPercent if provided
-  let newGstPercent = bill.gstPercent
-  if (gstPercent !== undefined && gstPercent !== null && gstPercent !== '') {
-    const parsedGst = parseFloat(String(gstPercent))
-    if (!LODGING_GST_RATES.includes(parsedGst)) {
-      return NextResponse.json({ error: 'GST on lodging bills can only be 0% or 5%' }, { status: 400 })
-    }
-    newGstPercent = parsedGst
-  }
+  // CGST / SGST (each 0 or 2.5); bills saved before the split keep their combined rate as two halves
+  const currentHalf =
+    Math.abs((bill.cgstPercent || 0) + (bill.sgstPercent || 0) - bill.gstPercent) < 0.001
+      ? { cgst: bill.cgstPercent || 0, sgst: bill.sgstPercent || 0 }
+      : { cgst: bill.gstPercent / 2, sgst: bill.gstPercent / 2 }
+  const settingsForGst = await getSettingsMap()
+  const gstRates = resolveLodgingGst(body, settingsForGst, currentHalf)
+  if ('error' in gstRates) return NextResponse.json({ error: gstRates.error }, { status: 400 })
+  const newGstPercent = gstRates.cgst + gstRates.sgst
 
   // Validate numeric fields
   let newBilledRoom = bill.billedRoomTotal
@@ -1874,7 +2194,8 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     (billedRoomTotal !== undefined && num(billedRoomTotal) !== bill.billedRoomTotal) ||
     (roomDescription !== undefined && String(roomDescription).trim() !== (bill.roomDescription || '')) ||
     (roomNumber !== undefined && String(roomNumber).trim() !== (bill.roomNumber || bill.booking.room.number)) ||
-    (gstPercent !== undefined && num(gstPercent) !== bill.gstPercent) ||
+    Math.abs(newGstPercent - bill.gstPercent) > 0.001 ||
+    gstRates.cgst !== currentHalf.cgst ||
     (extraCharges !== undefined && num(extraCharges) !== bill.extraCharges) ||
     (discount !== undefined && num(discount) !== bill.discount) ||
     (payCash !== undefined && num(payCash) !== bill.payCash) ||
@@ -1924,13 +2245,15 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     user = { id: approver.id, name: approver.name, role: approver.role }
   }
 
-  // Taxable and GST calculation based on customer-facing amount + food total
+  // Taxable and CGST/SGST calculation based on the customer-facing amount; food (settled separately) is not taxed here
   const foodTotal = bill.foodTotal || 0
   const taxable = Math.max(0, newBilledRoom + extra - disc)
-  const newBilledGst = Math.round(taxable * newGstPercent) / 100
-  const newGrandTotal = Math.max(0, Math.round((taxable + newBilledGst + foodTotal) * 100) / 100)
+  const newGstSplit = computeGst(taxable, gstRates.cgst, gstRates.sgst)
+  const newBilledGst = newGstSplit.total
+  // previousDue (earlier bills' balance) stays part of the total; it is not taxed
+  const newGrandTotal = Math.max(0, Math.round((taxable + newBilledGst + foodTotal + (bill.previousDue || 0)) * 100) / 100)
   const advanceApplied = Math.min(bill.booking.advance || 0, newGrandTotal)
-  const payableNow = Math.max(0, Math.round((newGrandTotal - advanceApplied) * 100) / 100)
+  const payableNow = Math.max(0, Math.round((newGrandTotal - advanceApplied - (bill.carriedForward || 0)) * 100) / 100)
 
   // Internal accounting calculation
   const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
@@ -1972,6 +2295,8 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
         roomNumber: newRoomNumber,
         roomDescription: newRoomDescription,
         gstPercent: newGstPercent,
+        cgstPercent: gstRates.cgst,
+        sgstPercent: gstRates.sgst,
         actualGst: newBilledGst,
         internalGst,
         internalTotal,
@@ -1997,7 +2322,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
           action: 'ADMIN_BILL_CORRECTION',
           entity: 'Bill',
           entityId: bill.id,
-          details: `Finalized bill ${bill.billNumber} modified by ${user.name || 'Admin'}. Old Total: ₹${bill.grandTotal}, New Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, GST: ${newGstPercent}% (₹${newBilledGst}), Room: ${newRoomNumber || bill.booking.room.number}`,
+          details: `Finalized bill ${bill.billNumber} modified by ${user.name || 'Admin'}. Old Total: ₹${bill.grandTotal}, New Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, CGST ${gstRates.cgst}% (₹${newGstSplit.cgst}) + SGST ${gstRates.sgst}% (₹${newGstSplit.sgst}), Room: ${newRoomNumber || bill.booking.room.number}`,
           userName: user.name || 'Admin',
           userRole: user.role || 'MANAGER',
         },
@@ -2008,7 +2333,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
           action: 'BILL_FINALIZED',
           entity: 'Bill',
           entityId: bill.id,
-          details: `Bill ${bill.billNumber} finalized by ${user.name || 'Staff'}. Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, GST: ${newGstPercent}% (₹${newBilledGst}), Room: ${newRoomNumber || bill.booking.room.number}`,
+          details: `Bill ${bill.billNumber} finalized by ${user.name || 'Staff'}. Total: ₹${newGrandTotal}, Billed Room: ₹${newBilledRoom}, CGST ${gstRates.cgst}% (₹${newGstSplit.cgst}) + SGST ${gstRates.sgst}% (₹${newGstSplit.sgst}), Room: ${newRoomNumber || bill.booking.room.number}`,
           userName: user.name || 'Staff',
           userRole: user.role || 'RECEPTION',
         },
@@ -2033,6 +2358,8 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
       extraCharges: extra,
       discount: disc,
       gstPercent: newGstPercent,
+      cgstPercent: gstRates.cgst,
+      sgstPercent: gstRates.sgst,
       internalGst,
     })
     if (ledgerEntries.length > 0) {
@@ -2048,7 +2375,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     'BILL_UPDATE',
     'Bill',
     bill.id,
-    `Updated bill ${bill.billNumber}: customer amount ₹${newBilledRoom} (actual ₹${actualRoomTotal}), GST ${newGstPercent}% (₹${newBilledGst}), grand total ₹${newGrandTotal}`,
+    `Updated bill ${bill.billNumber}: customer amount ₹${newBilledRoom} (actual ₹${actualRoomTotal}), CGST ${gstRates.cgst}% (₹${newGstSplit.cgst}) + SGST ${gstRates.sgst}% (₹${newGstSplit.sgst}), grand total ₹${newGrandTotal}`,
     user
   )
 
@@ -2137,10 +2464,15 @@ async function createOrder(body: Record<string, unknown>, user: RequestUser) {
   if (!items || !Array.isArray(items) || items.length === 0) {
     return NextResponse.json({ error: 'At least one item required' }, { status: 400 })
   }
-  const total = items.reduce(
-    (s: number, it: { price: number; quantity: number }) => s + (it.price || 0) * (it.quantity || 1),
-    0
-  )
+  const subtotal = Math.round(
+    items.reduce((s: number, it: { price: number; quantity: number }) => s + (it.price || 0) * (it.quantity || 1), 0) * 100
+  ) / 100
+  // Food bill GST (CGST + SGST) from Settings, with a per-order on/off. Applies to walk-in and
+  // room-service orders alike: room food is settled as a separate fooding bill, not taxed on the room bill.
+  const foodGst = foodGstDefaults(await getSettingsMap())
+  const applyGst = body.gstEnabled !== undefined ? body.gstEnabled === true : foodGst.enabled
+  const tax = applyGst ? computeGst(subtotal, foodGst.cgst, foodGst.sgst) : { cgst: 0, sgst: 0, total: 0 }
+  const total = Math.round((subtotal + tax.total) * 100) / 100
   // Room-service orders hang off the in-house stay; the room is always the booking's current room
   let orderRoomId: string | null = roomId ? String(roomId) : null
   if (bookingId) {
@@ -2159,6 +2491,10 @@ async function createOrder(body: Record<string, unknown>, user: RequestUser) {
       bookingId: bookingId ? String(bookingId) : null,
       roomId: orderRoomId,
       tableNo: tableNo ? String(tableNo) : null,
+      subtotal,
+      cgstPercent: applyGst ? foodGst.cgst : 0,
+      sgstPercent: applyGst ? foodGst.sgst : 0,
+      taxAmount: tax.total,
       total,
       createdBy: user.name || null,
       notes: notes ? String(notes) : null,
@@ -2196,23 +2532,27 @@ async function updateOrder(body: Record<string, unknown>, user: RequestUser) {
       )
     }
     const payMethod = method ? String(method) : 'CASH'
+    // Food GST was fixed when the order was taken
+    const subtotal = order.subtotal > 0 ? order.subtotal : order.total
+    const taxAmount = order.taxAmount || 0
+    const payable = order.total
     const updated = await prisma.$transaction(async (tx) => {
-      const ord = await tx.foodOrder.update({ where: { id: String(id) }, data: { status: 'PAID' } })
-      await tx.ledgerEntry.create({
-        data: {
-          date: new Date(),
-          type: 'INCOME',
-          category: 'FOOD',
-          description: `Restaurant order${order.tableNo ? ` (Table ${order.tableNo})` : ''}${order.room ? ` - Room ${order.room.number}` : ''}`,
-          amount: order.total,
-          method: payMethod,
-          source: 'AUTO',
-          refId: order.id,
-        },
+      const ord = await tx.foodOrder.update({
+        where: { id: String(id) },
+        data: { status: 'PAID', subtotal },
       })
+      const desc = `Restaurant order${order.tableNo ? ` (Table ${order.tableNo})` : ''}${order.room ? ` - Room ${order.room.number}` : ''}`
+      await tx.ledgerEntry.create({
+        data: { date: new Date(), type: 'INCOME', category: 'FOOD', description: desc, amount: Math.round((payable - taxAmount) * 100) / 100, method: payMethod, source: 'AUTO', refId: order.id },
+      })
+      if (taxAmount > 0) {
+        await tx.ledgerEntry.create({
+          data: { date: new Date(), type: 'INCOME', category: 'GST', description: `CGST + SGST on food bill - ${desc}`, amount: taxAmount, method: payMethod, source: 'AUTO', refId: order.id },
+        })
+      }
       return ord
     })
-    await logAudit('ORDER_PAID', 'FoodOrder', order.id, `Direct restaurant payment ₹${order.total} via ${payMethod}`, user)
+    await logAudit('ORDER_PAID', 'FoodOrder', order.id, `Direct restaurant payment ₹${payable}${taxAmount > 0 ? ` (incl. CGST+SGST ₹${taxAmount})` : ''} via ${payMethod}`, user)
     return NextResponse.json(updated)
   }
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
@@ -2331,13 +2671,21 @@ async function deleteBooking(req: NextRequest, user: RequestUser) {
   if (booking.status === 'ACTIVE') {
     return NextResponse.json({ error: `Cannot delete active booking for Room ${booking.room.number}. Please checkout or cancel first.` }, { status: 400 })
   }
+  const carried = await prisma.bill.findFirst({ where: { bookingId: id, carriedForward: { gt: 0.01 } } })
+  if (carried) {
+    return NextResponse.json(
+      { error: `Bill ${carried.billNumber} of this booking was carried into bill ${carried.carriedToBillNumber}. Delete that bill first.` },
+      { status: 400 }
+    )
+  }
 
   await prisma.$transaction(async (tx) => {
     // Remove the money trail of this booking too: advance, invoice rows and paid room-service orders
     const [bills, orders] = await Promise.all([
-      tx.bill.findMany({ where: { bookingId: id }, select: { id: true } }),
+      tx.bill.findMany({ where: { bookingId: id }, select: { id: true, carriedFrom: true } }),
       tx.foodOrder.findMany({ where: { bookingId: id }, select: { id: true } }),
     ])
+    for (const b of bills) await revertCarriedFrom(tx, b)
     const refIds = [id, ...bills.map((b) => b.id), ...orders.map((o) => o.id)]
     await tx.ledgerEntry.deleteMany({ where: { refId: { in: refIds } } })
     await tx.foodOrder.deleteMany({ where: { bookingId: id } })
@@ -2362,10 +2710,33 @@ async function deleteBill(req: NextRequest, user: RequestUser) {
   })
 
   if (!bill) return NextResponse.json({ error: 'Bill not found' }, { status: 404 })
+  if ((bill.carriedForward || 0) > 0.01) {
+    return NextResponse.json(
+      { error: `This bill's balance was moved into bill ${bill.carriedToBillNumber}. Delete that bill first.` },
+      { status: 400 }
+    )
+  }
 
   await prisma.$transaction(async (tx) => {
+    await revertCarriedFrom(tx, bill)
+    // Room-service food settled together with this checkout bill (marked PAID, revenue booked on the
+    // bill) goes back to pending, since its revenue row is deleted with the bill. Orders paid at the
+    // restaurant counter have their own ledger row and stay paid.
+    const settledFood = await tx.ledgerEntry.count({ where: { refId: bill.id, category: 'FOOD' } })
     await tx.ledgerEntry.deleteMany({ where: { refId: bill.id } })
     await tx.bill.delete({ where: { id: bill.id } })
+    if (settledFood > 0) {
+      const paidOrders = await tx.foodOrder.findMany({ where: { bookingId: bill.bookingId, status: 'PAID' }, select: { id: true } })
+      const counterPaid = await tx.ledgerEntry.findMany({
+        where: { refId: { in: paidOrders.map((o) => o.id) } },
+        select: { refId: true },
+      })
+      const counterIds = new Set(counterPaid.map((r) => r.refId))
+      const settledIds = paidOrders.map((o) => o.id).filter((oid) => !counterIds.has(oid))
+      if (settledIds.length > 0) {
+        await tx.foodOrder.updateMany({ where: { id: { in: settledIds } }, data: { status: 'PENDING' } })
+      }
+    }
     // Food merged into this invoice goes back to pending so it can be billed again.
     // Orders carry no bill id, so this is only safe when no other invoice of the stay holds food.
     if (bill.foodTotal > 0) {
@@ -2646,7 +3017,7 @@ async function updateLedgerEntry(body: Record<string, unknown>, user: RequestUse
     const booking = await prisma.booking.findUnique({ where: { id: link.bookingId } })
     if (bill && booking) {
       const nextAdvance = Math.max(0, (booking.advance || 0) + num(amount) - existing.amount)
-      const received = Math.min(nextAdvance, bill.grandTotal) + bill.payCash + bill.payUpi + bill.payCard
+      const received = Math.min(nextAdvance, bill.grandTotal) + bill.payCash + bill.payUpi + bill.payCard + (bill.carriedForward || 0)
       if (received > bill.grandTotal + 0.01) {
         return NextResponse.json({ error: `Advance too high: invoice ${bill.billNumber} would be overpaid.` }, { status: 400 })
       }
@@ -2730,6 +3101,7 @@ async function getStats() {
         payCash: true,
         payUpi: true,
         payCard: true,
+        carriedForward: true,
       },
     }),
     prisma.foodOrder.findMany({
@@ -2749,6 +3121,7 @@ async function getStats() {
         payCash: true,
         payUpi: true,
         payCard: true,
+        carriedForward: true,
       },
     }),
   ])
@@ -2797,11 +3170,7 @@ async function getStats() {
       }
     })
 
-  const outstanding = allBills.reduce((s, b) => {
-    const totalRec = b.advanceApplied + b.payCash + b.payUpi + b.payCard
-    const balance = b.grandTotal - totalRec
-    return balance > 0.01 ? s + balance : s
-  }, 0)
+  const outstanding = allBills.reduce((s, b) => s + billBalance(b), 0)
 
   return NextResponse.json({
     totalRooms: rooms.length,
@@ -2842,10 +3211,7 @@ async function getStats() {
       billOutstanding:
         todayBills
           .filter((bill) => bill.bookingId === b.id)
-          .reduce((s, bill) => {
-            const bal = bill.grandTotal - (bill.advanceApplied + bill.payCash + bill.payUpi + bill.payCard)
-            return bal > 0.01 ? s + bal : s
-          }, 0) || 0,
+          .reduce((s, bill) => s + billBalance(bill), 0) || 0,
     })),
     todayRevenue,
     todayCash: todayBills.reduce((s, b) => s + b.payCash, 0),
@@ -2868,8 +3234,22 @@ async function getSettings() {
 
 async function updateSettings(body: Record<string, unknown>, user: RequestUser) {
   const updates = (body || {}) as Record<string, unknown>
-  if (updates.gstPercent !== undefined && !LODGING_GST_RATES.includes(Number(updates.gstPercent))) {
-    return NextResponse.json({ error: 'Default GST can only be 0% or 5%' }, { status: 400 })
+  for (const k of ['lodgingCgst', 'lodgingSgst', 'foodCgst', 'foodSgst']) {
+    if (updates[k] !== undefined && !isValidHalfRate(updates[k])) {
+      return NextResponse.json({ error: 'CGST and SGST can each only be 0% or 2.5%' }, { status: 400 })
+    }
+  }
+  for (const k of ['lodgingGstEnabled', 'foodGstEnabled']) {
+    if (updates[k] !== undefined) updates[k] = String(updates[k]) === 'true' ? 'true' : 'false'
+  }
+  // Keep the legacy combined rate in step with the lodging CGST + SGST section
+  if (updates.lodgingCgst !== undefined || updates.lodgingSgst !== undefined || updates.lodgingGstEnabled !== undefined) {
+    const cur = await getSettingsMap()
+    const merged = { ...cur, ...Object.fromEntries(Object.entries(updates).map(([k, v]) => [k, String(v)])) }
+    const d = lodgingGstDefaults(merged)
+    updates.gstPercent = String(d.cgst + d.sgst)
+  } else if (updates.gstPercent !== undefined && ![0, 2.5, 5].includes(Number(updates.gstPercent))) {
+    return NextResponse.json({ error: 'GST is CGST + SGST: 0%, 2.5% or 5% in total' }, { status: 400 })
   }
   const updatedKeys: string[] = []
   for (const [key, value] of Object.entries(updates)) {
@@ -3308,8 +3688,8 @@ async function getReports(req: NextRequest) {
 
   const outstandingRows = outstandingBookings
     .map((b) => {
-      const paid = b.advanceApplied + b.payCash + b.payUpi + b.payCard
-      const balance = Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
+      const paid = billReceived(b)
+      const balance = billBalance(b)
       return {
         id: b.id,
         billNumber: b.billNumber,
@@ -3423,9 +3803,9 @@ async function getReports(req: NextRequest) {
       (!!b.roomNumber && b.roomNumber !== b.booking.room.number) ||
       b.isCorporate
     const taxableAmount = Math.max(0, b.billedRoomTotal + (b.foodTotal || 0) + b.extraCharges - b.discount)
-    const rawPaid = (b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0)
-    const paid = Math.round(rawPaid * 100) / 100
-    const balance = Math.max(0, Math.round((b.grandTotal - paid) * 100) / 100)
+    const paid = billReceived(b)
+    const balance = billBalance(b)
+    const gstSplitRow = splitGst(b)
     const effectiveCash = b.payCash || 0
 
     const internalGst =
@@ -3464,6 +3844,10 @@ async function getReports(req: NextRequest) {
       taxableAmount,
       gstPercent: b.gstPercent,
       actualGst: b.actualGst,
+      cgstPercent: gstSplitRow.cgstPercent,
+      sgstPercent: gstSplitRow.sgstPercent,
+      cgst: gstSplitRow.cgst,
+      sgst: gstSplitRow.sgst,
       internalGst,
       grandTotal: b.grandTotal,
       internalTotal,
@@ -3511,6 +3895,8 @@ async function getReports(req: NextRequest) {
       actualRoomRevenue: Math.round(bills.reduce((s, b) => s + b.actualRoomTotal, 0) * 100) / 100,
       billedRoomRevenue: Math.round(bills.reduce((s, b) => s + b.billedRoomTotal, 0) * 100) / 100,
       gst: Math.round(bills.reduce((s, b) => s + billInternal(b).gst, 0) * 100) / 100,
+      cgst: Math.round(bills.reduce((s, b) => s + splitGst(b).cgst, 0) * 100) / 100,
+      sgst: Math.round(bills.reduce((s, b) => s + splitGst(b).sgst, 0) * 100) / 100,
       foodRoomPosted: Math.round(bills.reduce((s, b) => s + b.foodTotal, 0) * 100) / 100,
       foodDirect: foodDirectTotal,
       discounts: Math.round(bills.reduce((s, b) => s + b.discount, 0) * 100) / 100,
@@ -3531,6 +3917,10 @@ async function getReports(req: NextRequest) {
         billedRoomTotal: b.billedRoomTotal,
         foodTotal: b.foodTotal,
         gst: b.actualGst,
+        cgst: splitGst(b).cgst,
+        sgst: splitGst(b).sgst,
+        cgstPercent: splitGst(b).cgstPercent,
+        sgstPercent: splitGst(b).sgstPercent,
         internalGst: billInternal(b).gst,
         grandTotal: b.grandTotal,
         internalTotal: billInternal(b).total,
@@ -3628,6 +4018,7 @@ async function route(
   if (method !== 'GET') searchCache.clear()
 
   try {
+    await ensureSchema()
     const res = await dispatch(req, method, url, body)
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0')
     res.headers.set('Pragma', 'no-cache')
@@ -3745,6 +4136,18 @@ async function dispatch(
       if (method === 'DELETE') return await deleteUser(req, user)
       break
     case 'auth':
+      if (method === 'POST' && body.action === 'verify-admin') {
+        // Used before sensitive client actions (e.g. printing a bill with balance due)
+        const admin = await verifyAdminPin(body.pin)
+        if (!admin) return NextResponse.json({ error: 'Invalid Admin PIN (ADMIN role required)' }, { status: 403 })
+        if (body.reason) {
+          await logAudit('ADMIN_APPROVAL', 'User', admin.id, `${String(body.reason)} — approved by Admin ${admin.name}`, {
+            name: admin.name,
+            role: 'ADMIN',
+          })
+        }
+        return NextResponse.json({ ok: true, name: admin.name })
+      }
       if (method === 'POST') return await login(body)
       break
     case 'audit':
@@ -3876,6 +4279,9 @@ async function dispatch(
       break
     case 'search':
       if (method === 'GET') return await globalSearch(req)
+      break
+    case 'companies':
+      if (method === 'GET') return await listCompanies(req)
       break
     case 'reports':
       if (method === 'GET') return await getReports(req)

@@ -23,6 +23,8 @@ import {
 import { api, apiAs, addDays, formatINR, sanitizePhone, todayStr, formatDate, formatDateTime, toDateStr, doDateRangesOverlap, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
+import { runWithAdminPin } from '@/lib/admin-pin'
+import { CompanyInput } from './company-input'
 import { toast } from '@/hooks/use-toast'
 import { RoomDatePicker } from './room-date-picker'
 import { Loader2, UserSearch, LogIn, CalendarCheck, CalendarDays, AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, ShieldCheck, X } from 'lucide-react'
@@ -314,9 +316,11 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
     setError('')
     try {
       const isAdvance = bookingMode === 'BOOKING'
-      await apiAs('/api/bookings', getCachedUser(), {
+      // A guest with dues from earlier stays needs the Admin PIN to check in (asked and retried)
+      const created = await runWithAdminPin((adminPin) => apiAs('/api/bookings', getCachedUser(), {
         method: 'POST',
         body: JSON.stringify({
+          adminPin,
           roomId: room.id,
           phone: cleanPhone,
           name: name.trim(),
@@ -335,7 +339,8 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
           bookingType: isAdvance ? 'BOOKING' : 'CHECKIN',
           status: isAdvance ? 'BOOKED' : 'ACTIVE',
         }),
-      })
+      }))
+      if (created === null) return
       onSuccess()
       onOpenChange(false)
       if (isAdvance) {
@@ -621,6 +626,9 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
               <p className="text-[11px] text-red-900 dark:text-red-200">
                 This guest has <strong>{guestDueInfo.dueHistory.length} unpaid bill(s)</strong> totaling <strong>{formatINR(guestDueInfo.totalDue)}</strong> from past checkout(s):
               </p>
+              <p className="text-[11px] font-semibold text-red-900 dark:text-red-200">
+                Check-in needs the Admin PIN. The due amount will be added to this guest&apos;s next bill.
+              </p>
               <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
                 {guestDueInfo.dueHistory.map((due) => (
                   <div key={due.billId || due.billNumber} className="rounded border border-red-200 bg-white/90 dark:bg-red-900/30 p-2 text-xs flex items-center justify-between">
@@ -717,12 +725,15 @@ export function CheckinDialog({ open, onOpenChange, room, onSuccess, initialMode
                 <Label htmlFor="company" className="text-xs font-semibold text-foreground">
                   Company Name <span className="text-red-500">*</span>
                 </Label>
-                <Input
+                <CompanyInput
                   id="company"
-                  placeholder="Company name"
                   value={company}
+                  onChange={setCompany}
+                  onPick={(c) => {
+                    if (c.gst) setGst(c.gst)
+                    if (c.address && !address) setAddress(c.address)
+                  }}
                   className="h-9 text-xs"
-                  onChange={(e) => setCompany(e.target.value)}
                 />
               </div>
               <div className="space-y-1.5">

@@ -1,5 +1,6 @@
 import { formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
 import { BanquetBill } from '@/types/banquet'
+import { splitGst } from '@/lib/gst'
 
 export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Record<string, string> = {}) {
   if (!bill) return
@@ -278,14 +279,14 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
           <span>Taxable Subtotal:</span>
           <b>${formatINR(bill.taxableAmount)}</b>
         </div>
-        ${
-          bill.gstPercent > 0
-            ? `<div class="tot-row">
-          <span>GST (${bill.gstPercent}%):</span>
-          <b>${formatINR(bill.gstAmount)}</b>
-        </div>`
-            : ''
-        }
+        <div class="tot-row">
+          <span>CGST (${splitGst({ ...bill, actualGst: bill.gstAmount }).cgstPercent}%):</span>
+          <b>${formatINR(splitGst({ ...bill, actualGst: bill.gstAmount }).cgst)}</b>
+        </div>
+        <div class="tot-row">
+          <span>SGST (${splitGst({ ...bill, actualGst: bill.gstAmount }).sgstPercent}%):</span>
+          <b>${formatINR(splitGst({ ...bill, actualGst: bill.gstAmount }).sgst)}</b>
+        </div>
         <div class="tot-row grand">
           <span>Grand Total:</span>
           <span>${formatINR(bill.grandTotal)}</span>

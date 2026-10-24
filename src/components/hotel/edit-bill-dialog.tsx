@@ -12,7 +12,10 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { apiAs, formatINR, formatDateTime, LODGING_GST_RATES, normalizeLodgingGst } from '@/lib/hotel-utils'
+import { apiAs, formatINR, formatDateTime } from '@/lib/hotel-utils'
+import { computeGst, splitGst } from '@/lib/gst'
+import { GstPicker } from './gst-picker'
+import { CompanyInput } from './company-input'
 import { getCachedUser } from './user-context'
 import { Loader2, Info, Edit3, ShieldCheck } from 'lucide-react'
 
@@ -80,7 +83,8 @@ export function EditBillDialog({
   const [billedRoomTotal, setBilledRoomTotal] = useState('')
   const [roomNumber, setRoomNumber] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
-  const [gstPercent, setGstPercent] = useState('5')
+  const [cgst, setCgst] = useState(2.5)
+  const [sgst, setSgst] = useState(2.5)
   const [extraCharges, setExtraCharges] = useState('0')
   const [discount, setDiscount] = useState('0')
   const [payCash, setPayCash] = useState('0')
@@ -100,7 +104,9 @@ export function EditBillDialog({
       setBilledRoomTotal(String(bill.billedRoomTotal))
       setRoomNumber(bill.roomNumber || bill.booking?.room?.number || '')
       setRoomDescription(bill.roomDescription || bill.booking?.room?.type || '')
-      setGstPercent(normalizeLodgingGst(bill.gstPercent))
+      const split = splitGst(bill)
+      setCgst(split.cgstPercent === 0 || split.cgstPercent === 2.5 ? split.cgstPercent : 2.5)
+      setSgst(split.sgstPercent === 0 || split.sgstPercent === 2.5 ? split.sgstPercent : 2.5)
       setExtraCharges(String(bill.extraCharges || 0))
       setDiscount(String(bill.discount || 0))
       setPayCash(String(bill.payCash || 0))
@@ -123,16 +129,19 @@ export function EditBillDialog({
     if (!bill) return null
     const actualRoomTotal = bill.actualRoomTotal
     const customerAmount = num(billedRoomTotal)
-    const gstRate = num(gstPercent)
+    const gstRate = cgst + sgst
     const extra = num(extraCharges)
     const disc = num(discount)
     const foodTotal = bill.foodTotal || 0
 
+    // Food (settled separately) is not taxed; CGST and SGST apply to the room amount
     const taxable = Math.max(0, customerAmount + extra - disc)
-    const gstAmount = Math.round(taxable * gstRate) / 100
-    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + foodTotal) * 100) / 100)
+    const tax = computeGst(taxable, cgst, sgst)
+    const gstAmount = tax.total
+    const previousDue = bill.previousDue || 0
+    const grandTotal = Math.max(0, Math.round((taxable + gstAmount + foodTotal + previousDue) * 100) / 100)
     const advanceApplied = Math.min(bill.booking?.advance || 0, grandTotal)
-    const payable = Math.max(0, Math.round((grandTotal - advanceApplied) * 100) / 100)
+    const payable = Math.max(0, Math.round((grandTotal - advanceApplied - (bill.carriedForward || 0)) * 100) / 100)
 
     const internalTaxable = Math.max(0, actualRoomTotal + extra - disc)
     // Internal GST = the GST charged on the invoice (custom amount for corporate bills)
@@ -151,6 +160,9 @@ export function EditBillDialog({
       foodTotal,
       taxable,
       gstAmount,
+      cgstAmount: tax.cgst,
+      sgstAmount: tax.sgst,
+      previousDue,
       advanceApplied,
       grandTotal,
       payable,
@@ -160,7 +172,7 @@ export function EditBillDialog({
       paid,
       balance,
     }
-  }, [bill, billedRoomTotal, gstPercent, extraCharges, discount, payCash, payUpi, payCard])
+  }, [bill, billedRoomTotal, cgst, sgst, extraCharges, discount, payCash, payUpi, payCard])
 
   // Payment values are preserved from database or edited manually by user
 
@@ -199,12 +211,6 @@ export function EditBillDialog({
       return
     }
 
-    const parsedGst = parseFloat(gstPercent)
-    if (parsedGst !== 0 && parsedGst !== 5) {
-      setError('GST on lodging bills can only be 0% or 5%')
-      return
-    }
-
     const parsedCustomerAmount = parseFloat(billedRoomTotal)
     if (isNaN(parsedCustomerAmount) || !isFinite(parsedCustomerAmount) || parsedCustomerAmount < 0) {
       setError('Customer-facing amount must be a valid non-negative number')
@@ -228,7 +234,8 @@ export function EditBillDialog({
           billedRoomTotal: parsedCustomerAmount,
           roomNumber: roomNumber.trim() || undefined,
           roomDescription: roomDescription.trim() || undefined,
-          gstPercent: parsedGst,
+          cgstPercent: cgst,
+          sgstPercent: sgst,
           extraCharges: num(extraCharges),
           discount: num(discount),
           payCash: num(payCash),
@@ -271,7 +278,7 @@ export function EditBillDialog({
                 </div>
                 <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
                   {isFinalized
-                    ? 'This bill is finalized. To perform administrative corrections to customer amount, GST, room number, or description, enter Manager or Admin PIN.'
+                    ? 'This bill is finalized. To perform administrative corrections to customer amount, CGST/SGST, room number, or description, enter Manager or Admin PIN.'
                     : 'Custom billing amount, room number, or modified room description requires Manager or Admin PIN approval.'}
                 </p>
                 <div className="mt-2.5 space-y-1">
@@ -339,28 +346,17 @@ export function EditBillDialog({
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-foreground">GST % *</Label>
-                {/* Lodging bills are issued at 0% or 5% GST only */}
-                <div className="grid h-9 grid-cols-2 gap-1">
-                  {LODGING_GST_RATES.map((pct) => (
-                    <button
-                      key={pct}
-                      type="button"
-                      onClick={() => setGstPercent(pct)}
-                      className={`rounded border text-xs font-semibold transition-colors ${
-                        num(gstPercent) === num(pct)
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-muted text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      {pct}%
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {/* GST is charged as CGST + SGST, each 0% or 2.5% */}
+            <GstPicker
+              cgst={cgst}
+              sgst={sgst}
+              onChange={(n) => {
+                setCgst(n.cgst)
+                setSgst(n.sgst)
+              }}
+            />
 
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold text-foreground">Discount (₹)</Label>
                 <Input type="number" min="0" value={discount} onChange={(e) => setDiscount(e.target.value)} className="h-9 text-xs" />
@@ -383,7 +379,12 @@ export function EditBillDialog({
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold text-foreground">Bill To / Company</Label>
-                <Input value={corporateName} onChange={(e) => setCorporateName(e.target.value)} placeholder="Company name" className="h-9 text-xs" />
+                <CompanyInput
+                  value={corporateName}
+                  onChange={setCorporateName}
+                  onPick={(c) => c.gst && setGstNumber(c.gst)}
+                  className="h-9 text-xs"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold text-foreground">GSTIN</Label>
@@ -417,15 +418,18 @@ export function EditBillDialog({
                   <span className="font-medium">-{formatINR(calc.disc)}</span>
                 </div>
               )}
-              {calc.gstAmount > 0 ? (
-                <div className="flex justify-between font-semibold text-emerald-700 dark:text-emerald-400">
-                  <span>GST ({calc.gstRate}%)</span>
-                  <span>{formatINR(calc.gstAmount)}</span>
-                </div>
-              ) : (
-                <div className="flex justify-between text-muted-foreground">
-                  <span>GST (0%)</span>
-                  <span>₹0</span>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">CGST ({cgst}%)</span>
+                <span className="font-medium">{formatINR(calc.cgstAmount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">SGST ({sgst}%)</span>
+                <span className="font-medium">{formatINR(calc.sgstAmount)}</span>
+              </div>
+              {calc.previousDue > 0 && (
+                <div className="flex justify-between text-red-700 dark:text-red-400">
+                  <span>Previous outstanding</span>
+                  <span className="font-medium">+{formatINR(calc.previousDue)}</span>
                 </div>
               )}
               <div className="flex justify-between font-bold text-sm">
@@ -493,6 +497,7 @@ export function EditBillDialog({
                 </span>
               </div>
             </div>
+
 
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 

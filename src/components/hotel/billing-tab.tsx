@@ -31,6 +31,7 @@ import { PrintableInvoice } from './printable-invoice'
 import { PrintableAdvanceReceipt } from './printable-advance-receipt'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, payableNow } from '@/lib/hotel-utils'
+import { splitGst } from '@/lib/gst'
 import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
 import {
@@ -270,7 +271,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
   )
   const { paged: pagedAdvance, controls: advanceControls } = usePagination(sortedAdvance as unknown as Booking[], 10)
 
-  const checkoutExportHeaders = ['Invoice', 'Date', 'Guest', 'Phone', 'Room', 'Actual Room', 'Billed Room', 'GST', 'Grand Total', 'Advance Applied', 'Paid at Checkout', 'Balance Due', 'Status']
+  const checkoutExportHeaders = ['Invoice', 'Date', 'Guest', 'Phone', 'Room', 'Actual Room', 'Billed Room', 'CGST', 'SGST', 'Previous Due', 'Grand Total', 'Advance Applied', 'Paid at Checkout', 'Balance Due', 'Status']
 
   function getCheckoutRowsData() {
     return (filteredBills as unknown as Bill[]).map((b) => [
@@ -281,7 +282,9 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
       b.roomNumber || b.booking?.room?.number || '',
       formatINR(b.actualRoomTotal),
       formatINR(b.billedRoomTotal),
-      formatINR(b.actualGst),
+      formatINR(splitGst(b).cgst),
+      formatINR(splitGst(b).sgst),
+      formatINR((b as unknown as { previousDue?: number }).previousDue || 0),
       formatINR(b.grandTotal),
       formatINR(b.advanceApplied),
       formatINR(paidOf(b) - (b.advanceApplied || 0)),
@@ -763,6 +766,16 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                               <Badge variant="outline" className="h-4 border-emerald-300 bg-emerald-50 px-1 text-[9px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
                                 SETTLED
                               </Badge>
+                            </div>
+                          )}
+                          {(b as unknown as { carriedToBillNumber?: string | null }).carriedToBillNumber && (
+                            <div className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                              Due moved to {(b as unknown as { carriedToBillNumber?: string }).carriedToBillNumber}
+                            </div>
+                          )}
+                          {((b as unknown as { previousDue?: number }).previousDue || 0) > 0 && (
+                            <div className="text-[11px] text-muted-foreground">
+                              Incl. previous due {formatINR((b as unknown as { previousDue?: number }).previousDue)}
                             </div>
                           )}
                         </TableCell>

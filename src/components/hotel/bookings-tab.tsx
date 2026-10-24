@@ -30,6 +30,8 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { BookingDialog } from './booking-dialog'
 import { GenerateBillDialog } from './generate-bill-dialog'
+import { PartPaymentDialog } from './part-payment-dialog'
+import { runWithAdminPin } from '@/lib/admin-pin'
 import { toast } from '@/hooks/use-toast'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
@@ -151,6 +153,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
   const [changeBooking, setChangeBooking] = useState<Booking | null>(null)
   const [newRoomId, setNewRoomId] = useState('')
   const [billBooking, setBillBooking] = useState<Booking | null>(null)
+  const [partPayBooking, setPartPayBooking] = useState<Booking | null>(null)
   const [deleteTargetBooking, setDeleteTargetBooking] = useState<Booking | null>(null)
 
   useEffect(() => {
@@ -289,10 +292,14 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
   async function action(booking: Booking, act: string, extra: Record<string, unknown> = {}) {
     setBusyId(booking.id + act)
     try {
-      await apiAs('/api/bookings', getCachedUser(), {
-        method: 'PATCH',
-        body: JSON.stringify({ id: booking.id, action: act, ...extra }),
-      })
+      // Check-in of a guest with dues from earlier stays asks for the Admin PIN and retries
+      const res = await runWithAdminPin((adminPin) =>
+        apiAs('/api/bookings', getCachedUser(), {
+          method: 'PATCH',
+          body: JSON.stringify({ id: booking.id, action: act, ...extra, ...(adminPin ? { adminPin } : {}) }),
+        })
+      )
+      if (res === null) return
       await load()
       onDataChanged()
     } catch (e) {
@@ -475,7 +482,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
               <SortableTh label="Check-In" sortKey="checkIn" sort={sort} onToggle={toggle} />
               <TableHead>Nights</TableHead>
               <TableHead>Rate</TableHead>
-              <TableHead>Advance</TableHead>
+              <TableHead>Paid (adv. + part)</TableHead>
               <SortableTh label="Status" sortKey="status" sort={sort} onToggle={toggle} />
               <TableHead>Payment</TableHead>
               <TableHead className="text-center">Actions</TableHead>
@@ -634,6 +641,15 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                         >
                           <XCircle className="h-3 w-3" /> Cancel
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="col-span-2 h-7 gap-1 px-2 text-xs w-full justify-center"
+                          disabled={busy}
+                          onClick={() => setPartPayBooking(b)}
+                        >
+                          <Wallet className="h-3 w-3" /> Receive Part Payment
+                        </Button>
                       </div>
                     )}
                     {b.status === 'BOOKED' && (
@@ -708,6 +724,16 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
       {controls}
 
       <BookingDialog open={newOpen} onOpenChange={setNewOpen} onSuccess={() => { load(); onDataChanged() }} />
+
+      <PartPaymentDialog
+        open={!!partPayBooking}
+        onOpenChange={(o) => !o && setPartPayBooking(null)}
+        booking={partPayBooking}
+        onSuccess={() => {
+          load()
+          onDataChanged()
+        }}
+      />
 
       <GenerateBillDialog
         open={!!billBooking}
