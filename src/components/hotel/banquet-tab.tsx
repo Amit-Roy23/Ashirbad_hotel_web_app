@@ -983,7 +983,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
 
         {/* ================= TAB 4: VENUES & HALLS ================= */}
         <TabsContent value="halls" className="mt-4 space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {halls.map((h) => (
               <Card key={h.id} className="overflow-hidden border-emerald-100 dark:border-emerald-950">
                 <CardContent className="p-4 space-y-3">

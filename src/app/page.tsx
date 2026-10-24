@@ -220,7 +220,7 @@ function Shell() {
     <div className="flex min-h-screen flex-col bg-background">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-3">
+        <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-2 px-3 py-3 sm:px-4 lg:px-6">
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="rounded-lg bg-emerald-600 p-1.5">
               <Hotel className="h-5 w-5 text-white" />
@@ -292,7 +292,7 @@ function Shell() {
 
         {/* Desktop tabs with scroll arrows */}
         <nav className="hidden border-t sm:block" aria-label="Main navigation">
-          <div className="mx-auto flex max-w-6xl items-center px-2">
+          <div className="mx-auto flex max-w-[1920px] items-center px-2 lg:px-4">
             <button
               type="button"
               onClick={() => scrollTabs('left')}
@@ -343,7 +343,7 @@ function Shell() {
       </header>
 
       {/* Content */}
-      <main className="mx-auto w-full max-w-6xl flex-1 px-3 pb-24 pt-4 sm:px-4 sm:pb-8">
+      <main className="mx-auto w-full max-w-[1920px] flex-1 px-3 pb-24 pt-4 sm:px-4 sm:pb-8 lg:px-6">
         {renderTab()}
       </main>
 

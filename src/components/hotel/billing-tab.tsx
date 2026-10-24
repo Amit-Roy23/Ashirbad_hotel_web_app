@@ -468,7 +468,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 No in-house guests currently staying.
               </div>
             ) : (
-              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
                 {inHouseBookings.map((b) => {
                   const estStay = b.days * b.ratePerDay
                   const foodTotal = (b.foodOrders || []).reduce((s, o) => s + o.total, 0)
