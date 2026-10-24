@@ -675,7 +675,7 @@ export function RestaurantTab({
               </div>
 
               {/* Visual Menu Cards Grid with Clickable Number Badges */}
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                 {filteredMenu.map((item) => {
                   const inCartQty = cart[item.id]?.quantity || 0
                   return (
@@ -1141,7 +1141,7 @@ export function RestaurantTab({
                   {menu.filter((m) => m.category === cat).length}
                 </span>
               </h4>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
                 {menu
                   .filter((m) => m.category === cat)
                   .map((item) => {

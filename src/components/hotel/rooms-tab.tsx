@@ -511,7 +511,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         Object.entries(grouped).map(([f, floorRooms]) => (
           <div key={f}>
             <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Floor {f}</h3>
-            <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-10">
+            <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-10 2xl:grid-cols-12">
               {floorRooms.map((room) => {
                 const opState = getRoomOperationalState(room)
                 // Light theme uses deep, clearly different colours per status; dark theme unchanged
