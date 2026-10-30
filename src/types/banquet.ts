@@ -30,11 +30,16 @@ export interface BanquetBooking {
   customerAddress?: string | null
   companyName?: string | null
   gstNumber?: string | null
+  idProof?: string | null
   eventName: string
   eventDate: string
   endDate?: string | null
+  days?: number
   slot: BanquetSlot | string
+  startTime?: string | null
+  endTime?: string | null
   guestCount: number
+  hallRatePerDay?: number
   hallRent: number
   foodRatePerPlate: number
   foodPackageName?: string | null

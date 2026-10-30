@@ -14,7 +14,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDate, exportCSV, printTableReport, sanitizePhone } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, exportCSV, printTableReport, sanitizePhone, matchesSearch } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { Loader2, Plus, Phone, IndianRupee, UserRound, ArrowRightLeft, Search, Trash2, Printer, Download } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
@@ -157,7 +157,7 @@ export function StaffTab({ refreshKey, onDataChanged }: { refreshKey: number; on
   const filteredStaff = useMemo(() => {
     const q = search.trim().toLowerCase()
     return staff.filter((s) => {
-      if (q && !`${s.name} ${s.phone || ''} ${s.role}`.toLowerCase().includes(q)) return false
+      if (q && !matchesSearch(q, [s.name, s.role], [s.phone])) return false
       if (roleFilter !== 'ALL' && s.role !== roleFilter) return false
       if (statusFilter === 'ACTIVE' && !s.active) return false
       if (statusFilter === 'INACTIVE' && s.active) return false

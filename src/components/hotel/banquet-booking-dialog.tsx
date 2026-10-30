@@ -21,10 +21,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { apiAs, formatINR, todayStr, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
+import { apiAs, formatINR, formatDate, todayStr, sanitizePhone, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking } from '@/types/banquet'
+import { MAX_BANQUET_DAYS, addDaysStr } from '@/lib/banquet-time'
 import {
   CalendarDays,
   Users,
@@ -49,7 +50,8 @@ interface BanquetBookingDialogProps {
   onOpenChange: (open: boolean) => void
   halls: BanquetHall[]
   booking?: BanquetBooking | null
-  onSuccess: () => void
+  /** booking = the saved booking; created = true for a new booking */
+  onSuccess: (booking?: BanquetBooking, created?: boolean) => void
 }
 
 const EVENT_PRESETS = [
@@ -70,7 +72,7 @@ const SLOTS = [
   { value: 'EVENING', label: 'Evening (06:00 PM – 11:30 PM)' },
   { value: 'MORNING', label: 'Morning (09:00 AM – 03:30 PM)' },
   { value: 'FULL_DAY', label: 'Full Day (09:00 AM – 11:30 PM)' },
-  { value: 'CUSTOM', label: 'Custom Hours' },
+  { value: 'CUSTOM', label: 'Custom Hours (set start & end time)' },
 ]
 
 export function BanquetBookingDialog({
@@ -101,6 +103,9 @@ export function BanquetBookingDialog({
   const [customEventName, setCustomEventName] = useState('')
   const [eventDate, setEventDate] = useState(todayStr())
   const [slot, setSlot] = useState('EVENING')
+  const [days, setDays] = useState('1')
+  const [startTime, setStartTime] = useState('10:00')
+  const [endTime, setEndTime] = useState('16:00')
   const [guestCount, setGuestCount] = useState('150')
   const [hallRent, setHallRent] = useState('25000')
   const [foodRatePerPlate, setFoodRatePerPlate] = useState('650')
@@ -133,18 +138,27 @@ export function BanquetBookingDialog({
       }
       setEventDate(booking.eventDate ? booking.eventDate.slice(0, 10) : todayStr())
       setSlot(booking.slot || 'EVENING')
+      setDays(String(booking.days || 1))
+      setStartTime(booking.startTime || '10:00')
+      setEndTime(booking.endTime || '16:00')
       setGuestCount(String(booking.guestCount || 100))
+      const savedId = parseGovId(booking.idProof)
+      setIdType(savedId.idType)
+      setIdNumber(savedId.idNumber)
 
       const hasRent = booking.hallRent !== null && booking.hallRent !== undefined ? Number(booking.hallRent) > 0 : true
       setIncludeVenueRent(hasRent)
-      setHallRent(String(booking.hallRent ?? (hasRent ? 25000 : 0)))
+      // Hall rent is per day; a booking saved with rent off keeps the hall's base rate ready for switching it on
+      const hallBase = halls.find((h) => h.id === booking.hallId)?.baseRate || 20000
+      setHallRent(String(hasRent ? booking.hallRatePerDay || booking.hallRent : hallBase))
 
       const hasFood =
         (booking.foodTotal !== null && booking.foodTotal !== undefined && Number(booking.foodTotal) > 0) ||
         (booking.foodRatePerPlate !== null && booking.foodRatePerPlate !== undefined && Number(booking.foodRatePerPlate) > 0)
       setIncludeCatering(hasFood)
-      setFoodRatePerPlate(String(booking.foodRatePerPlate ?? (hasFood ? 650 : 0)))
-      setFoodPackageName(booking.foodPackageName || (hasFood ? 'Standard Buffet' : ''))
+      // With catering off the saved rate is 0: keep a default ready so switching it on adds food
+      setFoodRatePerPlate(String(hasFood && Number(booking.foodRatePerPlate) > 0 ? booking.foodRatePerPlate : 650))
+      setFoodPackageName(booking.foodPackageName || 'Standard Buffet')
 
       setDecorCharges(String(booking.decorCharges || 0))
       setDecorOn(booking.decorEnabled !== false || Number(booking.extraCharges) > 0 || Number(booking.discount) > 0)
@@ -174,6 +188,9 @@ export function BanquetBookingDialog({
       setCustomEventName('')
       setEventDate(todayStr())
       setSlot('EVENING')
+      setDays('1')
+      setStartTime('10:00')
+      setEndTime('16:00')
       setFoodRatePerPlate('650')
       setFoodPackageName('Royal Buffet')
       setDecorCharges('10000')
@@ -201,9 +218,14 @@ export function BanquetBookingDialog({
 
   // Live total calculations with toggle logic
   const numGuests = Math.max(0, parseInt(guestCount) || 0)
-  const numHallRent = includeVenueRent ? Math.max(0, parseFloat(hallRent) || 0) : 0
+  const numDays = Math.min(MAX_BANQUET_DAYS, Math.max(1, parseInt(days) || 1))
+  const lastDay = eventDate ? addDaysStr(eventDate, numDays - 1) : ''
+  // Hall rent is entered per day
+  const numHallRatePerDay = includeVenueRent ? Math.max(0, parseFloat(hallRent) || 0) : 0
+  const numHallRent = Math.round(numHallRatePerDay * numDays * 100) / 100
   const numFoodPerPlate = includeCatering ? Math.max(0, parseFloat(foodRatePerPlate) || 0) : 0
-  const totalFood = includeCatering ? numGuests * numFoodPerPlate : 0
+  // Plates for every guest on every day
+  const totalFood = includeCatering ? Math.round(numGuests * numFoodPerPlate * numDays * 100) / 100 : 0
   // "Decor, AV Services & Discounts" switched off = no decor, no sound/AV extras and no discount
   const numDecor = decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
   const numExtra = decorOn ? Math.max(0, parseFloat(extraCharges) || 0) : 0
@@ -223,6 +245,10 @@ export function BanquetBookingDialog({
       toast({ variant: 'destructive', title: 'Required Fields', description: 'Customer Name and Phone Number are required.' })
       return
     }
+    if (customerPhone.replace(/\D/g, '').length !== 10) {
+      toast({ variant: 'destructive', title: 'Phone Number', description: 'Enter a valid 10-digit mobile number for the host.' })
+      return
+    }
 
     const idCheck = validateGovId(idType, idNumber)
     if (!idCheck.valid) {
@@ -234,12 +260,18 @@ export function BanquetBookingDialog({
       return
     }
 
+    if (slot === 'CUSTOM' && (!startTime || !endTime || endTime <= startTime)) {
+      toast({ variant: 'destructive', title: 'Check the time', description: 'End time must be after the start time.' })
+      return
+    }
+
     const finalEventName = eventName === 'Other' ? customEventName.trim() || 'Special Event' : eventName
+    const schedule = { days: numDays, slot, startTime, endTime, hallRatePerDay: numHallRatePerDay, idProof: idCheck.formatted }
 
     setBusy(true)
     try {
       if (isEditing && booking) {
-        await apiAs('/api/banquet-bookings', getCachedUser(), {
+        const saved = await apiAs<BanquetBooking>('/api/banquet-bookings', getCachedUser(), {
           method: 'PATCH',
           body: JSON.stringify({
             id: booking.id,
@@ -252,7 +284,7 @@ export function BanquetBookingDialog({
             gstNumber,
             eventName: finalEventName,
             eventDate,
-            slot,
+            ...schedule,
             guestCount: numGuests,
             hallRent: numHallRent,
             foodRatePerPlate: numFoodPerPlate,
@@ -270,8 +302,9 @@ export function BanquetBookingDialog({
           }),
         })
         toast({ variant: 'success', title: 'Booking Updated', description: `Banquet booking for ${customerName} updated.` })
+        onSuccess(saved, false)
       } else {
-        await apiAs('/api/banquet-bookings', getCachedUser(), {
+        const saved = await apiAs<BanquetBooking>('/api/banquet-bookings', getCachedUser(), {
           method: 'POST',
           body: JSON.stringify({
             hallId,
@@ -283,7 +316,7 @@ export function BanquetBookingDialog({
             gstNumber,
             eventName: finalEventName,
             eventDate,
-            slot,
+            ...schedule,
             guestCount: numGuests,
             hallRent: numHallRent,
             foodRatePerPlate: numFoodPerPlate,
@@ -300,8 +333,8 @@ export function BanquetBookingDialog({
           }),
         })
         toast({ variant: 'success', title: 'Banquet Booked', description: `Banquet booking confirmed for ${customerName}.` })
+        onSuccess(saved, true)
       }
-      onSuccess()
       onOpenChange(false)
     } catch (err) {
       toast({
@@ -370,7 +403,11 @@ export function BanquetBookingDialog({
                   <Switch
                     id="venue-rent-toggle"
                     checked={includeVenueRent}
-                    onCheckedChange={setIncludeVenueRent}
+                    onCheckedChange={(on) => {
+                      setIncludeVenueRent(on)
+                      // Switching rent back on with no rate: start from the hall's base rate
+                      if (on && !(parseFloat(hallRent) > 0)) setHallRent(String(selectedHallObj?.baseRate || 20000))
+                    }}
                   />
                   <Label
                     htmlFor="venue-rent-toggle"
@@ -434,6 +471,47 @@ export function BanquetBookingDialog({
                   </SelectContent>
                 </Select>
               </div>
+
+              {/* Number of days */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="bq-days" className="text-xs font-medium text-foreground">
+                    Number of Days <span className="text-destructive">*</span>
+                  </Label>
+                  {numDays > 1 && lastDay && (
+                    <span className="text-[10px] text-muted-foreground">Ends {formatDate(lastDay)}</span>
+                  )}
+                </div>
+                <Input
+                  id="bq-days"
+                  type="number"
+                  min="1"
+                  max={MAX_BANQUET_DAYS}
+                  value={days}
+                  onChange={(e) => setDays(e.target.value)}
+                  className="h-9 text-xs"
+                  required
+                />
+              </div>
+
+              {/* Custom hours */}
+              {slot === 'CUSTOM' && (
+                <div className="grid grid-cols-2 gap-2 sm:col-span-2 lg:col-span-1">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="bq-start" className="text-xs font-medium text-foreground">
+                      Start Time <span className="text-destructive">*</span>
+                    </Label>
+                    <Input id="bq-start" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="h-9 text-xs" required />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="bq-end" className="text-xs font-medium text-foreground">
+                      End Time <span className="text-destructive">*</span>
+                    </Label>
+                    <Input id="bq-end" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="h-9 text-xs" required />
+                  </div>
+                  {endTime <= startTime && <p className="col-span-2 text-[11px] text-red-600">End time must be after the start time</p>}
+                </div>
+              )}
 
               {/* Expected Guests */}
               <div className="space-y-1.5">
@@ -500,7 +578,7 @@ export function BanquetBookingDialog({
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-medium text-foreground">
-                    Hall / Venue Rent (₹) {includeVenueRent && <span className="text-destructive">*</span>}
+                    Hall Rent per Day (₹) {includeVenueRent && <span className="text-destructive">*</span>}
                   </Label>
                   {selectedHallObj && (
                     <span className="text-[10px] text-muted-foreground">
@@ -518,6 +596,13 @@ export function BanquetBookingDialog({
                     className="h-9 text-xs font-mono font-bold text-foreground"
                     required={includeVenueRent}
                   />
+                ) : null}
+                {includeVenueRent ? (
+                  numDays > 1 && (
+                    <p className="text-[10px] text-muted-foreground">
+                      {formatINR(numHallRatePerDay)} × {numDays} days = <b className="text-foreground">{formatINR(numHallRent)}</b>
+                    </p>
+                  )
                 ) : (
                   <div className="flex h-9 items-center justify-between rounded-md border border-dashed bg-muted/40 px-3 text-xs text-muted-foreground">
                     <span>Rent Excluded</span>
@@ -559,8 +644,9 @@ export function BanquetBookingDialog({
                 </Label>
                 <Input
                   type="tel"
+                  inputMode="numeric"
                   value={customerPhone}
-                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  onChange={(e) => setCustomerPhone(sanitizePhone(e.target.value))}
                   placeholder="10-digit primary mobile"
                   className="h-9 text-xs font-mono"
                   required
@@ -714,7 +800,7 @@ export function BanquetBookingDialog({
                     </h3>
                     <p className="text-[11px] text-muted-foreground">
                       {includeCatering
-                        ? `In-house dining for ${numGuests} guest(s) @ ₹${numFoodPerPlate}/plate`
+                        ? `In-house dining for ${numGuests} guest(s) @ ₹${numFoodPerPlate}/plate${numDays > 1 ? ` for ${numDays} days` : ''}`
                         : 'Catering turned off / external catering (₹0)'}
                     </p>
                   </div>
@@ -735,7 +821,12 @@ export function BanquetBookingDialog({
                     <Switch
                       id="catering-package-toggle"
                       checked={includeCatering}
-                      onCheckedChange={setIncludeCatering}
+                      onCheckedChange={(on) => {
+                        setIncludeCatering(on)
+                        // Switching catering back on with no rate: start from a default plate rate
+                        if (on && !(parseFloat(foodRatePerPlate) > 0)) setFoodRatePerPlate('650')
+                        if (on && !foodPackageName.trim()) setFoodPackageName('Standard Buffet')
+                      }}
                     />
                     <Label
                       htmlFor="catering-package-toggle"
@@ -777,7 +868,7 @@ export function BanquetBookingDialog({
 
                   <div className="space-y-1.5">
                     <Label className="text-xs font-medium text-foreground">
-                      Catering Subtotal <span className="text-[10px] text-muted-foreground">({numGuests} × ₹{numFoodPerPlate})</span>
+                      Catering Subtotal <span className="text-[10px] text-muted-foreground">({numGuests} guests × ₹{numFoodPerPlate}{numDays > 1 ? ` × ${numDays} days` : ''})</span>
                     </Label>
                     <div className="flex h-9 items-center justify-between rounded-md border bg-background/80 px-3 text-xs font-mono font-bold text-foreground">
                       <span>Total Food:</span>

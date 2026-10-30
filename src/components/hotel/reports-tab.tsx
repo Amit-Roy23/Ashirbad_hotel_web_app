@@ -30,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr, matchesSearch } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import {
@@ -296,7 +296,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
     const q = gstSearch.toLowerCase().trim()
     return (
       r.guestName.toLowerCase().includes(q) ||
-      r.phone.toLowerCase().includes(q) ||
+      matchesSearch(q, [], [r.phone]) ||
       (r.email && r.email.toLowerCase().includes(q)) ||
       (r.company && r.company.toLowerCase().includes(q)) ||
       (r.guestGst && r.guestGst.toLowerCase().includes(q)) ||

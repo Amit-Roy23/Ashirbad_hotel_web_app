@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { istDateStr } from '@/lib/stay'
 import { computeGst, isValidHalfRate } from '@/lib/gst'
 import { BanquetBooking, BanquetBill, BanquetHall, BanquetStats } from '@/types/banquet'
+import { MAX_BANQUET_DAYS, addDaysStr, isValidTime, slotLabel, slotTimes, toMinutes, windowsOverlap } from '@/lib/banquet-time'
 import crypto from 'crypto'
 
 function genId(): string {
@@ -26,33 +27,75 @@ async function nextNumber(table: 'BanquetBooking' | 'BanquetBill', column: 'book
 
 const HOLDING_STATUSES = ['CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
 
-function slotsClash(a: string, b: string) {
-  return a === b || a === 'FULL_DAY' || b === 'FULL_DAY'
+/** Validated days, slot and daily times of a booking */
+function normalizeSchedule(input: { days?: unknown; slot?: unknown; startTime?: unknown; endTime?: unknown }) {
+  const days = Math.floor(Number(input.days) || 1)
+  if (days < 1 || days > MAX_BANQUET_DAYS) throw new BanquetError(`A booking can be for 1 to ${MAX_BANQUET_DAYS} days`)
+  const slot = ['MORNING', 'EVENING', 'FULL_DAY', 'CUSTOM'].includes(String(input.slot)) ? String(input.slot) : 'EVENING'
+  if (slot === 'CUSTOM') {
+    if (!isValidTime(input.startTime) || !isValidTime(input.endTime)) {
+      throw new BanquetError('Enter the start and end time for custom hours')
+    }
+    if (toMinutes(input.endTime) <= toMinutes(input.startTime)) {
+      throw new BanquetError('End time must be after the start time (same day)')
+    }
+  }
+  const { start, end } = slotTimes(slot, input.startTime as string, input.endTime as string)
+  return { days, slot, startTime: start, endTime: end }
 }
 
-/** A hall can host one event per slot per day (FULL_DAY blocks the whole day) */
-async function assertHallAvailable(opts: { hallId: string; eventDate: Date; slot: string; status: string; excludeId?: string }) {
+/** Event date (IST noon) and the last day of a booking of `days` days */
+function eventDates(eventDate: string | Date, days: number) {
+  const dayStr = typeof eventDate === 'string' && eventDate.length <= 10 ? eventDate : istDateStr(new Date(eventDate))
+  const start = new Date(`${dayStr}T12:00:00+05:30`)
+  if (isNaN(start.getTime())) throw new BanquetError('Valid event date is required')
+  const end = new Date(`${addDaysStr(dayStr, days - 1)}T12:00:00+05:30`)
+  return { dayStr, start, end }
+}
+
+/**
+ * A hall holds one event at a time: two bookings clash when they share a day and their daily
+ * time windows overlap (Morning and Evening on the same day do not clash; Full Day clashes with both).
+ */
+async function assertHallAvailable(opts: {
+  hallId: string
+  eventDate: Date
+  days: number
+  slot: string
+  startTime: string
+  endTime: string
+  status: string
+  excludeId?: string
+}) {
   const hallRows = await prisma.$queryRawUnsafe<any[]>('SELECT "name", "status" FROM "BanquetHall" WHERE "id" = $1', opts.hallId)
   const hall = hallRows?.[0]
   if (!hall) throw new BanquetError('Selected banquet hall not found')
   if (!HOLDING_STATUSES.includes(opts.status)) return
   if (hall.status === 'MAINTENANCE') throw new BanquetError(`${hall.name} is under maintenance`)
 
-  const dayStr = istDateStr(opts.eventDate)
+  const firstDay = istDateStr(opts.eventDate)
+  const myDays = new Set(Array.from({ length: opts.days }, (_, i) => addDaysStr(firstDay, i)))
+  const lastDay = addDaysStr(firstDay, opts.days - 1)
   const others = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT "id", "bookingNumber", "customerName", "eventDate", "slot" FROM "BanquetBooking"
+    `SELECT "id", "bookingNumber", "customerName", "eventDate", "days", "slot", "startTime", "endTime" FROM "BanquetBooking"
      WHERE "hallId" = $1 AND "status" IN ('CONFIRMED', 'IN_PROGRESS', 'COMPLETED') AND "id" <> $2
-       AND "eventDate" BETWEEN $3 AND $4`,
+       AND "eventDate" <= $3 AND "eventDate" >= $4`,
     opts.hallId,
     opts.excludeId || '',
-    new Date(opts.eventDate.getTime() - 2 * 24 * 60 * 60 * 1000),
-    new Date(opts.eventDate.getTime() + 2 * 24 * 60 * 60 * 1000)
+    new Date(`${lastDay}T23:59:59+05:30`),
+    new Date(new Date(`${firstDay}T00:00:00+05:30`).getTime() - MAX_BANQUET_DAYS * 24 * 60 * 60 * 1000)
   )
-  const clash = others.find((o) => istDateStr(o.eventDate) === dayStr && slotsClash(o.slot, opts.slot))
-  if (clash) {
-    throw new BanquetError(
-      `${hall.name} is already booked on ${dayStr} (${clash.slot}) for ${clash.customerName} — ${clash.bookingNumber}`
-    )
+  const mine = { start: opts.startTime, end: opts.endTime }
+  for (const o of others) {
+    const oFirst = istDateStr(new Date(o.eventDate))
+    const oDays = Math.max(1, Number(o.days) || 1)
+    const shared = Array.from({ length: oDays }, (_, i) => addDaysStr(oFirst, i)).find((d) => myDays.has(d))
+    if (!shared) continue
+    if (windowsOverlap(mine, slotTimes(o.slot, o.startTime, o.endTime))) {
+      throw new BanquetError(
+        `${hall.name} is already booked on ${shared} (${slotLabel(o.slot, o.startTime, o.endTime)}) for ${o.customerName} — ${o.bookingNumber}`
+      )
+    }
   }
 }
 
@@ -333,11 +376,17 @@ export async function getBanquetBookings(query?: {
     customerAddress: b.customerAddress,
     companyName: b.companyName,
     gstNumber: b.gstNumber,
+    idProof: b.idProof || null,
     eventName: b.eventName,
     eventDate: b.eventDate?.toISOString?.() || b.eventDate,
     endDate: b.endDate?.toISOString?.() || b.endDate,
+    days: Math.max(1, Number(b.days) || 1),
     slot: b.slot,
+    startTime: slotTimes(b.slot, b.startTime, b.endTime).start,
+    endTime: slotTimes(b.slot, b.startTime, b.endTime).end,
     guestCount: Number(b.guestCount || 0),
+    // Older bookings have no per-day rate: their whole rent was for one day
+    hallRatePerDay: Number(b.hallRatePerDay) > 0 ? Number(b.hallRatePerDay) : Number(b.hallRent || 0) / Math.max(1, Number(b.days) || 1),
     hallRent: Number(b.hallRent || 0),
     foodRatePerPlate: Number(b.foodRatePerPlate || 0),
     foodPackageName: b.foodPackageName,
@@ -376,11 +425,16 @@ export async function createBanquetBooking(
     customerAddress?: string
     companyName?: string
     gstNumber?: string
+    idProof?: string
     eventName: string
     eventDate: string
     endDate?: string
+    days?: number
     slot?: string
+    startTime?: string
+    endTime?: string
     guestCount?: number
+    hallRatePerDay?: number
     hallRent?: number
     foodRatePerPlate?: number
     foodPackageName?: string
@@ -402,10 +456,19 @@ export async function createBanquetBooking(
   const id = genId()
   const now = new Date()
 
+  const phoneDigits = String(data.customerPhone || '').replace(/\D/g, '')
+  if (phoneDigits.length !== 10) throw new BanquetError('A valid 10-digit mobile number is required for the host')
+  if (!String(data.customerName || '').trim()) throw new BanquetError('Customer / host name is required')
+  const schedule = normalizeSchedule(data)
+  const { start: eventDateObj, end: endDateObj } = eventDates(data.eventDate, schedule.days)
   const guestCount = Number(data.guestCount) || 100
-  const hallRent = Number(data.hallRent) || 0
+  // Hall rent is per day; older callers send only the total
+  const hallRatePerDay =
+    data.hallRatePerDay !== undefined ? Math.max(0, Number(data.hallRatePerDay) || 0) : Math.max(0, Number(data.hallRent) || 0) / schedule.days
+  const hallRent = Math.round(hallRatePerDay * schedule.days * 100) / 100
   const foodRatePerPlate = Number(data.foodRatePerPlate) || 0
-  const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : foodRatePerPlate * guestCount
+  // Catering: plates for every guest on every day of the booking
+  const foodTotal = foodRatePerPlate > 0 ? Math.round(foodRatePerPlate * guestCount * schedule.days * 100) / 100 : 0
   // The "Decor, AV Services & Discounts" section can be switched off for an event;
   // then decor, sound/AV extras and the discount all carry nothing
   const decorEnabled = data.decorEnabled !== false
@@ -419,12 +482,9 @@ export async function createBanquetBooking(
   const paymentStatus =
     advancePaid >= totalEstimated && totalEstimated > 0 ? 'PAID' : advancePaid > 0 ? 'PARTIAL' : 'UNPAID'
 
-  const eventDateObj = new Date(data.eventDate.length <= 10 ? data.eventDate + 'T12:00:00' : data.eventDate)
-  const endDateObj = data.endDate ? new Date(data.endDate) : null
-  if (isNaN(eventDateObj.getTime())) throw new BanquetError('Valid event date is required')
   // Only an enquiry can be created without holding the hall; anything else is a confirmed booking
   const status = data.status === 'ENQUIRY' ? 'ENQUIRY' : 'CONFIRMED'
-  await assertHallAvailable({ hallId: data.hallId, eventDate: eventDateObj, slot: data.slot || 'EVENING', status })
+  await assertHallAvailable({ hallId: data.hallId, eventDate: eventDateObj, ...schedule, status })
 
   await prisma.$executeRawUnsafe(
     `INSERT INTO "BanquetBooking" (
@@ -440,7 +500,7 @@ export async function createBanquetBooking(
     bookingNumber,
     data.hallId,
     data.customerName.trim(),
-    data.customerPhone.trim(),
+    phoneDigits,
     data.customerEmail || null,
     data.customerAddress || null,
     data.companyName || null,
@@ -448,7 +508,7 @@ export async function createBanquetBooking(
     data.eventName.trim(),
     eventDateObj,
     endDateObj,
-    data.slot || 'EVENING',
+    schedule.slot,
     guestCount,
     hallRent,
     foodRatePerPlate,
@@ -486,7 +546,16 @@ export async function createBanquetBooking(
     }
   }
 
-  await prisma.$executeRawUnsafe('UPDATE "BanquetBooking" SET "decorEnabled" = $2 WHERE "id" = $1', id, decorEnabled)
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBooking" SET "decorEnabled" = $2, "days" = $3, "startTime" = $4, "endTime" = $5, "hallRatePerDay" = $6, "idProof" = $7 WHERE "id" = $1',
+    id,
+    decorEnabled,
+    schedule.days,
+    schedule.startTime,
+    schedule.endTime,
+    hallRatePerDay,
+    data.idProof ? String(data.idProof).trim() : null
+  )
 
   const created = await getBanquetBookings({ search: bookingNumber })
   return created[0] || { id, bookingNumber, customerName: data.customerName, totalEstimated, advancePaid }
@@ -502,12 +571,20 @@ export async function updateBanquetBooking(
   if (!existing) throw new BanquetError('Banquet booking not found')
 
   const nextHallId = data.hallId || existing.hallId
-  const nextEventDate = data.eventDate
-    ? new Date(String(data.eventDate).length <= 10 ? String(data.eventDate) + 'T12:00:00' : String(data.eventDate))
-    : new Date(existing.eventDate)
   const nextSlot = data.slot || existing.slot
+  const schedule = normalizeSchedule({
+    days: data.days ?? existing.days,
+    slot: nextSlot,
+    // A slot change without new times keeps custom hours only when still custom
+    startTime: data.startTime ?? existing.startTime,
+    endTime: data.endTime ?? existing.endTime,
+  })
+  const { start: nextEventDate, end: nextEndDate } = eventDates(
+    data.eventDate ? String(data.eventDate) : new Date(existing.eventDate),
+    schedule.days
+  )
   const nextStatus = data.status || existing.status
-  await assertHallAvailable({ hallId: nextHallId, eventDate: nextEventDate, slot: nextSlot, status: nextStatus, excludeId: id })
+  await assertHallAvailable({ hallId: nextHallId, eventDate: nextEventDate, ...schedule, status: nextStatus, excludeId: id })
 
   // An edited advance (absolute advancePaid) is money in/out too: record the difference in the ledger
   let advanceAddition = Number(data.advanceAddition) || 0
@@ -516,9 +593,27 @@ export async function updateBanquetBooking(
   }
   const newAdvance = Math.max(0, Number(existing.advancePaid) + advanceAddition)
 
-  const hallRent = data.hallRent !== undefined ? Number(data.hallRent) : Number(existing.hallRent)
+  const oldDays = Math.max(1, Number(existing.days) || 1)
+  const existingRate = Number(existing.hallRatePerDay) > 0 ? Number(existing.hallRatePerDay) : Number(existing.hallRent) / oldDays
+  const hallRatePerDay =
+    data.hallRatePerDay !== undefined
+      ? Math.max(0, Number(data.hallRatePerDay) || 0)
+      : data.hallRent !== undefined
+        ? Math.max(0, Number(data.hallRent) || 0) / schedule.days
+        : existingRate
+  const hallRent = Math.round(hallRatePerDay * schedule.days * 100) / 100
   const guestCount = data.guestCount !== undefined ? Number(data.guestCount) : Number(existing.guestCount)
-  const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : Number(existing.foodTotal)
+  const foodRate = data.foodRatePerPlate !== undefined ? Number(data.foodRatePerPlate) || 0 : Number(existing.foodRatePerPlate) || 0
+  // Catering follows the rate x guests x days whenever any of them is known; old bookings without a
+  // rate keep their stored food total
+  const foodTotal =
+    foodRate > 0
+      ? Math.round(foodRate * guestCount * schedule.days * 100) / 100
+      : data.foodRatePerPlate !== undefined
+        ? 0
+        : data.foodTotal !== undefined
+          ? Number(data.foodTotal)
+          : Number(existing.foodTotal)
   const decorEnabled =
     (data as { decorEnabled?: boolean }).decorEnabled !== undefined
       ? (data as { decorEnabled?: boolean }).decorEnabled !== false
@@ -555,9 +650,11 @@ export async function updateBanquetBooking(
     updates.push(`"customerName" = $${pIdx++}`)
     params.push(data.customerName.trim())
   }
-  if (data.customerPhone) {
+  if (data.customerPhone !== undefined) {
+    const digits = String(data.customerPhone).replace(/\D/g, '')
+    if (digits.length !== 10) throw new BanquetError('A valid 10-digit mobile number is required for the host')
     updates.push(`"customerPhone" = $${pIdx++}`)
-    params.push(data.customerPhone.trim())
+    params.push(digits)
   }
   if (data.customerEmail !== undefined) {
     updates.push(`"customerEmail" = $${pIdx++}`)
@@ -579,17 +676,23 @@ export async function updateBanquetBooking(
     updates.push(`"eventName" = $${pIdx++}`)
     params.push(data.eventName.trim())
   }
-  if (data.eventDate) {
-    updates.push(`"eventDate" = $${pIdx++}`)
-    params.push(new Date(String(data.eventDate).length <= 10 ? String(data.eventDate) + 'T12:00:00' : String(data.eventDate)))
-  }
-  if (data.endDate !== undefined) {
-    updates.push(`"endDate" = $${pIdx++}`)
-    params.push(data.endDate ? new Date(String(data.endDate)) : null)
-  }
-  if (data.slot) {
-    updates.push(`"slot" = $${pIdx++}`)
-    params.push(data.slot)
+  updates.push(`"eventDate" = $${pIdx++}`)
+  params.push(nextEventDate)
+  updates.push(`"endDate" = $${pIdx++}`)
+  params.push(nextEndDate)
+  updates.push(`"days" = $${pIdx++}`)
+  params.push(schedule.days)
+  updates.push(`"slot" = $${pIdx++}`)
+  params.push(schedule.slot)
+  updates.push(`"startTime" = $${pIdx++}`)
+  params.push(schedule.startTime)
+  updates.push(`"endTime" = $${pIdx++}`)
+  params.push(schedule.endTime)
+  updates.push(`"hallRatePerDay" = $${pIdx++}`)
+  params.push(hallRatePerDay)
+  if ((data as { idProof?: string }).idProof !== undefined) {
+    updates.push(`"idProof" = $${pIdx++}`)
+    params.push((data as { idProof?: string }).idProof || null)
   }
   if (data.hallId) {
     updates.push(`"hallId" = $${pIdx++}`)
@@ -599,22 +702,18 @@ export async function updateBanquetBooking(
     updates.push(`"guestCount" = $${pIdx++}`)
     params.push(guestCount)
   }
-  if (data.hallRent !== undefined) {
-    updates.push(`"hallRent" = $${pIdx++}`)
-    params.push(hallRent)
-  }
+  updates.push(`"hallRent" = $${pIdx++}`)
+  params.push(hallRent)
   if (data.foodRatePerPlate !== undefined) {
     updates.push(`"foodRatePerPlate" = $${pIdx++}`)
-    params.push(Number(data.foodRatePerPlate))
+    params.push(foodRate)
   }
   if (data.foodPackageName !== undefined) {
     updates.push(`"foodPackageName" = $${pIdx++}`)
     params.push(data.foodPackageName)
   }
-  if (data.foodTotal !== undefined) {
-    updates.push(`"foodTotal" = $${pIdx++}`)
-    params.push(foodTotal)
-  }
+  updates.push(`"foodTotal" = $${pIdx++}`)
+  params.push(foodTotal)
   if (data.decorCharges !== undefined || !decorEnabled) {
     updates.push(`"decorCharges" = $${pIdx++}`)
     params.push(decorCharges)
@@ -940,7 +1039,8 @@ export async function createBanquetBill(
     booking.gstNumber || null,
     booking.eventName,
     booking.hall_name || 'Banquet Hall',
-    booking.slot,
+    // Printed on the invoice, e.g. "2 days · Custom · 10:00 AM – 4:00 PM"
+    `${Number(booking.days) > 1 ? `${booking.days} days · ` : ''}${slotLabel(booking.slot, booking.startTime, booking.endTime)}`,
     Number(booking.guestCount || 100),
     hallRent,
     foodCharges,

@@ -3,7 +3,7 @@
 import * as React from 'react'
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { BedDouble, Search, UserRound, ReceiptText, ClipboardList, Loader2, ArrowRight } from 'lucide-react'
-import { formatINR, formatDate } from '@/lib/hotel-utils'
+import { formatINR, formatDate, matchesSearch } from '@/lib/hotel-utils'
 
 interface GuestHit {
   id: string
@@ -105,7 +105,7 @@ export function GlobalSearch({
     const idx = localIndexRef.current || globalIndexCache || EMPTY
 
     const guests = (idx.guests || [])
-      .filter((g) => `${g.name} ${g.phone} ${g.company || ''}`.toLowerCase().includes(q))
+      .filter((g) => matchesSearch(q, [g.name, g.company], [g.phone]))
       .slice(0, 8)
 
     const rooms = (idx.rooms || [])
@@ -113,11 +113,11 @@ export function GlobalSearch({
       .slice(0, 8)
 
     const bookings = (idx.bookings || [])
-      .filter((b) => `${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.room?.number || ''} ${b.id || ''}`.toLowerCase().includes(q))
+      .filter((b) => matchesSearch(q, [b.guest?.name, b.room?.number, b.id], [b.guest?.phone]))
       .slice(0, 8)
 
     const bills = (idx.bills || [])
-      .filter((b) => `${b.billNumber} ${b.booking?.guest?.name || ''} ${b.booking?.room?.number || ''}`.toLowerCase().includes(q))
+      .filter((b) => matchesSearch(q, [b.billNumber, b.booking?.guest?.name, b.booking?.room?.number]))
       .slice(0, 8)
 
     return { guests, rooms, bookings, bills }

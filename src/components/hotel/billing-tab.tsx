@@ -30,7 +30,7 @@ import { EditAdvanceBookingDialog } from './edit-advance-booking-dialog'
 import { PrintableInvoice } from './printable-invoice'
 import { PrintableAdvanceReceipt } from './printable-advance-receipt'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, payableNow } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, payableNow, matchesSearch } from '@/lib/hotel-utils'
 import { splitGst } from '@/lib/gst'
 import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
@@ -230,8 +230,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
     const q = search.trim().toLowerCase()
     return bills.filter((b) => {
       if (q) {
-        const hay = `${b.billNumber} ${b.booking?.guest?.name || ''} ${b.booking?.guest?.phone || ''} ${b.roomNumber || b.booking?.room?.number || ''}`.toLowerCase()
-        if (!hay.includes(q)) return false
+        if (!matchesSearch(q, [b.billNumber, b.booking?.guest?.name, b.roomNumber || b.booking?.room?.number], [b.booking?.guest?.phone])) return false
       }
       if (from && new Date(b.createdAt).toISOString().slice(0, 10) < from) return false
       if (to && new Date(b.createdAt).toISOString().slice(0, 10) > to) return false
@@ -255,8 +254,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
     const q = advSearch.trim().toLowerCase()
     return advanceBookings.filter((b) => {
       if (q) {
-        const hay = `${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.room?.number || ''} ${b.guest?.company || ''} ADV-${b.id}`.toLowerCase()
-        if (!hay.includes(q)) return false
+        if (!matchesSearch(q, [b.guest?.name, b.room?.number, b.guest?.company, `ADV-${b.id}`], [b.guest?.phone])) return false
       }
       const created = b.createdAt ? new Date(b.createdAt).toISOString().slice(0, 10) : ''
       if (advFrom && created && created < advFrom) return false

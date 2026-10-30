@@ -35,7 +35,7 @@ import { runWithAdminPin } from '@/lib/admin-pin'
 import { toast } from '@/hooks/use-toast'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState, matchesSearch } from '@/lib/hotel-utils'
 import { calcNights, nextAutoExtensionAt, istDateStr } from '@/lib/stay'
 import { Loader2, UserPlus, LogIn, CalendarClock, XCircle, ArrowLeftRight, Wallet, Pencil, Save, Trash2, AlertTriangle, Clock, ShieldAlert, History, Eye, Phone, Info } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
@@ -240,7 +240,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return bookings.filter((b) => {
-      if (q && !(`${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.guest?.company || ''} ${b.room?.number || ''} ${b.id || ''}`.toLowerCase().includes(q))) return false
+      if (q && !matchesSearch(q, [b.guest?.name, b.guest?.company, b.room?.number, b.id], [b.guest?.phone])) return false
       if (status !== 'ALL' && b.status !== status) return false
       if (paymentStatus !== 'ALL') {
         const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01

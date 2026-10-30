@@ -140,6 +140,11 @@ function ensureSchema(): Promise<void> {
       `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "cgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
       `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "sgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
       `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "decorEnabled" BOOLEAN NOT NULL DEFAULT true`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "days" INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "startTime" TEXT`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "endTime" TEXT`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "hallRatePerDay" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "idProof" TEXT`,
       // Inventory (same definition as prisma/schema.prisma)
       `CREATE TABLE IF NOT EXISTS "InventoryItem" (
         "id" TEXT NOT NULL,
@@ -619,9 +624,13 @@ async function listRooms(req: NextRequest) {
   return NextResponse.json(filtered)
 }
 
-async function createRoom(body: Record<string, unknown>) {
+async function createRoom(req: NextRequest, body: Record<string, unknown>, user: RequestUser) {
   const { number, floor, type, capacity, rate, notes } = body
   if (!number) return NextResponse.json({ error: 'Room number required' }, { status: 400 })
+  const admin = await verifyAdminAuth(req, body)
+  if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to add a room' }, { status: 403 })
+  const cap = parseInt(String(capacity ?? 2)) || 2
+  if (cap < 1 || cap > 10) return NextResponse.json({ error: 'Beds / capacity must be between 1 and 10' }, { status: 400 })
   const cleanNumber = String(number).replace(/\D/g, '').trim()
   if (!cleanNumber) return NextResponse.json({ error: 'Room number must only contain digits' }, { status: 400 })
   const exists = await prisma.room.findUnique({ where: { number: cleanNumber } })
@@ -631,17 +640,41 @@ async function createRoom(body: Record<string, unknown>) {
       number: cleanNumber,
       floor: floor ? String(floor) : cleanNumber.charAt(0) || '1',
       type: type ? String(type) : 'Non-AC',
-      capacity: parseInt(String(capacity)) || 2,
+      capacity: cap,
       rate: num(rate) || 800,
       notes: notes ? String(notes) : null,
     },
   })
+  await logAudit(
+    'ROOM_CREATE',
+    'Room',
+    room.id,
+    `Added Room ${room.number} (${room.type}, ${room.capacity} bed(s), ₹${room.rate}/night, floor ${room.floor})${admin.adminUser ? ` — approved by ${admin.adminUser.name}` : ''}`,
+    user
+  )
   return NextResponse.json(room)
 }
 
-async function updateRoom(body: Record<string, unknown>) {
+async function updateRoom(req: NextRequest, body: Record<string, unknown>, user: RequestUser) {
   const { id, floor, status, housekeeping, rate, type, capacity, notes } = body
   if (!id) return NextResponse.json({ error: 'Room id required' }, { status: 400 })
+  // Changing the room itself (floor, type, beds, rate, notes) is an Admin action; cleaning and
+  // maintenance switches stay open to staff. Bookings keep the rate they were made at.
+  const editsSetup = [floor, rate, type, capacity, notes].some((v) => v !== undefined)
+  let approvedBy: string | null = null
+  if (editsSetup) {
+    const admin = await verifyAdminAuth(req, body)
+    if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to change room details' }, { status: 403 })
+    approvedBy = admin.adminUser?.name || null
+    if (capacity !== undefined) {
+      const cap = parseInt(String(capacity))
+      if (!(cap >= 1 && cap <= 10)) return NextResponse.json({ error: 'Beds / capacity must be between 1 and 10' }, { status: 400 })
+    }
+    if (rate !== undefined && !(num(rate) > 0)) return NextResponse.json({ error: 'Rate must be more than 0' }, { status: 400 })
+    if (type !== undefined && !String(type).trim()) return NextResponse.json({ error: 'Room type is required' }, { status: 400 })
+  }
+  const before = await prisma.room.findUnique({ where: { id: String(id) } })
+  if (!before) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
   if (status !== undefined) {
     // Occupancy/reservation states come from bookings; only MAINTENANCE <-> VACANT is a manual switch
     if (status !== 'MAINTENANCE' && status !== 'VACANT') {
@@ -670,12 +703,28 @@ async function updateRoom(body: Record<string, unknown>) {
       ...(rate !== undefined && { rate: num(rate) }),
       ...(type !== undefined && { type: String(type) }),
       ...(capacity !== undefined && { capacity: parseInt(String(capacity)) }),
-      ...(notes !== undefined && { notes: String(notes) }),
+      ...(notes !== undefined && { notes: notes ? String(notes) : null }),
     },
   })
   // "Mark as Vacant" on a room with a reservation due today must show as BOOKED, not VACANT
   await syncRoomStatus(prisma, String(id))
   const room = await prisma.room.findUnique({ where: { id: String(id) } })
+  if (editsSetup && room) {
+    const changes = (
+      [
+        ['floor', before.floor, room.floor],
+        ['type', before.type, room.type],
+        ['beds', before.capacity, room.capacity],
+        ['rate', `₹${before.rate}`, `₹${room.rate}`],
+        ['notes', before.notes || '—', room.notes || '—'],
+      ] as [string, unknown, unknown][]
+    )
+      .filter(([, a, b]) => String(a) !== String(b))
+      .map(([k, a, b]) => `${k} ${a} → ${b}`)
+    if (changes.length) {
+      await logAudit('ROOM_UPDATE', 'Room', room.id, `Room ${room.number}: ${changes.join(', ')} (applies to new bookings)${approvedBy ? ` — approved by ${approvedBy}` : ''}`, user)
+    }
+  }
   return NextResponse.json(room)
 }
 
@@ -819,8 +868,11 @@ async function lookupGuest(req: NextRequest) {
 
   let where: any = undefined
 
-  if (phone && phone.length >= 4) {
-    where = { phone: { contains: phone } }
+  // Autofill: a full number finds that guest; 5–9 digits only match from the start of a number
+  if (phone && phone.length >= 10) {
+    where = { phone: phone.slice(-10) }
+  } else if (phone && phone.length >= 5) {
+    where = { phone: { startsWith: phone } }
   } else if (idProof && idProof.length >= 4) {
     where = { idProof: { contains: idProof, mode: 'insensitive' } }
   } else if (name && name.length >= 2) {
@@ -3704,6 +3756,10 @@ async function globalSearch(req: NextRequest) {
   }
 
   const cacheKey = `Q:${q.toLowerCase()}`
+  // Phone numbers match only from 5 digits typed, and from the start of the number
+  const qDigits = q.replace(/\D/g, '')
+  const phoneOk = /^[\d\s+-]+$/.test(q) && qDigits.length >= 5
+  const phoneQ = qDigits.length > 10 && qDigits.startsWith('91') ? qDigits.slice(2) : qDigits
   const cached = searchCache.get(cacheKey)
   if (cached && cached.expires > Date.now()) {
     return NextResponse.json(cached.data)
@@ -3714,7 +3770,7 @@ async function globalSearch(req: NextRequest) {
       where: {
         OR: [
           { name: { contains: q, mode: 'insensitive' } },
-          { phone: { contains: q } },
+          ...(phoneOk ? [{ phone: { startsWith: phoneQ } }] : []),
           { company: { contains: q, mode: 'insensitive' } },
         ],
       },
@@ -3737,7 +3793,7 @@ async function globalSearch(req: NextRequest) {
         OR: [
           { id: { startsWith: q, mode: 'insensitive' } },
           { guest: { name: { contains: q, mode: 'insensitive' } } },
-          { guest: { phone: { contains: q } } },
+          ...(phoneOk ? [{ guest: { phone: { startsWith: phoneQ } } }] : []),
           { room: { number: { contains: q } } },
         ],
       },
@@ -3756,7 +3812,7 @@ async function globalSearch(req: NextRequest) {
         OR: [
           { billNumber: { contains: q, mode: 'insensitive' } },
           { booking: { guest: { name: { contains: q, mode: 'insensitive' } } } },
-          { booking: { guest: { phone: { contains: q } } } },
+          ...(phoneOk ? [{ booking: { guest: { phone: { startsWith: phoneQ } } } }] : []),
           { booking: { room: { number: { contains: q } } } },
         ],
       },
@@ -4226,8 +4282,8 @@ async function dispatch(
       break
     case 'rooms':
       if (method === 'GET') return await listRooms(req)
-      if (method === 'POST') return await createRoom(body)
-      if (method === 'PATCH') return await updateRoom(body)
+      if (method === 'POST') return await createRoom(req, body, user)
+      if (method === 'PATCH') return await updateRoom(req, body, user)
       if (method === 'DELETE') return await deleteRoom(req, user)
       break
     case 'guests':
@@ -4423,6 +4479,15 @@ async function dispatch(
       }
       break
     case 'banquet-bookings':
+      if (method === 'GET' && url.searchParams.get('advancesFor')) {
+        // Advance payments of one banquet booking, oldest first (for its receipt)
+        const rows = await prisma.ledgerEntry.findMany({
+          where: { refId: String(url.searchParams.get('advancesFor')), type: 'INCOME', category: 'ADVANCE' },
+          orderBy: { date: 'asc' },
+          select: { date: true, amount: true, method: true, description: true },
+        })
+        return NextResponse.json(rows)
+      }
       if (method === 'GET') {
         return NextResponse.json(
           await getBanquetBookings({
@@ -4438,6 +4503,10 @@ async function dispatch(
         if (body.action === 'cancel') {
           const id = String(body.id || '')
           if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+          // Cancelling frees the hall and may refund the advance, so an Admin must approve it
+          const admin = await verifyAdminAuth(req, body)
+          if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to cancel a banquet booking' }, { status: 403 })
+          if (admin.adminUser) user.name = user.name ? `${user.name} (approved by ${admin.adminUser.name})` : admin.adminUser.name
           const b = await cancelBanquetBooking(body as any, user.name)
           await logAudit('BANQUET_CANCEL', 'BanquetBooking', id, `Cancelled banquet booking ${b.bookingNumber} (${b.customerName}). Reason: ${body.reason || 'Staff action'}`, user)
           return NextResponse.json(b)

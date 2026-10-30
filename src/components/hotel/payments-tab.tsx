@@ -13,7 +13,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV, printTableReport } from '@/lib/hotel-utils'
+import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, matchesSearch } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -194,10 +194,10 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
     return rows.filter((r) => {
       if (q) {
         // Search by text, phone number, room number, bill number or amount
-        const hay = `${r.ref} ${r.guest} ${r.detail} ${r.phone || ''} ${r.roomNo || ''} ${r.amount}`.toLowerCase()
-        const digitHay = `${r.phone || ''} ${r.roomNo || ''} ${r.ref} ${r.amount}`.replace(/[^0-9 ]/g, '')
-        const textHit = hay.includes(q)
-        const numberHit = qDigits.length > 0 && qDigits === q.replace(/[\s+-]/g, '') && digitHay.replace(/ /g, '|').split('|').some((part) => part.includes(qDigits))
+        // Phone numbers match from the 5th digit typed; room, bill number and amount match any number
+        const textHit = matchesSearch(q, [r.ref, r.guest, r.detail, r.roomNo, r.amount], [r.phone])
+        const digitHay = `${r.roomNo || ''} ${r.ref} ${r.amount}`.replace(/[^0-9 ]/g, '')
+        const numberHit = qDigits.length > 0 && qDigits === q.replace(/[\s+-]/g, '') && digitHay.split(' ').some((part) => part.includes(qDigits))
         if (!textHit && !numberHit) return false
       }
       const d = new Date(r.date).toISOString().slice(0, 10)

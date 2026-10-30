@@ -30,14 +30,15 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, todayStr, matchesPhone, formatGovIdDisplay } from '@/lib/hotel-utils'
+import { addDaysStr, slotLabel } from '@/lib/banquet-time'
 import { splitGst } from '@/lib/gst'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking, BanquetBill, BanquetStats } from '@/types/banquet'
 import { BanquetBookingDialog } from './banquet-booking-dialog'
 import { BanquetBillDialog } from './banquet-bill-dialog'
-import { triggerPrintBanquetInvoice } from '@/lib/print-banquet-invoice'
+import { triggerPrintBanquetInvoice, triggerPrintBanquetAdvanceReceipt } from '@/lib/print-banquet-invoice'
 import {
   PartyPopper,
   CalendarDays,
@@ -61,6 +62,7 @@ import {
   XCircle,
   Ban,
   Wallet,
+  FileText,
 } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
 
@@ -81,10 +83,12 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   const [stats, setStats] = useState<BanquetStats | null>(null)
 
   // Filters
-  const [searchBooking, setSearchBooking] = useState(initialFilter || '')
+  // One search for bookings, invoices and the overview
+  const [search, setSearch] = useState(initialFilter || '')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [hallFilter, setHallFilter] = useState('ALL')
-  const [searchBill, setSearchBill] = useState('')
+  const [viewBooking, setViewBooking] = useState<BanquetBooking | null>(null)
+  const [justBooked, setJustBooked] = useState(false)
 
   // Dialog states
   const [bookingDialogOpen, setBookingDialogOpen] = useState(false)
@@ -97,6 +101,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   const [cancelRefundMethod, setCancelRefundMethod] = useState('CASH')
   const [cancelRefundNote, setCancelRefundNote] = useState('')
   const [cancelBusy, setCancelBusy] = useState(false)
+  const [cancelPin, setCancelPin] = useState('')
+  const [cancelError, setCancelError] = useState('')
 
   const [billDialogOpen, setBillDialogOpen] = useState(false)
   const [billingBooking, setBillingBooking] = useState<BanquetBooking | null>(null)
@@ -199,14 +205,22 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
     setCancelRefundAmount(String(b.advancePaid || 0))
     setCancelRefundMethod('CASH')
     setCancelRefundNote('')
+    setCancelPin('')
+    setCancelError('')
   }
 
   async function handleConfirmCancel() {
     if (!cancelTargetBooking) return
+    if (!cancelPin.trim()) {
+      setCancelError('Enter the Admin PIN to cancel this booking')
+      return
+    }
     setCancelBusy(true)
+    setCancelError('')
     try {
       await apiAs('/api/banquet-bookings', getCachedUser(), {
         method: 'POST',
+        adminPin: cancelPin.trim(),
         body: JSON.stringify({
           action: 'cancel',
           id: cancelTargetBooking.id,
@@ -222,14 +236,11 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         description: `Booking ${cancelTargetBooking.bookingNumber} (${cancelTargetBooking.customerName}) has been cancelled and hall slot freed.`,
       })
       setCancelTargetBooking(null)
+      setViewBooking(null)
       loadData()
       onDataChanged()
     } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: 'Cancellation Failed',
-        description: err instanceof Error ? err.message : 'Could not cancel booking',
-      })
+      setCancelError(err instanceof Error ? err.message : 'Could not cancel booking')
     } finally {
       setCancelBusy(false)
     }
@@ -250,38 +261,36 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
     }
   }
 
-  // Filtered lists
+  // Filtered lists: text fields match anywhere; phone numbers match from the 5th digit typed
+  const q = search.trim().toLowerCase()
+  const bookingMatches = (b: BanquetBooking) =>
+    !q ||
+    [b.customerName, b.eventName, b.bookingNumber, b.hall?.name, b.companyName].some((v) => v?.toLowerCase().includes(q)) ||
+    matchesPhone(b.customerPhone, q)
   const filteredBookings = bookings.filter((b) => {
     if (hallFilter !== 'ALL' && b.hallId !== hallFilter) return false
     if (statusFilter !== 'ALL' && b.status !== statusFilter) return false
-    if (searchBooking.trim()) {
-      const q = searchBooking.toLowerCase()
-      const matchName = b.customerName?.toLowerCase().includes(q)
-      const matchPhone = b.customerPhone?.includes(q)
-      const matchEvent = b.eventName?.toLowerCase().includes(q)
-      const matchNum = b.bookingNumber?.toLowerCase().includes(q)
-      const matchHall = b.hall?.name?.toLowerCase().includes(q)
-      return matchName || matchPhone || matchEvent || matchNum || matchHall
-    }
-    return true
+    return bookingMatches(b)
   })
 
-  const filteredBills = bills.filter((b) => {
-    if (searchBill.trim()) {
-      const q = searchBill.toLowerCase()
-      const matchNum = b.billNumber?.toLowerCase().includes(q)
-      const matchName = b.customerName?.toLowerCase().includes(q)
-      const matchPhone = b.customerPhone?.includes(q)
-      const matchEvent = b.eventName?.toLowerCase().includes(q)
-      const matchHall = b.hallName?.toLowerCase().includes(q)
-      return matchNum || matchName || matchPhone || matchEvent || matchHall
-    }
-    return true
-  })
+  const filteredBills = bills.filter(
+    (b) =>
+      !q ||
+      [b.billNumber, b.customerName, b.eventName, b.hallName, b.companyName].some((v) => v?.toLowerCase().includes(q)) ||
+      matchesPhone(b.customerPhone, q)
+  )
 
   const todayIso = todayStr()
-  const todayBookings = bookings.filter((b) => b.eventDate && b.eventDate.slice(0, 10) === todayIso)
-  const upcomingBookings = bookings.filter((b) => b.eventDate && b.eventDate.slice(0, 10) >= todayIso && b.status !== 'CANCELLED')
+  // A multi-day event runs from its first to its last day
+  const lastDayOf = (b: BanquetBooking) => addDaysStr(b.eventDate.slice(0, 10), Math.max(1, b.days || 1) - 1)
+  const todayBookings = bookings.filter(
+    (b) => b.eventDate && b.status !== 'CANCELLED' && b.eventDate.slice(0, 10) <= todayIso && lastDayOf(b) >= todayIso && bookingMatches(b)
+  )
+  const upcomingBookings = bookings
+    .filter((b) => b.eventDate && b.eventDate.slice(0, 10) >= todayIso && b.status !== 'CANCELLED' && bookingMatches(b))
+    .sort((a, b) => a.eventDate.localeCompare(b.eventDate))
+  const whenText = (b: BanquetBooking) =>
+    `${formatDate(b.eventDate)}${(b.days || 1) > 1 ? ` – ${formatDate(lastDayOf(b))} (${b.days} days)` : ''}`
 
   if (loading && !stats) {
     return (
@@ -392,6 +401,34 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         </Card>
       </div>
 
+      {/* Search across bookings, invoices and today's / upcoming events */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          placeholder="Search banquet: host name, event, booking / invoice no., company, or phone (5+ digits)…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-10 pl-9 text-sm"
+          aria-label="Search banquet bookings and invoices"
+        />
+        {search && (
+          <button
+            type="button"
+            onClick={() => setSearch('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {q && (
+        <p className="-mt-2 text-xs text-muted-foreground">
+          {filteredBookings.length} booking{filteredBookings.length === 1 ? '' : 's'} and {filteredBills.length} invoice
+          {filteredBills.length === 1 ? '' : 's'} match “{search.trim()}”
+          {/^\d{1,4}$/.test(search.trim()) && ' · type at least 5 digits to search phone numbers'}
+        </p>
+      )}
+
       {/* Main Tabs */}
       <Tabs value={activeSubTab} onValueChange={(v) => setActiveSubTab(v as any)}>
         <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:w-auto sm:flex-wrap [&>button]:h-8">
@@ -436,7 +473,10 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     <div className="flex items-start justify-between">
                       <div>
                         <h4 className="font-bold text-sm text-foreground">{b.eventName}</h4>
-                        <p className="text-xs text-muted-foreground">{b.hall?.name} · {b.slot}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {b.hall?.name} · {slotLabel(b.slot, b.startTime, b.endTime)}
+                          {(b.days || 1) > 1 && ` · ${whenText(b)}`}
+                        </p>
                       </div>
                       <Badge className="bg-emerald-600 text-[10px]">{b.status}</Badge>
                     </div>
@@ -461,6 +501,9 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                         }}
                       >
                         <Receipt className="mr-1 h-3 w-3" /> Generate Bill
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setViewBooking(b)}>
+                        <Eye className="mr-1 h-3 w-3" /> Details
                       </Button>
                       <Button
                         size="sm"
@@ -503,16 +546,17 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               </div>
 
               {upcomingBookings.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-4 text-center">No upcoming events booked yet.</p>
+                <p className="text-xs text-muted-foreground py-4 text-center">{q ? 'No upcoming events match the search.' : 'No upcoming events booked yet.'}</p>
               ) : (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {upcomingBookings.slice(0, 8).map((b) => (
+                  {upcomingBookings.slice(0, q ? 50 : 8).map((b) => (
                     <div key={b.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5 text-xs hover:bg-muted/40 transition-colors">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-foreground">{b.eventName}</span>
                           <Badge variant="outline" className="text-[10px]">{b.hall?.name}</Badge>
-                          <Badge className="bg-emerald-600 text-[9px] h-4">{b.slot}</Badge>
+                          <Badge className="bg-emerald-600 text-[9px] h-4">{slotLabel(b.slot, b.startTime, b.endTime)}</Badge>
+                          {(b.days || 1) > 1 && <Badge variant="outline" className="h-4 text-[9px]">{b.days} days</Badge>}
                         </div>
                         <div className="text-muted-foreground text-[11px]">
                           Host: <b>{b.customerName}</b> ({b.customerPhone}) · {b.guestCount} Guests · {formatINR(b.totalEstimated)}
@@ -520,9 +564,12 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="text-right">
-                          <span className="font-bold text-emerald-700 dark:text-emerald-400 block">{formatDate(b.eventDate)}</span>
+                          <span className="font-bold text-emerald-700 dark:text-emerald-400 block">{whenText(b)}</span>
                           <span className="text-[10px] text-muted-foreground">Adv: {formatINR(b.advancePaid)}</span>
                         </div>
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setViewBooking(b)} title="Booking Details">
+                          <Eye className="h-3.5 w-3.5" />
+                        </Button>
                         <Button
                           size="sm"
                           variant="ghost"
@@ -557,15 +604,6 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         <TabsContent value="bookings" className="mt-4 space-y-3">
           {/* Controls Bar */}
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                placeholder="Search by Host, Phone, Event or Booking #..."
-                value={searchBooking}
-                onChange={(e) => setSearchBooking(e.target.value)}
-                className="h-9 pl-8 text-xs"
-              />
-            </div>
 
             <Select value={hallFilter} onValueChange={setHallFilter}>
               <SelectTrigger className="h-9 w-36 text-xs">
@@ -600,14 +638,14 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               variant="outline"
               className="gap-1 text-xs"
               onClick={() => {
-                const headers = ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
+                const headers = ['Booking No', 'Event Date(s)', 'Time', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
                 exportCSV(
                   'banquet_bookings.csv',
                   headers,
                   filteredBookings.map((b) => [
                     b.bookingNumber,
-                    formatDate(b.eventDate),
-                    b.slot,
+                    whenText(b),
+                    slotLabel(b.slot, b.startTime, b.endTime),
                     b.eventName,
                     b.hall?.name || '',
                     b.customerName,
@@ -631,14 +669,14 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               variant="outline"
               className="gap-1 text-xs"
               onClick={() => {
-                const headers = ['Booking No', 'Event Date', 'Slot', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
+                const headers = ['Booking No', 'Event Date(s)', 'Time', 'Event Name', 'Hall', 'Customer', 'Phone', 'Guests', 'Hall Rent', 'Food Total', 'Est. Total', 'Advance Paid', 'Status', 'Payment Status']
                 printTableReport(
                   'Banquet Bookings Report',
                   headers,
                   filteredBookings.map((b) => [
                     b.bookingNumber,
-                    formatDate(b.eventDate),
-                    b.slot,
+                    whenText(b),
+                    slotLabel(b.slot, b.startTime, b.endTime),
                     b.eventName,
                     b.hall?.name || '',
                     b.customerName,
@@ -686,12 +724,14 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                   filteredBookings.map((b) => (
                     <TableRow key={b.id} className={b.status === 'CANCELLED' ? 'bg-muted/20 opacity-80' : ''}>
                       <TableCell className="text-xs font-semibold">
-                        {b.bookingNumber}
+                        <button type="button" className="text-left hover:underline" onClick={() => setViewBooking(b)}>
+                          {b.bookingNumber}
+                        </button>
                         <div className="text-[10px] text-muted-foreground">{formatDate(b.createdAt)}</div>
                       </TableCell>
-                      <TableCell className="text-xs font-medium">
-                        <div>{formatDate(b.eventDate)}</div>
-                        <Badge variant="outline" className="text-[9px] h-4 mt-0.5">{b.slot}</Badge>
+                      <TableCell className="whitespace-nowrap text-xs font-medium">
+                        <div>{whenText(b)}</div>
+                        <Badge variant="outline" className="text-[9px] h-4 mt-0.5">{slotLabel(b.slot, b.startTime, b.endTime)}</Badge>
                       </TableCell>
                       <TableCell className="text-xs">
                         <div className="font-bold text-foreground">{b.eventName}</div>
@@ -743,6 +783,18 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                           >
                             <Receipt className="h-3 w-3" /> Bill
                           </Button>
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setViewBooking(b)} title="Booking Details">
+                            <Eye className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0"
+                            onClick={() => triggerPrintBanquetAdvanceReceipt(b)}
+                            title="Print Advance Receipt"
+                          >
+                            <FileText className="h-3.5 w-3.5" />
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -788,15 +840,6 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         {/* ================= TAB 3: BANQUET BILLING & INVOICES ================= */}
         <TabsContent value="bills" className="mt-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                placeholder="Search Banquet Invoices by Bill #, Customer, Event..."
-                value={searchBill}
-                onChange={(e) => setSearchBill(e.target.value)}
-                className="h-9 pl-8 text-xs"
-              />
-            </div>
 
             <Button
               size="sm"
@@ -892,7 +935,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                 {filteredBills.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">
-                      No banquet invoices generated yet.
+                      {q ? 'No banquet invoices match the search.' : 'No banquet invoices generated yet.'}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -1061,9 +1104,14 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         onOpenChange={setBookingDialogOpen}
         halls={halls}
         booking={selectedBooking}
-        onSuccess={() => {
+        onSuccess={(saved, created) => {
           loadData()
           onDataChanged()
+          // Right after a new booking, show its details with the advance receipt ready to print
+          if (created && saved) {
+            setJustBooked(true)
+            setViewBooking(saved)
+          }
         }}
       />
 
@@ -1165,6 +1213,170 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         </DialogContent>
       </Dialog>
 
+      {/* Booking details */}
+      <Dialog
+        open={!!viewBooking}
+        onOpenChange={(open) => {
+          if (!open) {
+            setViewBooking(null)
+            setJustBooked(false)
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
+          {viewBooking &&
+            (() => {
+              const b = viewBooking
+              const days = Math.max(1, b.days || 1)
+              const ratePerDay = b.hallRatePerDay || b.hallRent / days
+              const balance = Math.max(0, Math.round((b.totalEstimated - b.advancePaid) * 100) / 100)
+              const active = b.status !== 'COMPLETED' && b.status !== 'CANCELLED'
+              const row = (label: string, value: React.ReactNode) =>
+                value === null || value === undefined || value === '' ? null : (
+                  <div className="flex justify-between gap-3 py-0.5">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span className="text-right font-medium">{value}</span>
+                  </div>
+                )
+              return (
+                <>
+                  <DialogHeader>
+                    <DialogTitle className="flex flex-wrap items-center gap-2">
+                      {b.bookingNumber}
+                      <Badge variant="outline">{b.status}</Badge>
+                      <Badge variant="outline" className={b.paymentStatus === 'PAID' ? 'border-emerald-400 text-emerald-700' : ''}>
+                        {b.paymentStatus}
+                      </Badge>
+                    </DialogTitle>
+                    <DialogDescription>
+                      {b.eventName} · {b.hall?.name} · booked {formatDateTime(b.createdAt)}
+                      {b.createdBy ? ` by ${b.createdBy}` : ''}
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  {justBooked && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-sm dark:border-emerald-800 dark:bg-emerald-950/40">
+                      <span className="flex items-center gap-2 font-semibold text-emerald-800 dark:text-emerald-300">
+                        <CheckCircle2 className="h-4 w-4" /> Booking confirmed
+                        {b.advancePaid > 0 ? ` · advance ${formatINR(b.advancePaid)} received` : ''}
+                      </span>
+                      <Button size="sm" className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700" onClick={() => triggerPrintBanquetAdvanceReceipt(b)}>
+                        <Printer className="h-4 w-4" /> Print Advance Receipt
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="grid gap-3 text-xs sm:grid-cols-2">
+                    <div className="rounded-lg border p-3">
+                      <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Event</p>
+                      {row('Occasion', b.eventName)}
+                      {row('Hall', b.hall?.name)}
+                      {row('Date', whenText(b))}
+                      {row('Time', slotLabel(b.slot, b.startTime, b.endTime))}
+                      {row('Guests', b.guestCount)}
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Host / Client</p>
+                      {row('Name', b.customerName)}
+                      {row('Phone', b.customerPhone)}
+                      {row('Email', b.customerEmail)}
+                      {row('Address', b.customerAddress)}
+                      {row('Company', b.companyName)}
+                      {row('GSTIN', b.gstNumber)}
+                      {row('ID Proof', b.idProof ? formatGovIdDisplay(b.idProof) : 'Not recorded')}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border p-3 text-xs">
+                    <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Charges (estimate)</p>
+                    {row('Hall rent', b.hallRent > 0 ? `${formatINR(ratePerDay)} × ${days} day${days > 1 ? 's' : ''} = ${formatINR(b.hallRent)}` : 'Not included')}
+                    {row(
+                      'Catering',
+                      b.foodTotal > 0
+                        ? `${b.foodPackageName ? `${b.foodPackageName}: ` : ''}${b.guestCount} × ${formatINR(b.foodRatePerPlate)}${days > 1 ? ` × ${days} days` : ''} = ${formatINR(b.foodTotal)}`
+                        : 'Not included'
+                    )}
+                    {b.decorEnabled === false
+                      ? row('Decor, AV & discount', 'Not included')
+                      : (
+                        <>
+                          {b.decorCharges > 0 && row('Stage & decor', formatINR(b.decorCharges))}
+                          {b.extraCharges > 0 && row('Sound, DJ & AV', formatINR(b.extraCharges))}
+                          {b.discount > 0 && row('Discount', `- ${formatINR(b.discount)}`)}
+                        </>
+                      )}
+                    <div className="mt-1.5 flex justify-between border-t pt-1.5 text-sm font-bold">
+                      <span>Estimated total (before GST)</span>
+                      <span>{formatINR(b.totalEstimated)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                      <span>Advance received</span>
+                      <span>{formatINR(b.advancePaid)}</span>
+                    </div>
+                    <div className={`flex justify-between text-sm font-semibold ${balance > 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                      <span>Balance</span>
+                      <span>{formatINR(balance)}</span>
+                    </div>
+                  </div>
+
+                  {b.notes && (
+                    <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+                      <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Notes</p>
+                      <p className="whitespace-pre-wrap break-words">{b.notes}</p>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap justify-end gap-2 border-t pt-3">
+                    {!justBooked && (
+                      <Button size="sm" variant="outline" className="gap-1.5" onClick={() => triggerPrintBanquetAdvanceReceipt(b)}>
+                        <Printer className="h-4 w-4" /> Advance Receipt
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5"
+                      onClick={() => {
+                        setSelectedBooking(b)
+                        setViewBooking(null)
+                        setJustBooked(false)
+                        setBookingDialogOpen(true)
+                      }}
+                    >
+                      <Edit className="h-4 w-4" /> Edit
+                    </Button>
+                    {active && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1.5 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:hover:bg-red-950/30"
+                          onClick={() => handleOpenCancel(b)}
+                        >
+                          <Ban className="h-4 w-4" /> Cancel Booking
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
+                          onClick={() => {
+                            setBillingBooking(b)
+                            setEditingBill(null)
+                            setViewBooking(null)
+                            setJustBooked(false)
+                            setBillDialogOpen(true)
+                          }}
+                        >
+                          <Receipt className="h-4 w-4" /> Final Bill
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )
+            })()}
+        </DialogContent>
+      </Dialog>
+
       {/* Cancel Banquet Booking Dialog */}
       <Dialog open={!!cancelTargetBooking} onOpenChange={(open) => !open && setCancelTargetBooking(null)}>
         <DialogContent className="max-w-md">
@@ -1189,8 +1401,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                   Host: <b>{cancelTargetBooking.customerName}</b> ({cancelTargetBooking.customerPhone})
                 </p>
                 <div className="flex justify-between text-muted-foreground pt-1 border-t border-dashed">
-                  <span>Venue: {cancelTargetBooking.hall?.name} ({cancelTargetBooking.slot})</span>
-                  <span className="font-semibold text-foreground">{formatDate(cancelTargetBooking.eventDate)}</span>
+                  <span>Venue: {cancelTargetBooking.hall?.name} ({slotLabel(cancelTargetBooking.slot, cancelTargetBooking.startTime, cancelTargetBooking.endTime)})</span>
+                  <span className="font-semibold text-foreground">{whenText(cancelTargetBooking)}</span>
                 </div>
                 <div className="flex justify-between pt-1">
                   <span>Estimated Total: <b>{formatINR(cancelTargetBooking.totalEstimated)}</b></span>
@@ -1315,6 +1527,27 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                 </div>
               )}
 
+              <div className="space-y-1.5 rounded-lg border border-red-200 bg-red-50/50 p-3 dark:border-red-900 dark:bg-red-950/20">
+                <Label htmlFor="cancel-admin-pin" className="text-xs font-semibold">
+                  Admin PIN *
+                </Label>
+                <Input
+                  id="cancel-admin-pin"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={cancelPin}
+                  onChange={(e) => {
+                    setCancelPin(e.target.value)
+                    setCancelError('')
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConfirmCancel()}
+                  placeholder="Admin PIN needed to cancel"
+                  className="h-9 text-sm"
+                />
+                {cancelError && <p className="text-xs text-red-600">{cancelError}</p>}
+              </div>
+
               <div className="flex justify-end gap-2 pt-2 border-t">
                 <Button
                   type="button"
@@ -1330,7 +1563,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                   variant="destructive"
                   size="sm"
                   onClick={handleConfirmCancel}
-                  disabled={cancelBusy || !cancelReason.trim()}
+                  disabled={cancelBusy || !cancelReason.trim() || !cancelPin.trim()}
                   className="gap-1 font-semibold"
                 >
                   {cancelBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}

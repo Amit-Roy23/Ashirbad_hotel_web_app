@@ -282,8 +282,12 @@ export function sumBy<T>(arr: T[], fn: (item: T) => number): number {
 }
 
 /** Sanitize input string to digits only and max 10 digits */
+/** Digits only, without a +91 / 0 prefix, at most 10 digits ("+91 98440-00001" → "9844000001") */
 export function sanitizePhone(val: string): string {
-  return val.replace(/\D/g, '').slice(0, 10)
+  let digits = (val || '').replace(/\D/g, '')
+  if (digits.length > 10 && digits.startsWith('91')) digits = digits.slice(2)
+  else if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1)
+  return digits.slice(0, 10)
 }
 
 /** Validate whether string is a valid 10-digit mobile phone number */
@@ -504,7 +508,7 @@ export function normalizeLodgingGst(v: string | number | null | undefined): stri
   return Number(v) === 0 ? '0' : '5'
 }
 
-export type GovIdType = 'AADHAAR' | 'PAN' | 'PASSPORT' | 'VOTER_ID' | 'DRIVING_LICENSE'
+export type GovIdType = 'AADHAAR' | 'PAN' | 'PASSPORT' | 'VOTER_ID' | 'DRIVING_LICENSE' | 'OTHERS'
 
 export const GOV_ID_TYPES: { value: GovIdType; label: string; placeholder: string; mask: string }[] = [
   { value: 'AADHAAR', label: 'Aadhaar Card', placeholder: '12-digit UID (e.g. 1234 5678 9012)', mask: '12 digits' },
@@ -512,6 +516,7 @@ export const GOV_ID_TYPES: { value: GovIdType; label: string; placeholder: strin
   { value: 'PASSPORT', label: 'Passport', placeholder: 'Passport No. (e.g. A1234567)', mask: 'A1234567' },
   { value: 'VOTER_ID', label: 'Voter ID Card', placeholder: 'Voter ID / EPIC No. (e.g. ABC1234567)', mask: 'EPIC No.' },
   { value: 'DRIVING_LICENSE', label: 'Driving License', placeholder: 'Driving License No.', mask: 'DL No.' },
+  { value: 'OTHERS', label: 'Others', placeholder: 'ID name and number (e.g. Ration Card 1234567)', mask: 'Any ID' },
 ]
 
 export function validateGovId(type: GovIdType, value: string): { valid: boolean; error?: string; formatted: string } {
@@ -582,6 +587,15 @@ export function validateGovId(type: GovIdType, value: string): { valid: boolean;
     return { valid: true, formatted: `DRIVING_LICENSE: ${upper}` }
   }
 
+  if (type === 'OTHERS') {
+    // Any other government / official ID: keep what was typed (name of the ID and its number)
+    const clean = trimmed.replace(/\s+/g, ' ')
+    if (clean.replace(/[^A-Za-z0-9]/g, '').length < 4) {
+      return { valid: false, error: 'Enter the ID name and number (at least 4 letters or digits)', formatted: clean }
+    }
+    return { valid: true, formatted: `OTHERS: ${clean}` }
+  }
+
   return { valid: true, formatted: trimmed }
 }
 
@@ -605,6 +619,9 @@ export function parseGovId(raw: string | null | undefined): { idType: GovIdType;
   if (str.toUpperCase().startsWith('DRIVING_LICENSE:')) {
     return { idType: 'DRIVING_LICENSE', idNumber: str.slice(16).trim() }
   }
+  if (str.toUpperCase().startsWith('OTHERS:')) {
+    return { idType: 'OTHERS', idNumber: str.slice(7).trim() }
+  }
 
   // Auto-detect if raw string without prefix
   const cleanDigits = str.replace(/\D/g, '')
@@ -627,4 +644,38 @@ export function formatGovIdDisplay(raw: string | null | undefined): string {
   const item = GOV_ID_TYPES.find((t) => t.value === parsed.idType)
   const label = item ? item.label : parsed.idType
   return `${label}: ${parsed.idNumber}`
+}
+
+/**
+ * Phone search: a typed number matches a phone only once at least 5 digits are entered, and
+ * only from the start of the number, so typing "29" does not list everyone with 29 in their phone.
+ */
+export const PHONE_SEARCH_MIN_DIGITS = 5
+
+export function matchesPhone(phone: string | null | undefined, query: string): boolean {
+  let digits = (query || '').replace(/\D/g, '')
+  if (digits.length > 10 && digits.startsWith('91')) digits = digits.slice(2)
+  if (digits.length < PHONE_SEARCH_MIN_DIGITS) return false
+  const p = (phone || '').replace(/\D/g, '')
+  return p.startsWith(digits) || (p.length > 10 && p.slice(-10).startsWith(digits))
+}
+
+/** True when the query is a phone-style number (digits, spaces, +, -) */
+export function isNumberQuery(query: string): boolean {
+  return /^[\d\s+-]+$/.test((query || '').trim())
+}
+
+/**
+ * Search rule used across the app: `query` matches when any text field contains it, or a phone
+ * number matches it by the phone rule above (5+ digits, from the start of the number).
+ */
+export function matchesSearch(
+  query: string,
+  text: (string | number | null | undefined)[],
+  phones: (string | null | undefined)[] = []
+): boolean {
+  const q = (query || '').trim().toLowerCase()
+  if (!q) return true
+  if (text.some((t) => t !== null && t !== undefined && String(t).toLowerCase().includes(q))) return true
+  return phones.some((p) => matchesPhone(p, q))
 }

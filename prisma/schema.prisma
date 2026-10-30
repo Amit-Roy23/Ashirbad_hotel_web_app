@@ -316,8 +316,13 @@ model BanquetBooking {
   gstNumber       String?
   eventName       String        // Wedding, Reception, Birthday, Conference, Seminar, etc.
   eventDate       DateTime
-  endDate         DateTime?
+  endDate         DateTime?     // last day of a multi-day booking (eventDate + days - 1)
+  days            Int           @default(1)
   slot            String        @default("EVENING") // MORNING | EVENING | FULL_DAY | CUSTOM
+  startTime       String?       // "HH:MM" each day (preset slots store their fixed times)
+  endTime         String?
+  hallRatePerDay  Float         @default(0) // hall rent per day; hallRent = hallRatePerDay x days
+  idProof         String?       // host Government ID (TYPE:NUMBER)
   guestCount      Int           @default(100)
   hallRent        Float         @default(0)
   foodRatePerPlate Float        @default(0)
