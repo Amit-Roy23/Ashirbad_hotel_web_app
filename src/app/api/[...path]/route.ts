@@ -25,6 +25,9 @@ import {
   deleteBanquetBill,
   getBanquetStats,
   adjustBanquetAdvance,
+  recordBanquetPayment,
+  banquetPaymentHistory,
+  updateBanquetBill,
   BanquetError,
 } from '@/lib/banquet-service'
 import {
@@ -39,7 +42,21 @@ import {
   lowStockCount as inventoryLowStockCount,
   InventoryError,
 } from '@/lib/inventory-service'
+import { getDayBook } from '@/lib/daybook'
+import { getRestaurantReport } from '@/lib/restaurant-report'
+import { RESTAURANT_EXPENSE_HEADS } from '@/lib/restaurant-expense'
+import {
+  listStaff as listStaffMembers,
+  createStaff as createStaffMember,
+  updateStaff as updateStaffMember,
+  recordStaffPayment,
+  deleteStaffPayment as removeStaffPayment,
+  setWorkDay,
+  periodLabel,
+  StaffError,
+} from '@/lib/staff-service'
 import { isValidHalfRate, normalizeHalfRate, computeGst, billBalance, billReceived, splitGst } from '@/lib/gst'
+import { bookingPaymentStatus } from '@/lib/hotel-utils'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -114,9 +131,55 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   foodSgst: '2.5',
   invoicePrefix: 'INV',
   invoiceCounter: '1',
+  // Bills without GST are estimates with their own number series
+  estimatePrefix: 'EST',
+  estimateCounter: '1',
   checkoutTime: '08:00',
   overstayGraceMinutes: '0',
   autoExtendEnabled: 'true',
+}
+
+/**
+ * Bills made before payments were recorded one by one: rebuild their payment rows once from the
+ * audit trail (each later collection is logged with its date and split) and the bill totals.
+ */
+async function backfillBillPayments() {
+  const bills = await prisma.$queryRawUnsafe<{ id: string; createdAt: Date; payCash: number; payUpi: number; payCard: number }[]>(
+    `SELECT b."id", b."createdAt", b."payCash", b."payUpi", b."payCard" FROM "Bill" b
+     WHERE (b."payCash" + b."payUpi" + b."payCard") > 0
+       AND NOT EXISTS (SELECT 1 FROM "BillPayment" p WHERE p."billId" = b."id")`
+  )
+  if (bills.length === 0) return
+  const logs = await prisma.auditLog.findMany({
+    where: { action: 'PAYMENT', entity: 'Bill', entityId: { in: bills.map((b) => b.id) } },
+    orderBy: { createdAt: 'asc' },
+  })
+  const money = (n: number) => Math.round(n * 100) / 100
+  const pick = (text: string, mode: string) => {
+    const m = text.match(new RegExp(`${mode} ₹([0-9]+(?:\\.[0-9]+)?)`))
+    return m ? Number(m[1]) : 0
+  }
+  const rows: Prisma.BillPaymentCreateManyInput[] = []
+  for (const b of bills) {
+    let cash = b.payCash
+    let upi = b.payUpi
+    let card = b.payCard
+    for (const a of logs.filter((l) => l.entityId === b.id)) {
+      const t = a.details || ''
+      const c = Math.min(cash, pick(t, 'Cash'))
+      const u = Math.min(upi, pick(t, 'UPI'))
+      const k = Math.min(card, pick(t, 'Card'))
+      if (c + u + k <= 0) continue
+      cash -= c
+      upi -= u
+      card -= k
+      rows.push({ billId: b.id, date: a.createdAt, kind: 'DUE', cash: c, upi: u, card: k, amount: money(c + u + k), createdBy: a.userName })
+    }
+    if (cash + upi + card > 0.001) {
+      rows.push({ billId: b.id, date: b.createdAt, kind: 'CHECKOUT', cash: money(cash), upi: money(upi), card: money(card), amount: money(cash + upi + card) })
+    }
+  }
+  if (rows.length) await prisma.billPayment.createMany({ data: rows })
 }
 
 /**
@@ -140,6 +203,11 @@ function ensureSchema(): Promise<void> {
       `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "cgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
       `ALTER TABLE "BanquetBill" ADD COLUMN IF NOT EXISTS "sgstPercent" DOUBLE PRECISION NOT NULL DEFAULT 0`,
       `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "decorEnabled" BOOLEAN NOT NULL DEFAULT true`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "days" INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "startTime" TEXT`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "endTime" TEXT`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "hallRatePerDay" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "BanquetBooking" ADD COLUMN IF NOT EXISTS "idProof" TEXT`,
       // Inventory (same definition as prisma/schema.prisma)
       `CREATE TABLE IF NOT EXISTS "InventoryItem" (
         "id" TEXT NOT NULL,
@@ -183,9 +251,56 @@ function ensureSchema(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS "InventoryMovement_itemId_idx" ON "InventoryMovement"("itemId")`,
       `CREATE INDEX IF NOT EXISTS "InventoryMovement_date_idx" ON "InventoryMovement"("date")`,
       `CREATE INDEX IF NOT EXISTS "InventoryMovement_type_idx" ON "InventoryMovement"("type")`,
+      `CREATE TABLE IF NOT EXISTS "BillPayment" (
+        "id" TEXT NOT NULL,
+        "billId" TEXT NOT NULL,
+        "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "kind" TEXT NOT NULL,
+        "cash" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "upi" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "card" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "amount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "note" TEXT,
+        "createdBy" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "BillPayment_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "BillPayment_billId_fkey" FOREIGN KEY ("billId") REFERENCES "Bill"("id") ON DELETE CASCADE ON UPDATE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS "BillPayment_billId_idx" ON "BillPayment"("billId")`,
+      `CREATE INDEX IF NOT EXISTS "BillPayment_date_idx" ON "BillPayment"("date")`,
+      `ALTER TABLE "Staff" ADD COLUMN IF NOT EXISTS "payType" TEXT NOT NULL DEFAULT 'MONTHLY'`,
+      `ALTER TABLE "Staff" ADD COLUMN IF NOT EXISTS "dailyRate" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "gross" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "recovered" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "deduction" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "period" TEXT`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "days" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `CREATE TABLE IF NOT EXISTS "StaffWorkDay" (
+        "id" TEXT NOT NULL,
+        "staffId" TEXT NOT NULL,
+        "date" TEXT NOT NULL,
+        "units" DOUBLE PRECISION NOT NULL DEFAULT 1,
+        "paymentId" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "StaffWorkDay_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "StaffWorkDay_staffId_fkey" FOREIGN KEY ("staffId") REFERENCES "Staff"("id") ON DELETE CASCADE ON UPDATE CASCADE
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "StaffWorkDay_staffId_date_key" ON "StaffWorkDay"("staffId", "date")`,
+      `CREATE INDEX IF NOT EXISTS "StaffWorkDay_staffId_idx" ON "StaffWorkDay"("staffId")`,
+      // Bookings without a bill used to be marked PAID even with nothing paid
+      `UPDATE "Booking" b SET "paymentStatus" = CASE
+          WHEN b."advance" <= 0.01 THEN 'UNPAID'
+          WHEN b."advance" >= b."ratePerDay" * GREATEST(b."days", 1) - 0.01 THEN 'PAID'
+          ELSE 'PARTIAL' END
+        WHERE NOT EXISTS (SELECT 1 FROM "Bill" x WHERE x."bookingId" = b."id")
+          AND b."paymentStatus" IS DISTINCT FROM (CASE
+          WHEN b."advance" <= 0.01 THEN 'UNPAID'
+          WHEN b."advance" >= b."ratePerDay" * GREATEST(b."days", 1) - 0.01 THEN 'PAID'
+          ELSE 'PARTIAL' END)`,
     ]
     schemaReady = (async () => {
       for (const sql of stmts) await prisma.$executeRawUnsafe(sql)
+      await backfillBillPayments()
     })().catch((e) => {
       schemaReady = null
       throw e
@@ -425,24 +540,9 @@ async function applyAutoExtensions(now = new Date()) {
 async function refreshBookingPaymentStatus(bookingId: string) {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
   if (!booking) return
-  let paymentStatus = 'PAID'
-  if (booking.status === 'CANCELLED' || booking.status === 'BOOKED') {
-    paymentStatus = 'PAID'
-  } else {
-    const bill = await prisma.bill.findFirst({
-      where: { bookingId },
-      orderBy: { createdAt: 'desc' },
-    })
-    if (bill) {
-      // Dues carried into a later bill are no longer owed here
-      const received = billReceived(bill)
-      if (billBalance(bill) <= 0.01) paymentStatus = 'PAID'
-      else if (received > 0.01) paymentStatus = 'PARTIAL'
-      else paymentStatus = 'UNPAID'
-    } else {
-      paymentStatus = (booking.advance || 0) > 0 ? 'PARTIAL' : 'UNPAID'
-    }
-  }
+  const bill = await prisma.bill.findFirst({ where: { bookingId }, orderBy: { createdAt: 'desc' } })
+  // Dues carried into a later bill are no longer owed here (balanceDue accounts for it)
+  const paymentStatus = bookingPaymentStatus({ ...booking, bills: bill ? [bill] : [] })
   if (paymentStatus !== booking.paymentStatus) {
     await prisma.booking.update({ where: { id: bookingId }, data: { paymentStatus } })
   }
@@ -511,7 +611,11 @@ async function syncBillAdvance(bookingId: string): Promise<string | null> {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
   if (!booking) return null
   const bill = await prisma.bill.findFirst({ where: { bookingId }, orderBy: { createdAt: 'desc' } })
-  if (!bill) return null
+  if (!bill) {
+    // No bill yet: the advance alone decides UNPAID / PARTIAL / PAID
+    await refreshBookingPaymentStatus(bookingId)
+    return null
+  }
   const advanceApplied = Math.min(booking.advance || 0, bill.grandTotal)
   if (Math.abs(advanceApplied - bill.advanceApplied) > 0.001) {
     await prisma.bill.update({ where: { id: bill.id }, data: { advanceApplied } })
@@ -590,6 +694,27 @@ function buildBillLedgerEntries(b: BillLedgerInput): Prisma.LedgerEntryCreateMan
   return entries
 }
 
+/**
+ * Next bill number: GST bills use the invoice series (INV-0001…), bills without GST the estimate
+ * series (EST-0001…). The counter is bumped in the same transaction, so two bills never share a number.
+ */
+async function takeBillNumber(tx: Prisma.TransactionClient, withGst: boolean, settings: Record<string, string>) {
+  const key = withGst ? 'invoiceCounter' : 'estimateCounter'
+  const prefix = (withGst ? settings.invoicePrefix || 'INV' : settings.estimatePrefix || 'EST').trim() || (withGst ? 'INV' : 'EST')
+  const start = parseInt(settings[key]) || 1
+  await tx.setting.upsert({ where: { key }, update: {}, create: { key, value: String(start) } })
+  for (let guard = 0; guard < 1000; guard++) {
+    const rows = await tx.$queryRaw<{ value: string }[]>`
+      UPDATE "Setting" SET "value" = (COALESCE(NULLIF(regexp_replace("value", '[^0-9]', '', 'g'), '')::int, 1) + 1)::text
+      WHERE "key" = ${key} RETURNING "value"`
+    const n = (parseInt(rows[0]?.value) || 2) - 1
+    const number = `${prefix}-${String(n).padStart(4, '0')}`
+    // Skip numbers already used (e.g. after the counter was set back in Settings)
+    if (!(await tx.bill.findUnique({ where: { billNumber: number } }))) return number
+  }
+  throw new Error('Could not allocate a bill number')
+}
+
 // ============ ROOMS ============
 async function listRooms(req: NextRequest) {
   await refreshOperationalState()
@@ -619,9 +744,13 @@ async function listRooms(req: NextRequest) {
   return NextResponse.json(filtered)
 }
 
-async function createRoom(body: Record<string, unknown>) {
+async function createRoom(req: NextRequest, body: Record<string, unknown>, user: RequestUser) {
   const { number, floor, type, capacity, rate, notes } = body
   if (!number) return NextResponse.json({ error: 'Room number required' }, { status: 400 })
+  const admin = await verifyAdminAuth(req, body)
+  if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to add a room' }, { status: 403 })
+  const cap = parseInt(String(capacity ?? 2)) || 2
+  if (cap < 1 || cap > 10) return NextResponse.json({ error: 'Beds / capacity must be between 1 and 10' }, { status: 400 })
   const cleanNumber = String(number).replace(/\D/g, '').trim()
   if (!cleanNumber) return NextResponse.json({ error: 'Room number must only contain digits' }, { status: 400 })
   const exists = await prisma.room.findUnique({ where: { number: cleanNumber } })
@@ -631,17 +760,41 @@ async function createRoom(body: Record<string, unknown>) {
       number: cleanNumber,
       floor: floor ? String(floor) : cleanNumber.charAt(0) || '1',
       type: type ? String(type) : 'Non-AC',
-      capacity: parseInt(String(capacity)) || 2,
+      capacity: cap,
       rate: num(rate) || 800,
       notes: notes ? String(notes) : null,
     },
   })
+  await logAudit(
+    'ROOM_CREATE',
+    'Room',
+    room.id,
+    `Added Room ${room.number} (${room.type}, ${room.capacity} bed(s), ₹${room.rate}/night, floor ${room.floor})${admin.adminUser ? ` — approved by ${admin.adminUser.name}` : ''}`,
+    user
+  )
   return NextResponse.json(room)
 }
 
-async function updateRoom(body: Record<string, unknown>) {
+async function updateRoom(req: NextRequest, body: Record<string, unknown>, user: RequestUser) {
   const { id, floor, status, housekeeping, rate, type, capacity, notes } = body
   if (!id) return NextResponse.json({ error: 'Room id required' }, { status: 400 })
+  // Changing the room itself (floor, type, beds, rate, notes) is an Admin action; cleaning and
+  // maintenance switches stay open to staff. Bookings keep the rate they were made at.
+  const editsSetup = [floor, rate, type, capacity, notes].some((v) => v !== undefined)
+  let approvedBy: string | null = null
+  if (editsSetup) {
+    const admin = await verifyAdminAuth(req, body)
+    if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to change room details' }, { status: 403 })
+    approvedBy = admin.adminUser?.name || null
+    if (capacity !== undefined) {
+      const cap = parseInt(String(capacity))
+      if (!(cap >= 1 && cap <= 10)) return NextResponse.json({ error: 'Beds / capacity must be between 1 and 10' }, { status: 400 })
+    }
+    if (rate !== undefined && !(num(rate) > 0)) return NextResponse.json({ error: 'Rate must be more than 0' }, { status: 400 })
+    if (type !== undefined && !String(type).trim()) return NextResponse.json({ error: 'Room type is required' }, { status: 400 })
+  }
+  const before = await prisma.room.findUnique({ where: { id: String(id) } })
+  if (!before) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
   if (status !== undefined) {
     // Occupancy/reservation states come from bookings; only MAINTENANCE <-> VACANT is a manual switch
     if (status !== 'MAINTENANCE' && status !== 'VACANT') {
@@ -670,12 +823,28 @@ async function updateRoom(body: Record<string, unknown>) {
       ...(rate !== undefined && { rate: num(rate) }),
       ...(type !== undefined && { type: String(type) }),
       ...(capacity !== undefined && { capacity: parseInt(String(capacity)) }),
-      ...(notes !== undefined && { notes: String(notes) }),
+      ...(notes !== undefined && { notes: notes ? String(notes) : null }),
     },
   })
   // "Mark as Vacant" on a room with a reservation due today must show as BOOKED, not VACANT
   await syncRoomStatus(prisma, String(id))
   const room = await prisma.room.findUnique({ where: { id: String(id) } })
+  if (editsSetup && room) {
+    const changes = (
+      [
+        ['floor', before.floor, room.floor],
+        ['type', before.type, room.type],
+        ['beds', before.capacity, room.capacity],
+        ['rate', `₹${before.rate}`, `₹${room.rate}`],
+        ['notes', before.notes || '—', room.notes || '—'],
+      ] as [string, unknown, unknown][]
+    )
+      .filter(([, a, b]) => String(a) !== String(b))
+      .map(([k, a, b]) => `${k} ${a} → ${b}`)
+    if (changes.length) {
+      await logAudit('ROOM_UPDATE', 'Room', room.id, `Room ${room.number}: ${changes.join(', ')} (applies to new bookings)${approvedBy ? ` — approved by ${approvedBy}` : ''}`, user)
+    }
+  }
   return NextResponse.json(room)
 }
 
@@ -819,8 +988,11 @@ async function lookupGuest(req: NextRequest) {
 
   let where: any = undefined
 
-  if (phone && phone.length >= 4) {
-    where = { phone: { contains: phone } }
+  // Autofill: a full number finds that guest; 5–9 digits only match from the start of a number
+  if (phone && phone.length >= 10) {
+    where = { phone: phone.slice(-10) }
+  } else if (phone && phone.length >= 5) {
+    where = { phone: { startsWith: phone } }
   } else if (idProof && idProof.length >= 4) {
     where = { idProof: { contains: idProof, mode: 'insensitive' } }
   } else if (name && name.length >= 2) {
@@ -958,16 +1130,6 @@ async function listBookings(req: NextRequest) {
   const from = searchParams.get('from')
   const to = searchParams.get('to')
 
-  // Clean any legacy UNPAID records in DB
-  await prisma.booking.updateMany({
-    where: {
-      paymentStatus: 'UNPAID',
-      OR: [
-        { status: { in: ['BOOKED', 'ACTIVE', 'CANCELLED'] } },
-      ],
-    },
-    data: { paymentStatus: 'PAID' },
-  }).catch(() => {})
 
   const bookings = await prisma.booking.findMany({
     where: {
@@ -1175,7 +1337,8 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         guestCount: parsedGuestCount,
         ratePerDay: room.rate,
         status: isAdvanceBooking ? 'BOOKED' : 'ACTIVE',
-        paymentStatus: 'PAID',
+        // Nothing paid = UNPAID; an advance = PARTIAL; advance covering the stay = PAID
+        paymentStatus: bookingPaymentStatus({ advance: adv, ratePerDay: room.rate, days }),
         advance: adv,
         isCorporate: !!isCorporate,
         notes: notes ? String(notes) : null,
@@ -1960,17 +2123,9 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const lodgingUpi = Math.max(0, Math.round((upi - foodUpi) * 100) / 100)
   const lodgingCard = Math.max(0, Math.round((card - foodCard) * 100) / 100)
 
-  const prefix = settings.invoicePrefix || 'INV'
-  const counter = parseInt(settings.invoiceCounter) || 1
-  const billNumber = `${prefix}-${String(counter).padStart(4, '0')}`
-
   const bill = await prisma.$transaction(async (tx) => {
-    // upsert: on a fresh database the counter only exists as a default, not as a row
-    await tx.setting.upsert({
-      where: { key: 'invoiceCounter' },
-      update: { value: String(counter + 1) },
-      create: { key: 'invoiceCounter', value: String(counter + 1) },
-    })
+    // GST bills (tax invoices) and bills without GST (estimates) have separate number series
+    const billNumber = await takeBillNumber(tx, billedGst > 0, settings)
 
     const createdBill = await tx.bill.create({
       data: {
@@ -2006,6 +2161,20 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         notes: notes ? String(notes) : null,
       },
     })
+    // The lodging payment taken at checkout, dated today
+    if (lodgingCash + lodgingUpi + lodgingCard > 0) {
+      await tx.billPayment.create({
+        data: {
+          billId: createdBill.id,
+          kind: 'CHECKOUT',
+          cash: lodgingCash,
+          upi: lodgingUpi,
+          card: lodgingCard,
+          amount: Math.round((lodgingCash + lodgingUpi + lodgingCard) * 100) / 100,
+          createdBy: user.name || null,
+        },
+      })
+    }
 
     if (foodTotal > 0 && foodOrderIdsToUpdate.length > 0) {
       await tx.foodOrder.updateMany({
@@ -2130,6 +2299,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   })
 
   await refreshBookingPaymentStatus(booking.id)
+  const billNumber = bill.billNumber
 
   if (isCustom) {
     await logAudit(
@@ -2182,13 +2352,20 @@ async function addBillPayment(body: Record<string, unknown>, user: RequestUser) 
     )
   }
 
-  const updated = await prisma.bill.update({
-    where: { id: bill.id },
-    data: {
-      payCash: bill.payCash + cash,
-      payUpi: bill.payUpi + upi,
-      payCard: bill.payCard + card,
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    const b = await tx.bill.update({
+      where: { id: bill.id },
+      data: {
+        payCash: bill.payCash + cash,
+        payUpi: bill.payUpi + upi,
+        payCard: bill.payCard + card,
+      },
+    })
+    // Recorded on the day it is received, so that day's collection and accounts include it
+    await tx.billPayment.create({
+      data: { billId: bill.id, kind: 'DUE', cash, upi, card, amount: Math.round(adding * 100) / 100, createdBy: user.name || null },
+    })
+    return b
   })
   await refreshBookingPaymentStatus(bill.bookingId)
   await logAudit(
@@ -2245,42 +2422,20 @@ async function billPaymentHistory(billId: string) {
     })
   }
 
-  // Later collections on this bill are recorded one by one in the audit trail
-  const later = await prisma.auditLog.findMany({
-    where: { action: 'PAYMENT', entity: 'Bill', entityId: bill.id },
-    orderBy: { createdAt: 'asc' },
-  })
-  const pick = (text: string, mode: string) => {
-    const m = text.match(new RegExp(`${mode} ₹([0-9]+(?:\\.[0-9]+)?)`))
-    return m ? Number(m[1]) : 0
+  // Payments on the bill itself, each on the day it was received
+  const paid = await prisma.billPayment.findMany({ where: { billId: bill.id }, orderBy: { date: 'asc' } })
+  for (const p of paid) {
+    if (Math.abs(p.amount) < 0.005) continue
+    rows.push({
+      date: p.date,
+      kind: p.kind === 'CHECKOUT' ? 'CHECKOUT' : 'DUE_COLLECTION',
+      label: p.kind === 'CHECKOUT' ? 'Paid at checkout' : p.kind === 'DUE' ? 'Due collected' : 'Payment corrected (bill edited)',
+      cash: p.cash,
+      upi: p.upi,
+      card: p.card,
+      amount: r2(p.amount),
+    })
   }
-  let laterCash = 0
-  let laterUpi = 0
-  let laterCard = 0
-  const laterRows: PaymentHistoryRow[] = []
-  for (const a of later) {
-    const text = a.details || ''
-    const cash = pick(text, 'Cash')
-    const upi = pick(text, 'UPI')
-    const card = pick(text, 'Card')
-    const amount = r2(cash + upi + card)
-    if (amount <= 0) continue
-    laterCash += cash
-    laterUpi += upi
-    laterCard += card
-    laterRows.push({ date: a.createdAt, kind: 'DUE_COLLECTION', label: 'Due collected', cash, upi, card, amount })
-  }
-
-  const atCheckout = {
-    cash: r2(Math.max(0, bill.payCash - laterCash)),
-    upi: r2(Math.max(0, bill.payUpi - laterUpi)),
-    card: r2(Math.max(0, bill.payCard - laterCard)),
-  }
-  const checkoutAmount = r2(atCheckout.cash + atCheckout.upi + atCheckout.card)
-  if (checkoutAmount > 0) {
-    rows.push({ date: bill.createdAt, kind: 'CHECKOUT', label: 'Paid at checkout', ...atCheckout, amount: checkoutAmount })
-  }
-  rows.push(...laterRows)
   rows.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
   const totalPaid = r2(rows.reduce((sum, row) => sum + row.amount, 0))
@@ -2425,7 +2580,16 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   }
   // Edited bills can have payment adjusted with or without an outstanding balance due
 
+  // Switching GST on / off moves the bill to the other number series (tax invoice ↔ estimate)
+  const seriesChanged = (bill.actualGst > 0) !== (newBilledGst > 0)
+  const numberSettings = seriesChanged ? await getSettingsMap() : {}
+  let renumberedTo: string | null = null
+
   const updatedBill = await prisma.$transaction(async (tx) => {
+    if (seriesChanged) {
+      renumberedTo = await takeBillNumber(tx, newBilledGst > 0, numberSettings)
+      await tx.bill.updateMany({ where: { carriedToBillNumber: bill.billNumber }, data: { carriedToBillNumber: renumberedTo } })
+    }
     // Optional room change for booking if requested
     if (roomId && String(roomId) !== bill.booking.roomId && (!isFinalized || managerPin)) {
       const targetRoom = await tx.room.findUnique({ where: { id: String(roomId) } })
@@ -2454,6 +2618,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
         extraCharges: extra,
         discount: disc,
         grandTotal: newGrandTotal,
+        ...(renumberedTo ? { billNumber: renumberedTo } : {}),
         payCash: cash,
         payUpi: upi,
         payCard: card,
@@ -2466,6 +2631,24 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
         notes: notes !== undefined ? (notes ? String(notes) : null) : bill.notes,
       },
     })
+    // A changed payment split is recorded as a dated correction so the payment rows keep adding up
+    const dCash = Math.round((cash - bill.payCash) * 100) / 100
+    const dUpi = Math.round((upi - bill.payUpi) * 100) / 100
+    const dCard = Math.round((card - bill.payCard) * 100) / 100
+    if (dCash || dUpi || dCard) {
+      await tx.billPayment.create({
+        data: {
+          billId: bill.id,
+          kind: 'ADJUST',
+          cash: dCash,
+          upi: dUpi,
+          card: dCard,
+          amount: Math.round((dCash + dUpi + dCard) * 100) / 100,
+          note: 'Bill edited',
+          createdBy: user.name || null,
+        },
+      })
+    }
 
     if (isFinalized && isFinancialChange) {
       await tx.auditLog.create({
@@ -2535,6 +2718,15 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     include: { booking: { include: { room: true, guest: true } } },
   })
 
+  if (renumberedTo) {
+    await logAudit(
+      'BILL_RENUMBERED',
+      'Bill',
+      bill.id,
+      `Bill ${bill.billNumber} is now ${renumberedTo}: GST ${newBilledGst > 0 ? 'added (tax invoice series)' : 'removed (estimate series)'}`,
+      user
+    )
+  }
   return NextResponse.json(reloadedBill)
 }
 
@@ -2544,34 +2736,90 @@ async function listMenu() {
   return NextResponse.json(items)
 }
 
-async function createMenuItem(body: Record<string, unknown>) {
+async function createMenuItem(body: Record<string, unknown>, user: RequestUser) {
   const { name, category, price } = body
-  if (!name || !price) {
-    return NextResponse.json({ error: 'Name and price required' }, { status: 400 })
+  if (!name || !String(name).trim() || !(num(price) > 0)) {
+    return NextResponse.json({ error: 'Name and a price above 0 are required' }, { status: 400 })
   }
   const item = await prisma.menuItem.create({
     data: {
-      name: String(name),
+      name: String(name).trim(),
       category: category ? String(category) : 'Main Course',
       price: num(price),
     },
   })
+  await logAudit('MENU_ADD', 'MenuItem', item.id, `Added menu item ${item.name} (${item.category}) ₹${item.price}`, user)
   return NextResponse.json(item)
 }
 
-async function updateMenuItem(body: Record<string, unknown>) {
+async function updateMenuItem(body: Record<string, unknown>, user: RequestUser) {
   const { id, name, category, price, available } = body
   if (!id) return NextResponse.json({ error: 'Item id required' }, { status: 400 })
+  const before = await prisma.menuItem.findUnique({ where: { id: String(id) } })
+  if (!before) return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
+  if (name !== undefined && !String(name).trim()) return NextResponse.json({ error: 'Item name is required' }, { status: 400 })
+  if (price !== undefined && !(num(price) > 0)) return NextResponse.json({ error: 'Price must be above 0' }, { status: 400 })
   const item = await prisma.menuItem.update({
     where: { id: String(id) },
     data: {
-      ...(name !== undefined && { name: String(name) }),
+      ...(name !== undefined && { name: String(name).trim() }),
       ...(category !== undefined && { category: String(category) }),
       ...(price !== undefined && { price: num(price) }),
       ...(available !== undefined && { available: !!available }),
     },
   })
+  const changes: string[] = []
+  if (before.name !== item.name) changes.push(`name ${before.name} → ${item.name}`)
+  if (before.category !== item.category) changes.push(`category ${before.category} → ${item.category}`)
+  if (before.price !== item.price) changes.push(`price ₹${before.price} → ₹${item.price}`)
+  if (before.available !== item.available) changes.push(item.available ? 'available' : 'out of stock')
+  if (changes.length) await logAudit('MENU_UPDATE', 'MenuItem', item.id, `Menu item ${item.name}: ${changes.join(', ')}`, user)
   return NextResponse.json(item)
+}
+
+// ============ RESTAURANT EXPENSES ============
+// Kept as ledger EXPENSE rows in the RESTAURANT category, described as "Head: note"
+async function saveRestaurantExpense(body: Record<string, unknown>, user: RequestUser) {
+  const head = (RESTAURANT_EXPENSE_HEADS as readonly string[]).includes(String(body.head)) ? String(body.head) : 'Other'
+  const note = body.note ? String(body.note).trim() : ''
+  const amount = Math.round(num(body.amount) * 100) / 100
+  if (!(amount > 0)) return NextResponse.json({ error: 'Enter the amount spent' }, { status: 400 })
+  if (head === 'Other' && !note) return NextResponse.json({ error: 'Say what the expense was for' }, { status: 400 })
+  const data = {
+    type: 'EXPENSE',
+    category: 'RESTAURANT',
+    description: note ? `${head}: ${note}` : head,
+    amount,
+    method: ['CASH', 'UPI', 'CARD', 'BANK'].includes(String(body.method)) ? String(body.method) : 'CASH',
+    vendor: body.vendor ? String(body.vendor).trim() || null : null,
+    source: 'MANUAL',
+    // Today's expense keeps the time it was entered; an earlier date is put at noon IST
+    date: !body.date || String(body.date) === istDateStr(new Date()) ? new Date() : makeIST(String(body.date), '12:00'),
+  }
+  if (body.id) {
+    const existing = await prisma.ledgerEntry.findUnique({ where: { id: String(body.id) } })
+    if (!existing || existing.category !== 'RESTAURANT' || existing.type !== 'EXPENSE') {
+      return NextResponse.json({ error: 'Restaurant expense not found' }, { status: 404 })
+    }
+    const entry = await prisma.ledgerEntry.update({ where: { id: existing.id }, data })
+    await logAudit('RESTAURANT_EXPENSE_UPDATE', 'LedgerEntry', entry.id, `Restaurant expense ${existing.description} ₹${existing.amount} → ${entry.description} ₹${entry.amount}`, user)
+    return NextResponse.json(entry)
+  }
+  const entry = await prisma.ledgerEntry.create({ data })
+  await logAudit('RESTAURANT_EXPENSE', 'LedgerEntry', entry.id, `Restaurant expense ₹${amount} — ${entry.description} (${entry.method})`, user)
+  return NextResponse.json(entry)
+}
+
+async function deleteRestaurantExpense(req: NextRequest, user: RequestUser) {
+  const id = new URL(req.url).searchParams.get('id')
+  if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  const existing = await prisma.ledgerEntry.findUnique({ where: { id } })
+  if (!existing || existing.category !== 'RESTAURANT' || existing.type !== 'EXPENSE') {
+    return NextResponse.json({ error: 'Restaurant expense not found' }, { status: 404 })
+  }
+  await prisma.ledgerEntry.delete({ where: { id } })
+  await logAudit('RESTAURANT_EXPENSE_DELETE', 'LedgerEntry', id, `Deleted restaurant expense ${existing.description} ₹${existing.amount}`, user)
+  return NextResponse.json({ success: true })
 }
 
 async function deleteMenuItem(req: NextRequest, user: RequestUser) {
@@ -2712,85 +2960,24 @@ async function updateOrder(body: Record<string, unknown>, user: RequestUser) {
 // ============ STAFF ============
 async function listStaff(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const q = searchParams.get('q')
-  const role = searchParams.get('role')
-  const staff = await prisma.staff.findMany({
-    where: {
-      ...(role ? { role } : {}),
-      ...(q
-        ? {
-          OR: [
-            { name: { contains: q, mode: 'insensitive' } },
-            { phone: { contains: q } },
-            { role: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-        : {}),
-    },
-    orderBy: { name: 'asc' },
-    include: { payments: { orderBy: { date: 'desc' } } },
-  })
+  return NextResponse.json(await listStaffMembers({ q: searchParams.get('q'), role: searchParams.get('role') }))
+}
+
+async function createStaff(body: Record<string, unknown>, user: RequestUser) {
+  const staff = await createStaffMember(body)
+  await logAudit(
+    'STAFF_CREATE',
+    'Staff',
+    staff.id,
+    `Added staff ${staff.name} (${staff.role}, ${staff.payType === 'DAILY' ? `₹${staff.dailyRate}/day` : `₹${staff.salary}/month`})`,
+    user
+  )
   return NextResponse.json(staff)
 }
 
-async function createStaff(body: Record<string, unknown>) {
-  const { name, phone, role, salary, joinDate, address, aadhaar } = body
-  if (!name) return NextResponse.json({ error: 'Name required' }, { status: 400 })
-  let cleanPhone: string | null = null
-  if (phone) {
-    const digits = String(phone).replace(/\D/g, '')
-    if (digits.length !== 10) {
-      return NextResponse.json(
-        { error: 'Staff phone number must be a valid 10-digit mobile number.' },
-        { status: 400 }
-      )
-    }
-    cleanPhone = digits
-  }
-  const staff = await prisma.staff.create({
-    data: {
-      name: String(name),
-      phone: cleanPhone,
-      role: role ? String(role) : 'Staff',
-      salary: num(salary),
-      joinDate: joinDate ? new Date(String(joinDate)) : new Date(),
-      address: address ? String(address) : null,
-      aadhaar: aadhaar ? String(aadhaar) : null,
-    },
-  })
-  return NextResponse.json(staff)
-}
-
-async function updateStaff(body: Record<string, unknown>) {
-  const { id, name, phone, role, salary, address, aadhaar, active } = body
-  if (!id) return NextResponse.json({ error: 'Staff id required' }, { status: 400 })
-  let cleanPhone: string | null | undefined = undefined
-  if (phone !== undefined) {
-    if (phone) {
-      const digits = String(phone).replace(/\D/g, '')
-      if (digits.length !== 10) {
-        return NextResponse.json(
-          { error: 'Staff phone number must be a valid 10-digit mobile number.' },
-          { status: 400 }
-        )
-      }
-      cleanPhone = digits
-    } else {
-      cleanPhone = null
-    }
-  }
-  const staff = await prisma.staff.update({
-    where: { id: String(id) },
-    data: {
-      ...(name !== undefined && { name: String(name) }),
-      ...(cleanPhone !== undefined && { phone: cleanPhone }),
-      ...(role !== undefined && { role: String(role) }),
-      ...(salary !== undefined && { salary: num(salary) }),
-      ...(address !== undefined && { address: String(address) }),
-      ...(aadhaar !== undefined && { aadhaar: String(aadhaar) }),
-      ...(active !== undefined && { active: !!active }),
-    },
-  })
+async function updateStaff(body: Record<string, unknown>, user: RequestUser) {
+  const { staff, changes } = await updateStaffMember(body)
+  if (changes.length) await logAudit('STAFF_UPDATE', 'Staff', staff.id, `Updated ${staff.name}: ${changes.join(', ')}`, user)
   return NextResponse.json(staff)
 }
 
@@ -2936,19 +3123,7 @@ async function deleteStaffPayment(req: NextRequest, user: RequestUser) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'Payment id required' }, { status: 400 })
-
-  const payment = await prisma.staffPayment.findUnique({
-    where: { id },
-    include: { staff: true },
-  })
-
-  if (!payment) return NextResponse.json({ error: 'Payment record not found' }, { status: 404 })
-
-  await prisma.$transaction(async (tx) => {
-    // The matching expense row must disappear from Expenses / Reports as well
-    await tx.ledgerEntry.deleteMany({ where: { refId: id } })
-    await tx.staffPayment.delete({ where: { id } })
-  })
+  const payment = await removeStaffPayment(id)
   await logAudit('DELETE_STAFF_PAYMENT', 'StaffPayment', id, `Deleted staff payment ${payment.type} ₹${payment.amount} for ${payment.staff.name}`, user)
   return NextResponse.json({ success: true, message: 'Staff payment deleted successfully' })
 }
@@ -2981,53 +3156,17 @@ async function listStaffPayments(req: NextRequest) {
 }
 
 async function createStaffPayment(body: Record<string, unknown>, user: RequestUser) {
-  const { staffId, type, amount, method, date, notes, recoveryNotes } = body
-  if (!staffId || !amount) {
-    return NextResponse.json({ error: 'Staff and amount required' }, { status: 400 })
-  }
-  const staff = await prisma.staff.findUnique({ where: { id: String(staffId) } })
-  if (!staff) return NextResponse.json({ error: 'Staff not found' }, { status: 404 })
-
-  const amt = num(amount)
-  const payMethod = method ? String(method) : 'CASH'
-  const paymentDate = (parseDateInput(date, '12:00') as Date) || new Date()
-  const paymentType = type ? String(type) : 'SALARY'
-  const category = paymentType === 'ADVANCE' ? 'STAFF_ADVANCE' : 'SALARY'
-
-  const payment = await prisma.$transaction(async (tx) => {
-    const p = await tx.staffPayment.create({
-      data: {
-        staffId: String(staffId),
-        type: paymentType,
-        amount: amt,
-        method: payMethod,
-        date: paymentDate,
-        recoveryNotes: recoveryNotes ? String(recoveryNotes) : null,
-        notes: notes ? String(notes) : null,
-      },
-      include: { staff: true },
-    })
-
-    // A DEDUCTION reduces what the staff member is owed; no money leaves the hotel, so no expense row
-    if (paymentType === 'DEDUCTION') return p
-
-    await tx.ledgerEntry.create({
-      data: {
-        date: paymentDate,
-        type: 'EXPENSE',
-        category,
-        description: `${paymentType === 'BONUS' ? 'Bonus' : paymentType === 'ADVANCE' ? 'Salary advance' : 'Salary'} - ${staff.name}${recoveryNotes ? ` (recovery: ${recoveryNotes})` : ''}`,
-        amount: amt,
-        method: payMethod === 'BANK' ? 'BANK' : payMethod,
-        source: 'AUTO',
-        vendor: staff.name,
-        refId: p.id,
-      },
-    })
-    return p
-  })
-
-  await logAudit('STAFF_PAYMENT', 'StaffPayment', payment.id, `${payment.type} ₹${amt} to ${staff.name} via ${payMethod}`, user)
+  const { payment, staff, summaryBefore } = await recordStaffPayment(body)
+  const rs = (n: number) => `₹${Math.round(n * 100) / 100}`
+  const detail =
+    payment.type === 'SALARY'
+      ? `Salary ${staff.payType === 'DAILY' ? payment.period : periodLabel(payment.period)} to ${staff.name}: earned ${rs(payment.gross)}${payment.recovered > 0 ? ` − advance ${rs(payment.recovered)}` : ''}${payment.deduction > 0 ? ` − deduction ${rs(payment.deduction)}` : ''} = paid ${rs(payment.amount)} via ${payment.method}. Advance left ${rs(Math.max(0, summaryBefore.advanceOutstanding - payment.recovered))}`
+      : payment.type === 'ADVANCE'
+        ? `Advance ${rs(payment.amount)} to ${staff.name} via ${payment.method}. Advance outstanding now ${rs(summaryBefore.advanceOutstanding + payment.amount)}`
+        : payment.type === 'ADVANCE_RETURN'
+          ? `${staff.name} returned ${rs(payment.amount)} advance via ${payment.method}. Advance left ${rs(Math.max(0, summaryBefore.advanceOutstanding - payment.amount))}`
+          : `${payment.type} ${rs(payment.amount)} for ${staff.name}`
+  await logAudit('STAFF_PAYMENT', 'StaffPayment', payment.id, detail, user)
   return NextResponse.json(payment)
 }
 
@@ -3119,8 +3258,11 @@ type LedgerLink =
 async function resolveLedgerLink(entry: { source: string; refId: string | null; category: string }): Promise<LedgerLink> {
   if (entry.source !== 'AUTO' || !entry.refId) return { kind: 'NONE' }
   const refId = entry.refId
-  const staffPayment = await prisma.staffPayment.findUnique({ where: { id: refId } })
-  if (staffPayment) return { kind: 'STAFF_PAYMENT', id: refId }
+  const staffPayment = await prisma.staffPayment.findUnique({ where: { id: refId }, include: { staff: true } })
+  // Salary rows carry the advance recovery and paid work days; change them where that is kept
+  if (staffPayment) {
+    return { kind: 'LOCKED', reason: `This is a staff payment of ${staffPayment.staff.name}. Change or delete it from the Staff tab (payment history).` }
+  }
   if (entry.category === 'ADVANCE') {
     const booking = await prisma.booking.findUnique({ where: { id: refId } })
     if (booking) return { kind: 'ROOM_ADVANCE', bookingId: refId }
@@ -3327,6 +3469,7 @@ async function getStats() {
 
   const outstanding = allBills.reduce((s, b) => s + billBalance(b), 0)
   const lowStockItems = await inventoryLowStockCount()
+  const todayBook = await getDayBook(startToday, endToday)
 
   return NextResponse.json({
     lowStockItems,
@@ -3371,9 +3514,11 @@ async function getStats() {
           .reduce((s, bill) => s + billBalance(bill), 0) || 0,
     })),
     todayRevenue,
-    todayCash: todayBills.reduce((s, b) => s + b.payCash, 0),
-    todayUpi: todayBills.reduce((s, b) => s + b.payUpi, 0),
-    todayCard: todayBills.reduce((s, b) => s + b.payCard, 0),
+    // Everything received today, on the day it was received (dues collected today included)
+    todayCash: todayBook.totals.inCash + todayBook.totals.inOther,
+    todayUpi: todayBook.totals.inUpi,
+    todayCard: todayBook.totals.inCard + todayBook.totals.inBank,
+    todayCollected: todayBook.totals.in,
     todayIncome: income,
     todayExpense: expense,
     todayNet: income - expense,
@@ -3704,6 +3849,10 @@ async function globalSearch(req: NextRequest) {
   }
 
   const cacheKey = `Q:${q.toLowerCase()}`
+  // Phone numbers match only from 5 digits typed, and from the start of the number
+  const qDigits = q.replace(/\D/g, '')
+  const phoneOk = /^[\d\s+-]+$/.test(q) && qDigits.length >= 5
+  const phoneQ = qDigits.length > 10 && qDigits.startsWith('91') ? qDigits.slice(2) : qDigits
   const cached = searchCache.get(cacheKey)
   if (cached && cached.expires > Date.now()) {
     return NextResponse.json(cached.data)
@@ -3714,7 +3863,7 @@ async function globalSearch(req: NextRequest) {
       where: {
         OR: [
           { name: { contains: q, mode: 'insensitive' } },
-          { phone: { contains: q } },
+          ...(phoneOk ? [{ phone: { startsWith: phoneQ } }] : []),
           { company: { contains: q, mode: 'insensitive' } },
         ],
       },
@@ -3737,7 +3886,7 @@ async function globalSearch(req: NextRequest) {
         OR: [
           { id: { startsWith: q, mode: 'insensitive' } },
           { guest: { name: { contains: q, mode: 'insensitive' } } },
-          { guest: { phone: { contains: q } } },
+          ...(phoneOk ? [{ guest: { phone: { startsWith: phoneQ } } }] : []),
           { room: { number: { contains: q } } },
         ],
       },
@@ -3756,7 +3905,7 @@ async function globalSearch(req: NextRequest) {
         OR: [
           { billNumber: { contains: q, mode: 'insensitive' } },
           { booking: { guest: { name: { contains: q, mode: 'insensitive' } } } },
-          { booking: { guest: { phone: { contains: q } } } },
+          ...(phoneOk ? [{ booking: { guest: { phone: { startsWith: phoneQ } } } }] : []),
           { booking: { room: { number: { contains: q } } } },
         ],
       },
@@ -3875,12 +4024,14 @@ async function getReports(req: NextRequest) {
     }
     return row
   }
-  for (const b of bills) {
-    const row = dayRow(b.createdAt)
-    row.cash += b.payCash
-    row.upi += b.payUpi
-    row.card += b.payCard
-    row.bills += b.payCash + b.payUpi + b.payCard
+  // Room bill payments on the day they were received (a due collected later counts on that day)
+  const billPays = await prisma.billPayment.findMany({ where: { date: { gte: start, lte: end } } })
+  for (const p of billPays) {
+    const row = dayRow(p.date)
+    row.cash += p.cash
+    row.upi += p.upi
+    row.card += p.card
+    row.bills += p.amount
   }
   for (const e of ledger) {
     if (e.type !== 'INCOME' || e.category !== 'ADVANCE') continue
@@ -4182,7 +4333,7 @@ async function route(
     res.headers.set('Expires', '0')
     return res
   } catch (e) {
-    if (e instanceof BanquetError || e instanceof InventoryError) {
+    if (e instanceof BanquetError || e instanceof InventoryError || e instanceof StaffError) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { 'Cache-Control': 'no-store' } })
     }
     console.error(`API Error [${method} ${url.pathname}]:`, e)
@@ -4226,8 +4377,8 @@ async function dispatch(
       break
     case 'rooms':
       if (method === 'GET') return await listRooms(req)
-      if (method === 'POST') return await createRoom(body)
-      if (method === 'PATCH') return await updateRoom(body)
+      if (method === 'POST') return await createRoom(req, body, user)
+      if (method === 'PATCH') return await updateRoom(req, body, user)
       if (method === 'DELETE') return await deleteRoom(req, user)
       break
     case 'guests':
@@ -4237,6 +4388,15 @@ async function dispatch(
       if (method === 'DELETE') return await deleteGuest(req, user)
       break
     case 'bookings':
+      if (method === 'GET' && url.searchParams.get('paymentsFor')) {
+        // Advance and part payments of one stay, oldest first
+        const rows = await prisma.ledgerEntry.findMany({
+          where: { refId: String(url.searchParams.get('paymentsFor')), type: 'INCOME', category: 'ADVANCE' },
+          orderBy: { date: 'asc' },
+          select: { id: true, date: true, amount: true, method: true, description: true },
+        })
+        return NextResponse.json(rows)
+      }
       if (method === 'GET') return await listBookings(req)
       if (method === 'POST') return await createBooking(body, user)
       if (method === 'PATCH') return await updateBooking(body, user)
@@ -4251,12 +4411,36 @@ async function dispatch(
       if (method === 'PATCH') return await updateBill(body, user)
       if (method === 'DELETE') return await deleteBill(req, user)
       break
-    case 'menu':
+    case 'menu': {
       if (method === 'GET') return await listMenu()
-      if (method === 'POST') return await createMenuItem(body)
-      if (method === 'PATCH') return await updateMenuItem(body)
       if (method === 'DELETE') return await deleteMenuItem(req, user)
+      // Adding or changing a menu item (name, price, category) needs the Admin PIN; switching an
+      // item available / out of stock does not
+      const availabilityOnly = method === 'PATCH' && Object.keys(body).every((k) => ['id', 'available', 'adminPin'].includes(k))
+      if ((method === 'POST' || method === 'PATCH') && !availabilityOnly) {
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to add or change a menu item' }, { status: 403 })
+      }
+      delete body.adminPin
+      if (method === 'POST') return await createMenuItem(body, user)
+      if (method === 'PATCH') return await updateMenuItem(body, user)
       break
+    }
+    case 'restaurant-report': {
+      if (method !== 'GET') break
+      const today = istDateStr(new Date())
+      const from = url.searchParams.get('from') || today
+      const to = url.searchParams.get('to') || from
+      return NextResponse.json(await getRestaurantReport(makeIST(from, '00:00'), makeIST(to, '23:59:59')))
+    }
+    case 'restaurant-expenses': {
+      if (method === 'DELETE') return await deleteRestaurantExpense(req, user)
+      if (method !== 'POST' && method !== 'PATCH') break
+      const admin = await verifyAdminAuth(req, body)
+      if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to add or change a restaurant expense' }, { status: 403 })
+      delete body.adminPin
+      return await saveRestaurantExpense(body, user)
+    }
     case 'orders':
       if (method === 'GET') return await listOrders(req)
       if (method === 'POST') return await createOrder(body, user)
@@ -4264,10 +4448,34 @@ async function dispatch(
       if (method === 'DELETE') return await deleteFoodOrder(req, user)
       break
     case 'staff':
+      if (method === 'GET' && url.searchParams.get('historyFor')) {
+        // Everything recorded about one staff member: profile changes and payments
+        const id = String(url.searchParams.get('historyFor'))
+        const paymentIds = (await prisma.staffPayment.findMany({ where: { staffId: id }, select: { id: true } })).map((p) => p.id)
+        const rows = await prisma.auditLog.findMany({
+          where: { OR: [{ entity: 'Staff', entityId: id }, { entity: 'StaffPayment', entityId: { in: paymentIds } }] },
+          orderBy: { createdAt: 'desc' },
+          take: 500,
+        })
+        return NextResponse.json(rows)
+      }
       if (method === 'GET') return await listStaff(req)
-      if (method === 'POST') return await createStaff(body)
-      if (method === 'PATCH') return await updateStaff(body)
+      if (method === 'POST') return await createStaff(body, user)
+      if (method === 'PATCH') return await updateStaff(body, user)
       if (method === 'DELETE') return await deleteStaff(req, user)
+      break
+    case 'staff-workdays':
+      if (method === 'POST') {
+        const r = await setWorkDay(body)
+        await logAudit(
+          'STAFF_WORKDAY',
+          'Staff',
+          r.staff.id,
+          r.units === 0 ? `${r.staff.name}: work day ${r.date} cleared` : `${r.staff.name}: ${r.units === 1 ? 'full' : 'half'} day worked on ${r.date}`,
+          user
+        )
+        return NextResponse.json(r)
+      }
       break
     case 'staff-payments':
       if (method === 'GET') return await listStaffPayments(req)
@@ -4369,17 +4577,58 @@ async function dispatch(
         return NextResponse.json({ success: true })
       }
       break
+    case 'daybook': {
+      if (method !== 'GET') break
+      // Default: today (IST)
+      const today = istDateStr(new Date())
+      const from = url.searchParams.get('from') || today
+      const to = url.searchParams.get('to') || today
+      return NextResponse.json(await getDayBook(makeIST(from, '00:00'), makeIST(to, '23:59:59')))
+    }
+    case 'bill-payments': {
+      if (method !== 'GET') break
+      const range: { gte?: Date; lte?: Date } = {}
+      if (url.searchParams.get('from')) range.gte = makeIST(String(url.searchParams.get('from')), '00:00')
+      if (url.searchParams.get('to')) range.lte = makeIST(String(url.searchParams.get('to')), '23:59:59')
+      const rows = await prisma.billPayment.findMany({
+        where: range.gte || range.lte ? { date: range } : undefined,
+        orderBy: { date: 'desc' },
+        take: 3000,
+        include: {
+          bill: {
+            select: {
+              id: true,
+              billNumber: true,
+              roomNumber: true,
+              booking: { select: { guest: { select: { name: true, phone: true } }, room: { select: { number: true } } } },
+            },
+          },
+        },
+      })
+      return NextResponse.json(rows)
+    }
     case 'inventory-report':
       if (method === 'GET') return NextResponse.json(await inventoryStockReport(url.searchParams.get('from'), url.searchParams.get('to')))
       break
     case 'settings':
       if (method === 'GET') return await getSettings()
-      if (method === 'PATCH' || method === 'POST') return await updateSettings(body, user)
+      if (method === 'PATCH' || method === 'POST') {
+        // Every settings change needs an Admin
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to change settings' }, { status: 403 })
+        delete body.adminPin
+        return await updateSettings(body, user)
+      }
       break
     case 'users':
       if (method === 'GET') return await listUsers()
-      if (method === 'POST') return await createUser(body, user)
-      if (method === 'PATCH') return await updateUser(body, user)
+      if (method === 'POST' || method === 'PATCH') {
+        // Adding users, changing a role or PIN is an Admin action
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to change app users' }, { status: 403 })
+        delete body.adminPin
+        return method === 'POST' ? await createUser(body, user) : await updateUser(body, user)
+      }
       if (method === 'DELETE') return await deleteUser(req, user)
       break
     case 'auth':
@@ -4423,6 +4672,31 @@ async function dispatch(
       }
       break
     case 'banquet-bookings':
+      if (method === 'GET' && url.searchParams.get('paymentsFor')) {
+        return NextResponse.json(await banquetPaymentHistory(String(url.searchParams.get('paymentsFor'))))
+      }
+      if (method === 'POST' && body.action === 'payment') {
+        const id = String(body.id || '')
+        if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+        const r = await recordBanquetPayment(id, body as any, user.name)
+        await logAudit(
+          'BANQUET_PAYMENT',
+          'BanquetBooking',
+          id,
+          `Received ₹${body.amount} via ${body.method || 'CASH'} for ${r.booking.bookingNumber} (${r.booking.customerName})${r.stage === 'INVOICE' ? ` on invoice ${r.bill?.billNumber}` : ' as part payment'}`,
+          user
+        )
+        return NextResponse.json(r)
+      }
+      if (method === 'GET' && url.searchParams.get('advancesFor')) {
+        // Advance payments of one banquet booking, oldest first (for its receipt)
+        const rows = await prisma.ledgerEntry.findMany({
+          where: { refId: String(url.searchParams.get('advancesFor')), type: 'INCOME', category: 'ADVANCE' },
+          orderBy: { date: 'asc' },
+          select: { date: true, amount: true, method: true, description: true },
+        })
+        return NextResponse.json(rows)
+      }
       if (method === 'GET') {
         return NextResponse.json(
           await getBanquetBookings({
@@ -4438,6 +4712,10 @@ async function dispatch(
         if (body.action === 'cancel') {
           const id = String(body.id || '')
           if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+          // Cancelling frees the hall and may refund the advance, so an Admin must approve it
+          const admin = await verifyAdminAuth(req, body)
+          if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to cancel a banquet booking' }, { status: 403 })
+          if (admin.adminUser) user.name = user.name ? `${user.name} (approved by ${admin.adminUser.name})` : admin.adminUser.name
           const b = await cancelBanquetBooking(body as any, user.name)
           await logAudit('BANQUET_CANCEL', 'BanquetBooking', id, `Cancelled banquet booking ${b.bookingNumber} (${b.customerName}). Reason: ${body.reason || 'Staff action'}`, user)
           return NextResponse.json(b)
@@ -4487,6 +4765,22 @@ async function dispatch(
         const b = await createBanquetBill(body as any, user.name, String(body.managerName || user.name))
         await logAudit('BANQUET_BILL', 'BanquetBill', b.id, `Generated banquet invoice ${b.billNumber} for ${b.customerName}`, user)
         return NextResponse.json(b)
+      }
+      if (method === 'PATCH') {
+        // Changing an invoice's charges or GST is an Admin action
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to edit an invoice' }, { status: 403 })
+        const id = String(body.id || '')
+        if (!id) return NextResponse.json({ error: 'Bill ID is required' }, { status: 400 })
+        const { bill, before, renumbered } = await updateBanquetBill(id, body as any)
+        await logAudit(
+          'BANQUET_BILL',
+          'BanquetBill',
+          id,
+          `Edited banquet invoice ${before.billNumber}: total ₹${before.grandTotal} → ₹${bill?.grandTotal}${renumbered ? `, now ${renumbered} (${Number(bill?.gstAmount) > 0 ? 'GST invoice' : 'estimate'})` : ''}${admin.adminUser ? ` — approved by ${admin.adminUser.name}` : ''}`,
+          user
+        )
+        return NextResponse.json(bill)
       }
       if (method === 'DELETE') {
         const id = url.searchParams.get('id')

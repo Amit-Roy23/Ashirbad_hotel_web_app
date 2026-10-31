@@ -76,6 +76,8 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
   const subtotal = Math.max(0, bill.billedRoomTotal + (bill.foodTotal || 0) + (bill.extraCharges || 0) - (bill.discount || 0))
   // Customer invoice: charges and CGST/SGST only (amounts paid are not printed)
   const gst = splitGst(bill)
+  // GST on: tax invoice copy; GST off: estimate copy (no GSTIN, no CGST / SGST lines)
+  const isGstCopy = Number(bill.actualGst || 0) > 0
   const previousDue = Number(bill.previousDue || 0)
   const roomRatePerNight = bill.days > 0 ? Math.round((bill.billedRoomTotal / bill.days) * 100) / 100 : bill.billedRoomTotal
 
@@ -86,13 +88,13 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
         <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">{hotelName}</h2>
         {hotelAddress && <p className="text-xs text-slate-600 dark:text-slate-400">{hotelAddress}</p>}
         {hotelPhone && <p className="text-xs text-slate-600 dark:text-slate-400">Ph: {hotelPhone}</p>}
-        {hotelGstin && <p className="text-xs font-medium text-slate-700 dark:text-slate-300">GSTIN: {hotelGstin}</p>}
+        {isGstCopy && hotelGstin && <p className="text-xs font-medium text-slate-700 dark:text-slate-300">GSTIN: {hotelGstin}</p>}
 
         <div className="mt-2 inline-block rounded-full bg-slate-100 px-3 py-0.5 text-xs font-bold uppercase tracking-wider text-slate-800 dark:bg-slate-800 dark:text-slate-200">
-          {bill.actualGst > 0 ? (
-            <span className="text-emerald-700 dark:text-emerald-400">GST TAX INVOICE</span>
+          {isGstCopy ? (
+            <span className="text-emerald-700 dark:text-emerald-400">TAX INVOICE (GST COPY)</span>
           ) : (
-            <span>NON-GST INVOICE / CASH MEMO</span>
+            <span>ESTIMATE</span>
           )}
         </div>
       </div>
@@ -102,7 +104,9 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
       {/* Meta Grid */}
       <div className="mb-4 grid grid-cols-2 gap-4 text-xs">
         <div className="space-y-1">
-          <p className="font-semibold text-slate-900 dark:text-white">Invoice No: {bill.billNumber}</p>
+          <p className="font-semibold text-slate-900 dark:text-white">
+            {isGstCopy ? 'Invoice No' : 'Estimate No'}: {bill.billNumber}
+          </p>
           <p className="text-slate-600 dark:text-slate-400">Date: {formatDateTime(bill.createdAt)}</p>
           <p className="text-slate-600 dark:text-slate-400">
             Billing Room No: <span className="font-semibold text-slate-900 dark:text-white">{roomNo}</span> {roomDesc ? `(${roomDesc})` : ''}
@@ -172,14 +176,18 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
           <span className="font-semibold">{formatINR(subtotal)}</span>
         </div>
 
-        <div className="flex justify-between py-1 font-medium text-slate-800 dark:text-slate-200">
-          <span>CGST ({gst.cgstPercent}%)</span>
-          <span className="font-semibold">{formatINR(gst.cgst)}</span>
-        </div>
-        <div className="flex justify-between py-1 font-medium text-slate-800 dark:text-slate-200">
-          <span>SGST ({gst.sgstPercent}%)</span>
-          <span className="font-semibold">{formatINR(gst.sgst)}</span>
-        </div>
+        {isGstCopy && (
+          <>
+            <div className="flex justify-between py-1 font-medium text-slate-800 dark:text-slate-200">
+              <span>CGST ({gst.cgstPercent}%)</span>
+              <span className="font-semibold">{formatINR(gst.cgst)}</span>
+            </div>
+            <div className="flex justify-between py-1 font-medium text-slate-800 dark:text-slate-200">
+              <span>SGST ({gst.sgstPercent}%)</span>
+              <span className="font-semibold">{formatINR(gst.sgst)}</span>
+            </div>
+          </>
+        )}
 
         {previousDue > 0 && (
           <div className="flex justify-between py-1 text-red-700 dark:text-red-400">
@@ -199,6 +207,7 @@ export function PrintableInvoice({ bill, settings = {} }: PrintableInvoiceProps)
       {bill.id && <PaymentHistorySection billId={bill.id} />}
 
       <p className="mt-5 text-center text-[11px] font-medium text-slate-500 dark:text-slate-400">
+        {!isGstCopy && <span className="block">This is an estimate (no GST charged), not a tax invoice.</span>}
         Thank you for staying with us! Please visit again.
       </p>
     </div>

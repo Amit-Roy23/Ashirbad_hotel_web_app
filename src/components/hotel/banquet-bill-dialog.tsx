@@ -1,64 +1,46 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog'
+import { useEffect, useState } from 'react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Badge } from '@/components/ui/badge'
-import { apiAs, formatINR } from '@/lib/hotel-utils'
 import { Switch } from '@/components/ui/switch'
+import { apiAs, formatINR } from '@/lib/hotel-utils'
+import { askAdminPin } from '@/lib/admin-pin'
 import { computeGst, splitGst } from '@/lib/gst'
 import { GstPicker } from './gst-picker'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetBooking, BanquetBill } from '@/types/banquet'
 import { triggerPrintBanquetInvoice } from '@/lib/print-banquet-invoice'
-import {
-  Receipt,
-  Printer,
-  CreditCard,
-  Banknote,
-  Smartphone,
-  Landmark,
-  Loader2,
-  CheckCircle2,
-  Percent,
-} from 'lucide-react'
+import { Receipt, Printer, CreditCard, Banknote, Smartphone, Landmark, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
 
 interface BanquetBillDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   booking?: BanquetBooking | null
   existingBill?: BanquetBill | null
+  /** with an existing bill: 'pay' records a new payment, 'edit' corrects charges / GST */
+  mode?: 'pay' | 'edit'
   onSuccess: () => void
 }
 
-export function BanquetBillDialog({
-  open,
-  onOpenChange,
-  booking,
-  existingBill,
-  onSuccess,
-}: BanquetBillDialogProps) {
-  const [busy, setBusy] = useState(false)
-  const isEditing = !!existingBill
+const paidOn = (b: BanquetBill) =>
+  Math.round(((b.advanceApplied || 0) + (b.payCash || 0) + (b.payUpi || 0) + (b.payCard || 0) + (b.payBank || 0)) * 100) / 100
 
-  // Charge fields
+/**
+ * Banquet invoice.
+ *  create: from a booking — charges and GST editable; the whole advance received is applied
+ *  pay:    record a new payment on an invoice (amounts start at 0; earlier payments are shown, not re-sent)
+ *  edit:   correct an invoice's charges or GST (Admin PIN); payments stay as they are
+ */
+export function BanquetBillDialog({ open, onOpenChange, booking, existingBill, mode = 'pay', onSuccess }: BanquetBillDialogProps) {
+  const [busy, setBusy] = useState(false)
+  const view: 'create' | 'pay' | 'edit' = existingBill ? mode : 'create'
+  const chargesLocked = view === 'pay'
+
   const [hallRent, setHallRent] = useState('0')
   const [foodCharges, setFoodCharges] = useState('0')
   const [decorCharges, setDecorCharges] = useState('0')
@@ -68,19 +50,19 @@ export function BanquetBillDialog({
   const [cgst, setCgst] = useState(2.5)
   const [sgst, setSgst] = useState(2.5)
   const [decorOn, setDecorOn] = useState(true)
-
-  // Payment Settlement fields
-  const [advanceApplied, setAdvanceApplied] = useState('0')
   const [payCash, setPayCash] = useState('0')
   const [payUpi, setPayUpi] = useState('0')
   const [payCard, setPayCard] = useState('0')
   const [payBank, setPayBank] = useState('0')
-
   const [notes, setNotes] = useState('')
-  const [managerPin, setManagerPin] = useState('')
 
-  // Initialize values
   useEffect(() => {
+    if (!open) return
+    // New payment amounts always start at 0: what was paid before is shown separately
+    setPayCash('0')
+    setPayUpi('0')
+    setPayCard('0')
+    setPayBank('0')
     if (existingBill) {
       setHallRent(String(existingBill.hallRent || 0))
       setFoodCharges(String(existingBill.foodCharges || 0))
@@ -88,17 +70,10 @@ export function BanquetBillDialog({
       setSoundAvCharges(String(existingBill.soundAvCharges || 0))
       setExtraCharges(String(existingBill.extraCharges || 0))
       setDiscount(String(existingBill.discount || 0))
-      {
-        const split = splitGst({ ...existingBill, actualGst: existingBill.gstAmount })
-        setCgst(split.cgstPercent)
-        setSgst(split.sgstPercent)
-      }
+      const split = splitGst({ ...existingBill, actualGst: existingBill.gstAmount })
+      setCgst(split.cgstPercent)
+      setSgst(split.sgstPercent)
       setDecorOn((existingBill.decorCharges || 0) > 0)
-      setAdvanceApplied(String(existingBill.advanceApplied || 0))
-      setPayCash(String(existingBill.payCash || 0))
-      setPayUpi(String(existingBill.payUpi || 0))
-      setPayCard(String(existingBill.payCard || 0))
-      setPayBank(String(existingBill.payBank || 0))
       setNotes(existingBill.notes || '')
     } else if (booking) {
       setHallRent(String(booking.hallRent || 0))
@@ -110,383 +85,260 @@ export function BanquetBillDialog({
       setCgst(2.5)
       setSgst(2.5)
       setDecorOn(booking.decorEnabled !== false)
-      setAdvanceApplied(String(booking.advancePaid || 0))
-
-      // Pre-fill remaining amount into UPI/Cash for convenience
-      const taxable = Math.max(
-        0,
-        (booking.hallRent || 0) +
-          (booking.foodTotal || 0) +
-          (booking.decorEnabled === false ? 0 : (booking.decorCharges || 0) + (booking.extraCharges || 0) - (booking.discount || 0))
-      )
-      const gst = computeGst(taxable, 2.5, 2.5).total
-      const grand = taxable + gst
-      const balance = Math.max(0, grand - (booking.advancePaid || 0))
-      setPayUpi(String(Math.round(balance)))
-      setPayCash('0')
-      setPayCard('0')
-      setPayBank('0')
       setNotes(booking.notes || '')
     }
   }, [booking, existingBill, open])
 
-  // Calculations
   const numHall = Math.max(0, parseFloat(hallRent) || 0)
   const numFood = Math.max(0, parseFloat(foodCharges) || 0)
   // "Decor, AV Services & Discounts" switched off on the booking = none of them on this invoice
-  const servicesOff = !existingBill && booking?.decorEnabled === false
-  // Decor switched off = no decoration charge on this invoice
+  const servicesOff = view === 'create' && booking?.decorEnabled === false
   const numDecor = !servicesOff && decorOn ? Math.max(0, parseFloat(decorCharges) || 0) : 0
   const numSound = servicesOff ? 0 : Math.max(0, parseFloat(soundAvCharges) || 0)
   const numExtra = servicesOff ? 0 : Math.max(0, parseFloat(extraCharges) || 0)
   const numDiscount = servicesOff ? 0 : Math.max(0, parseFloat(discount) || 0)
-  const numGstPct = cgst + sgst
 
   const taxableAmount = Math.max(0, numHall + numFood + numDecor + numSound + numExtra - numDiscount)
   const gstSplit = computeGst(taxableAmount, cgst, sgst)
-  const gstAmount = gstSplit.total
-  const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
+  const grandTotal = view === 'pay' && existingBill ? existingBill.grandTotal : Math.round((taxableAmount + gstSplit.total) * 100) / 100
 
-  const numAdvance = Math.max(0, parseFloat(advanceApplied) || 0)
-  const numCash = Math.max(0, parseFloat(payCash) || 0)
-  const numUpi = Math.max(0, parseFloat(payUpi) || 0)
-  const numCard = Math.max(0, parseFloat(payCard) || 0)
-  const numBank = Math.max(0, parseFloat(payBank) || 0)
+  // Advance: the whole advance received counts (only up to the invoice total)
+  const advanceReceived = view === 'create' ? booking?.advancePaid || 0 : existingBill?.advanceApplied || 0
+  const advanceApplied = Math.min(advanceReceived, grandTotal)
+  const excessAdvance = view === 'create' ? Math.max(0, Math.round((advanceReceived - grandTotal) * 100) / 100) : 0
+  const paidBefore = existingBill ? paidOn(existingBill) : advanceApplied
+  const newPay = [payCash, payUpi, payCard, payBank].reduce((t, v) => t + Math.max(0, parseFloat(v) || 0), 0)
+  const balanceAfter = Math.max(0, Math.round((grandTotal - paidBefore - (view === 'edit' ? 0 : newPay)) * 100) / 100)
+  const overpaid = view !== 'edit' && paidBefore + newPay > grandTotal + 0.01
+  const belowPaid = view === 'edit' && existingBill && grandTotal + 0.01 < paidOn(existingBill)
 
-  const totalPaid = numAdvance + numCash + numUpi + numCard + numBank
-  const balanceDue = Math.max(0, Math.round((grandTotal - totalPaid) * 100) / 100)
-
-  function autoFillBalance(mode: 'CASH' | 'UPI' | 'CARD' | 'BANK') {
-    const unadjusted = Math.max(0, grandTotal - numAdvance)
-    setPayCash(mode === 'CASH' ? String(unadjusted) : '0')
-    setPayUpi(mode === 'UPI' ? String(unadjusted) : '0')
-    setPayCard(mode === 'CARD' ? String(unadjusted) : '0')
-    setPayBank(mode === 'BANK' ? String(unadjusted) : '0')
+  function fillBalance(mode: 'CASH' | 'UPI' | 'CARD' | 'BANK') {
+    const left = String(Math.max(0, Math.round((grandTotal - paidBefore) * 100) / 100))
+    setPayCash(mode === 'CASH' ? left : '0')
+    setPayUpi(mode === 'UPI' ? left : '0')
+    setPayCard(mode === 'CARD' ? left : '0')
+    setPayBank(mode === 'BANK' ? left : '0')
   }
 
   async function handleSubmit(e: React.FormEvent, andPrint = false) {
     e.preventDefault()
-    if (!booking && !existingBill) return
+    if (overpaid) return toast({ variant: 'destructive', title: 'Too much', description: 'Payment is more than the balance due.' })
+    if (belowPaid) return toast({ variant: 'destructive', title: 'Check the total', description: 'The invoice total cannot be less than what is already paid.' })
+    const money = {
+      payCash: Math.max(0, parseFloat(payCash) || 0),
+      payUpi: Math.max(0, parseFloat(payUpi) || 0),
+      payCard: Math.max(0, parseFloat(payCard) || 0),
+      payBank: Math.max(0, parseFloat(payBank) || 0),
+    }
+    const charges = {
+      hallRent: numHall,
+      foodCharges: numFood,
+      decorCharges: numDecor,
+      soundAvCharges: numSound,
+      extraCharges: numExtra,
+      discount: numDiscount,
+      cgstPercent: cgst,
+      sgstPercent: sgst,
+      notes,
+    }
+    let adminPin: string | undefined
+    if (view === 'edit') {
+      const pin = await askAdminPin(`Editing invoice ${existingBill?.billNumber}: total ${formatINR(existingBill?.grandTotal)} → ${formatINR(grandTotal)}. Enter the Admin PIN.`)
+      if (!pin) return
+      adminPin = pin
+    }
+    if (view === 'pay' && newPay <= 0) return toast({ variant: 'destructive', title: 'Enter an amount', description: 'Type the amount received.' })
 
     setBusy(true)
     try {
-      if (isEditing && existingBill) {
-        // Payment settlement update
-        const updated = await apiAs<BanquetBill>('/api/banquet-bills', getCachedUser(), {
+      let saved: BanquetBill
+      if (view === 'pay' && existingBill) {
+        saved = await apiAs<BanquetBill>('/api/banquet-bills', getCachedUser(), {
           method: 'POST',
-          body: JSON.stringify({
-            action: 'payment',
-            id: existingBill.id,
-            payCash: numCash,
-            payUpi: numUpi,
-            payCard: numCard,
-            payBank: numBank,
-          }),
+          body: JSON.stringify({ action: 'payment', id: existingBill.id, ...money }),
         })
-        toast({ variant: 'success', title: 'Payment Recorded', description: `Invoice ${existingBill.billNumber} payment updated.` })
-        if (andPrint) triggerPrintBanquetInvoice(updated)
-      } else if (booking) {
-        const bill = await apiAs<BanquetBill>('/api/banquet-bills', getCachedUser(), {
+        toast({ variant: 'success', title: 'Payment recorded', description: `${formatINR(newPay)} on ${existingBill.billNumber}` })
+      } else if (view === 'edit' && existingBill) {
+        saved = await apiAs<BanquetBill>('/api/banquet-bills', getCachedUser(), {
+          method: 'PATCH',
+          adminPin,
+          body: JSON.stringify({ id: existingBill.id, ...charges }),
+        })
+        toast({ variant: 'success', title: 'Invoice updated', description: `${saved.billNumber} · total ${formatINR(saved.grandTotal)}` })
+      } else {
+        saved = await apiAs<BanquetBill>('/api/banquet-bills', getCachedUser(), {
           method: 'POST',
-          body: JSON.stringify({
-            banquetBookingId: booking.id,
-            hallRent: numHall,
-            foodCharges: numFood,
-            decorCharges: numDecor,
-            soundAvCharges: numSound,
-            extraCharges: numExtra,
-            discount: numDiscount,
-            gstPercent: numGstPct,
-            cgstPercent: cgst,
-            sgstPercent: sgst,
-            advanceApplied: numAdvance,
-            payCash: numCash,
-            payUpi: numUpi,
-            payCard: numCard,
-            payBank: numBank,
-            notes,
-          }),
+          body: JSON.stringify({ banquetBookingId: booking!.id, ...charges, gstPercent: cgst + sgst, ...money }),
         })
-        toast({ variant: 'success', title: 'Invoice Generated', description: `Banquet Invoice ${bill.billNumber} generated successfully.` })
-        if (andPrint) triggerPrintBanquetInvoice(bill)
+        toast({ variant: 'success', title: 'Invoice generated', description: `Banquet invoice ${saved.billNumber}` })
       }
+      if (andPrint) triggerPrintBanquetInvoice(saved)
       onSuccess()
       onOpenChange(false)
     } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: 'Billing Error',
-        description: err instanceof Error ? err.message : 'Failed to generate banquet invoice',
-      })
+      toast({ variant: 'destructive', title: 'Billing error', description: err instanceof Error ? err.message : 'Could not save' })
     } finally {
       setBusy(false)
     }
   }
 
-  const activeCustomer = booking?.customerName || existingBill?.customerName || 'Customer'
-  const activeEvent = booking?.eventName || existingBill?.eventName || 'Event'
-  const activeHall = booking?.hall?.name || existingBill?.hallName || 'Banquet Hall'
+  const customer = booking?.customerName || existingBill?.customerName || 'Customer'
+  const event = booking?.eventName || existingBill?.eventName || 'Event'
+  const hall = booking?.hall?.name || existingBill?.hallName || 'Banquet Hall'
+  const field = (label: string, value: string, set: (v: string) => void, extraDisabled = false, cls = '') => (
+    <div className="space-y-1">
+      <Label className="text-xs">{label}</Label>
+      <Input type="number" min="0" value={value} onChange={(e) => set(e.target.value)} disabled={chargesLocked || extraDisabled} className={`h-9 text-xs ${cls}`} />
+    </div>
+  )
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[92dvh] overflow-y-auto">
+      <DialogContent className="max-h-[92dvh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg">
             <Receipt className="h-5 w-5 text-emerald-600" />
-            {isEditing ? `Banquet Invoice Settlement (${existingBill?.billNumber})` : 'Generate Banquet Tax Invoice'}
+            {view === 'pay' ? `Record Payment — ${existingBill?.billNumber}` : view === 'edit' ? `Edit Invoice — ${existingBill?.billNumber}` : 'Generate Banquet Invoice'}
           </DialogTitle>
           <DialogDescription>
-            {activeEvent} · {activeCustomer} · {activeHall}
+            {event} · {customer} · {hall}
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={(e) => handleSubmit(e, false)} className="space-y-4 pt-2">
-          {/* Bill Line Items */}
-          <div className="rounded-lg border p-3 bg-muted/30 space-y-2.5">
-            <h4 className="text-xs font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wide">
-              Invoice Line Items &amp; Charges
-            </h4>
-            {servicesOff && (
-              <p className="text-[11px] text-muted-foreground">
-                Decor, AV services &amp; discounts are switched off for this booking (₹0).
-              </p>
-            )}
-
+        <form onSubmit={(e) => handleSubmit(e, false)} className="space-y-4 pt-1">
+          <div className="space-y-2.5 rounded-lg border bg-muted/30 p-3">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-400">Charges</h4>
+            {servicesOff && <p className="text-[11px] text-muted-foreground">Decor, AV services &amp; discounts are switched off for this booking (₹0).</p>}
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-              <div className="space-y-1">
-                <Label className="text-xs">Hall Rent (₹)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={hallRent}
-                  onChange={(e) => setHallRent(e.target.value)}
-                  disabled={isEditing}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs">Catering / Food (₹)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={foodCharges}
-                  onChange={(e) => setFoodCharges(e.target.value)}
-                  disabled={isEditing}
-                  className="h-9 text-xs"
-                />
-              </div>
-
+              {field('Hall Rent (₹)', hallRent, setHallRent)}
+              {field('Catering / Food (₹)', foodCharges, setFoodCharges)}
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs">Stage &amp; Decor (₹)</Label>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground">{decorOn ? 'On' : 'Off'}</span>
-                    <Switch checked={decorOn && !servicesOff} onCheckedChange={setDecorOn} disabled={isEditing || servicesOff} className="scale-75" />
-                  </div>
+                  <Switch checked={decorOn && !servicesOff} onCheckedChange={setDecorOn} disabled={chargesLocked || servicesOff} className="scale-75" aria-label="Decor on or off" />
                 </div>
                 <Input
                   type="number"
                   min="0"
                   value={decorOn && !servicesOff ? decorCharges : '0'}
                   onChange={(e) => setDecorCharges(e.target.value)}
-                  disabled={isEditing || !decorOn || servicesOff}
+                  disabled={chargesLocked || !decorOn || servicesOff}
                   className="h-9 text-xs"
                 />
               </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs">DJ &amp; Sound / AV (₹)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={servicesOff ? '0' : soundAvCharges}
-                  onChange={(e) => setSoundAvCharges(e.target.value)}
-                  disabled={isEditing || servicesOff}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs">Extra Services (₹)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={servicesOff ? '0' : extraCharges}
-                  onChange={(e) => setExtraCharges(e.target.value)}
-                  disabled={isEditing || servicesOff}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs">Discount (₹)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={servicesOff ? '0' : discount}
-                  onChange={(e) => setDiscount(e.target.value)}
-                  disabled={isEditing || servicesOff}
-                  className="h-9 text-xs text-emerald-600 font-semibold"
-                />
-              </div>
+              {field('DJ & Sound / AV (₹)', servicesOff ? '0' : soundAvCharges, setSoundAvCharges, servicesOff)}
+              {field('Extra Services (₹)', servicesOff ? '0' : extraCharges, setExtraCharges, servicesOff)}
+              {field('Discount (₹)', servicesOff ? '0' : discount, setDiscount, servicesOff, 'font-semibold text-emerald-600')}
             </div>
-
-            {/* GST & Totals Summary */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-2 text-xs">
               <div className="w-full space-y-1.5 sm:w-64">
                 <GstPicker
                   cgst={cgst}
                   sgst={sgst}
-                  disabled={isEditing}
+                  disabled={chargesLocked}
                   onChange={(n) => {
                     setCgst(n.cgst)
                     setSgst(n.sgst)
                   }}
                 />
                 <p className="text-muted-foreground">
-                  CGST {formatINR(gstSplit.cgst)} · SGST {formatINR(gstSplit.sgst)}
+                  {cgst + sgst > 0 ? `CGST ${formatINR(gstSplit.cgst)} · SGST ${formatINR(gstSplit.sgst)} — GST invoice` : 'No GST — this will be an ESTIMATE (own number series)'}
                 </p>
               </div>
-
               <div className="text-right">
-                <span className="text-muted-foreground mr-2">Taxable: <b>{formatINR(taxableAmount)}</b></span>
-                <span className="text-sm font-bold text-foreground">Grand Total: <b className="text-emerald-700 dark:text-emerald-400">{formatINR(grandTotal)}</b></span>
-              </div>
-            </div>
-          </div>
-
-          {/* Payment Settlement */}
-          <div className="rounded-lg border p-3 space-y-2.5 bg-emerald-50/20 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wide">
-                Payment Collection &amp; Settlement
-              </h4>
-              <div className="flex gap-1">
-                <Button type="button" size="sm" variant="outline" className="h-6 text-[10px] px-1.5" onClick={() => autoFillBalance('UPI')}>
-                  All UPI
-                </Button>
-                <Button type="button" size="sm" variant="outline" className="h-6 text-[10px] px-1.5" onClick={() => autoFillBalance('CASH')}>
-                  All Cash
-                </Button>
-                <Button type="button" size="sm" variant="outline" className="h-6 text-[10px] px-1.5" onClick={() => autoFillBalance('CARD')}>
-                  All Card
-                </Button>
-                <Button type="button" size="sm" variant="outline" className="h-6 text-[10px] px-1.5" onClick={() => autoFillBalance('BANK')}>
-                  All Bank
-                </Button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
-              <div className="space-y-1">
-                <Label className="text-xs">Advance (₹)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={advanceApplied}
-                  onChange={(e) => setAdvanceApplied(e.target.value)}
-                  disabled={isEditing}
-                  className="h-9 text-xs text-muted-foreground bg-muted"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs flex items-center gap-1">
-                  <Smartphone className="h-3 w-3 text-violet-600" /> UPI (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={payUpi}
-                  onChange={(e) => setPayUpi(e.target.value)}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs flex items-center gap-1">
-                  <Banknote className="h-3 w-3 text-emerald-600" /> Cash (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={payCash}
-                  onChange={(e) => setPayCash(e.target.value)}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs flex items-center gap-1">
-                  <CreditCard className="h-3 w-3 text-orange-600" /> Card (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={payCard}
-                  onChange={(e) => setPayCard(e.target.value)}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs flex items-center gap-1">
-                  <Landmark className="h-3 w-3 text-blue-600" /> Bank/NEFT (₹)
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={payBank}
-                  onChange={(e) => setPayBank(e.target.value)}
-                  className="h-9 text-xs"
-                />
-              </div>
-            </div>
-
-            {/* Total Paid & Balance Summary */}
-            <div className="flex items-center justify-between rounded-md bg-muted p-2.5 text-xs">
-              <div>
-                <span className="text-muted-foreground">Total Settled: </span>
-                <span className="font-bold text-foreground">{formatINR(totalPaid)}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Balance Due: </span>
-                <span className={`font-bold text-sm ${balanceDue > 0.01 ? 'text-red-600' : 'text-emerald-600'}`}>
-                  {balanceDue <= 0.01 ? 'PAID IN FULL (₹0)' : formatINR(balanceDue)}
+                {view !== 'pay' && <span className="mr-2 text-muted-foreground">Taxable: <b>{formatINR(taxableAmount)}</b></span>}
+                <span className="text-sm font-bold">
+                  Total: <b className="text-emerald-700 dark:text-emerald-400">{formatINR(grandTotal)}</b>
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="space-y-1">
-            <Label className="text-xs">Invoice Notes / Special Remarks</Label>
-            <Textarea
-              rows={2}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. Stage lights and sound included in contract..."
-              className="text-xs resize-none"
-            />
+          <div className="space-y-2.5 rounded-lg border border-emerald-300 bg-emerald-50/20 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Advance received {view === 'create' ? '(applied in full)' : ''}</span>
+                <b>{formatINR(advanceApplied)}</b>
+              </div>
+              {existingBill && paidOn(existingBill) - (existingBill.advanceApplied || 0) > 0.001 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Paid on this invoice before</span>
+                  <b>{formatINR(paidOn(existingBill) - (existingBill.advanceApplied || 0))}</b>
+                </div>
+              )}
+              {excessAdvance > 0 && (
+                <p className="flex items-center gap-1.5 rounded bg-amber-100 p-1.5 text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Advance is {formatINR(excessAdvance)} more than this invoice — refund it to the customer.
+                </p>
+              )}
+            </div>
+
+            {view !== 'edit' && (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-400">
+                    {view === 'pay' ? 'New payment' : 'Received now'}
+                  </h4>
+                  <div className="flex gap-1">
+                    {(['UPI', 'CASH', 'CARD', 'BANK'] as const).map((m) => (
+                      <Button key={m} type="button" size="sm" variant="outline" className="h-6 px-1.5 text-[10px]" onClick={() => fillBalance(m)}>
+                        All {m === 'BANK' ? 'Bank' : m[0] + m.slice(1).toLowerCase()}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                  {(
+                    [
+                      ['UPI', payUpi, setPayUpi, <Smartphone key="u" className="h-3 w-3 text-violet-600" />],
+                      ['Cash', payCash, setPayCash, <Banknote key="c" className="h-3 w-3 text-emerald-600" />],
+                      ['Card', payCard, setPayCard, <CreditCard key="k" className="h-3 w-3 text-orange-600" />],
+                      ['Bank/NEFT', payBank, setPayBank, <Landmark key="b" className="h-3 w-3 text-blue-600" />],
+                    ] as [string, string, (v: string) => void, React.ReactNode][]
+                  ).map(([label, value, set, icon]) => (
+                    <div key={label} className="space-y-1">
+                      <Label className="flex items-center gap-1 text-xs">
+                        {icon} {label} (₹)
+                      </Label>
+                      <Input type="number" min="0" value={value} onChange={(e) => set(e.target.value)} className="h-9 text-xs" />
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div className="flex items-center justify-between rounded-md bg-muted p-2.5 text-xs">
+              <span>
+                <span className="text-muted-foreground">Paid {view === 'edit' ? 'so far' : 'after this'}: </span>
+                <b>{formatINR(paidBefore + (view === 'edit' ? 0 : newPay))}</b>
+              </span>
+              <span>
+                <span className="text-muted-foreground">Balance due: </span>
+                <b className={`text-sm ${balanceAfter > 0.01 ? 'text-red-600' : 'text-emerald-600'}`}>{balanceAfter <= 0.01 ? 'PAID IN FULL' : formatINR(balanceAfter)}</b>
+              </span>
+            </div>
+            {overpaid && <p className="text-xs text-red-600">Payment is more than the balance due.</p>}
+            {belowPaid && <p className="text-xs text-red-600">The total cannot be less than what is already paid ({formatINR(paidOn(existingBill!))}).</p>}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t">
+          {view !== 'pay' && (
+            <div className="space-y-1">
+              <Label className="text-xs">Invoice notes</Label>
+              <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className="resize-none text-xs" />
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
             <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                className="gap-1.5"
-                disabled={busy}
-                onClick={(e) => handleSubmit(e, true)}
-              >
+              <Button type="button" variant="secondary" className="gap-1.5" disabled={busy || overpaid || !!belowPaid} onClick={(e) => handleSubmit(e, true)}>
                 <Printer className="h-4 w-4" /> Save &amp; Print
               </Button>
-              <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold" disabled={busy}>
+              <Button type="submit" className="bg-emerald-600 font-semibold text-white hover:bg-emerald-700" disabled={busy || overpaid || !!belowPaid}>
                 {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                {isEditing ? 'Update Payment' : 'Generate Bill'}
+                {view === 'pay' ? 'Record Payment' : view === 'edit' ? 'Save Invoice' : 'Generate Bill'}
               </Button>
             </div>
           </div>

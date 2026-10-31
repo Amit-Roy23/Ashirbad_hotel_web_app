@@ -617,7 +617,6 @@ export function BookingDialog({
                 id="bk-phone"
                 type="tel"
                 inputMode="numeric"
-                maxLength={10}
                 placeholder="10-digit mobile number"
                 value={phone}
                 onChange={(e) => lookupByPhone(e.target.value)}

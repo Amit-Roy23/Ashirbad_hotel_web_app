@@ -66,7 +66,7 @@ async function main() {
       `UPDATE "Room" SET "status" = CASE WHEN "status" = 'MAINTENANCE' THEN 'MAINTENANCE' ELSE 'VACANT' END, "housekeeping" = 'CLEAN'`
     ),
     prisma.$executeRawUnsafe(`UPDATE "BanquetHall" SET "status" = 'AVAILABLE' WHERE "status" <> 'MAINTENANCE'`),
-    prisma.$executeRawUnsafe(`UPDATE "Setting" SET "value" = '1' WHERE "key" = 'invoiceCounter'`),
+    prisma.$executeRawUnsafe(`UPDATE "Setting" SET "value" = '1' WHERE "key" IN ('invoiceCounter', 'estimateCounter')`),
     ...(hasInventory ? [prisma.$executeRawUnsafe(`UPDATE "InventoryItem" SET "stock" = 0, "avgCost" = 0`)] : []),
   ])
   console.log('\nDone. Test data cleared; rooms are Vacant and Clean; inventory stock is 0; next invoice is number 1.')

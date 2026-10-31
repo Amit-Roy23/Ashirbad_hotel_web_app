@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/select'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, toDateStr, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, toDateStr, todayStr, addDays, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, formatGovIdDisplay, matchesSearch } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { triggerPrintGuestDetails } from '@/lib/print-invoice'
 import { Loader2, History, Pencil, Trash2, ShieldCheck, AlertTriangle, Printer } from 'lucide-react'
@@ -105,6 +105,8 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const [search, setSearch] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
+  const [guestType, setGuestType] = useState('ALL')
+  const [idFilter, setIdFilter] = useState('ALL')
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [viewGuest, setViewGuest] = useState<GuestRow | null>(null)
   const [editGuest, setEditGuest] = useState<GuestRow | null>(null)
@@ -143,7 +145,30 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return guests.filter((g) => {
-      if (q && !`${g.name} ${g.phone} ${g.company || ''} ${g.gst || ''}`.toLowerCase().includes(q)) return false
+      if (q && !matchesSearch(q, [g.name, g.company, g.gst, g.address], [g.phone])) return false
+      if (guestType !== 'ALL') {
+        const stays = g.bookings.filter((b) => b.status !== 'CANCELLED')
+        const ok =
+          guestType === 'STAYING'
+            ? g.bookings.some((b) => b.status === 'ACTIVE')
+            : guestType === 'UPCOMING'
+              ? g.bookings.some((b) => b.status === 'BOOKED')
+              : guestType === 'RETURNING'
+                ? stays.length >= 2
+                : guestType === 'FIRST'
+                  ? stays.length <= 1
+                  : guestType === 'CORPORATE'
+                    ? !!(g.company && g.company.trim())
+                    : guestType === 'DUES'
+                      ? (g.totalDue || 0) > 0.01
+                      : guestType === 'NO_ID'
+                        ? !g.idProof
+                        : true
+        if (!ok) return false
+      }
+      if (idFilter !== 'ALL') {
+        if (idFilter === 'NONE' ? !!g.idProof : !g.idProof || parseGovId(g.idProof).idType !== idFilter) return false
+      }
       if (from || to) {
         // Date filter: guests who stayed (any day of a stay) within the range; guests without stays by first-seen date
         const lo = from || '0000-01-01'
@@ -160,7 +185,36 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
       }
       return true
     })
-  }, [guests, search, from, to])
+  }, [guests, search, from, to, guestType, idFilter])
+
+  // Quick date ranges for the stay-date filter
+  function applyPeriod(period: string) {
+    const today = todayStr()
+    const shift = (n: number) => addDays(n, today)
+    if (period === 'TODAY') {
+      setFrom(today)
+      setTo(today)
+    } else if (period === 'YESTERDAY') {
+      setFrom(shift(-1))
+      setTo(shift(-1))
+    } else if (period === 'WEEK') {
+      setFrom(shift(-6))
+      setTo(today)
+    } else if (period === 'MONTH') {
+      setFrom(`${today.slice(0, 8)}01`)
+      setTo(today)
+    } else if (period === 'LAST_MONTH') {
+      const first = new Date(`${today.slice(0, 8)}01T12:00:00`)
+      first.setMonth(first.getMonth() - 1)
+      const start = toDateStr(first)
+      const end = addDays(-1, `${today.slice(0, 8)}01`)
+      setFrom(start)
+      setTo(end)
+    } else {
+      setFrom('')
+      setTo('')
+    }
+  }
 
   const { sorted, sort, toggle } = useSort<Record<string, unknown>>(filtered as unknown as Record<string, unknown>[], 'createdAt')
   const { paged, controls } = usePagination(sorted as unknown as GuestRow[], 10)
@@ -294,15 +348,52 @@ export function GuestsTab({ refreshKey, initialFilter }: TabProps) {
       <TableControls
         search={search}
         onSearch={setSearch}
-        searchPlaceholder="Name, phone, company, GST…"
+        searchPlaceholder="Name, company, GST, address, phone (5+ digits)…"
+        filters={[
+          {
+            key: 'guestType',
+            label: 'Guests',
+            options: [
+              { value: 'STAYING', label: 'Staying now' },
+              { value: 'UPCOMING', label: 'Upcoming booking' },
+              { value: 'RETURNING', label: 'Returning (2+ stays)' },
+              { value: 'FIRST', label: 'First stay' },
+              { value: 'CORPORATE', label: 'Corporate (company)' },
+              { value: 'DUES', label: 'Has dues' },
+              { value: 'NO_ID', label: 'No ID proof' },
+            ],
+          },
+          {
+            key: 'idType',
+            label: 'ID Proof',
+            options: [...GOV_ID_TYPES.map((t) => ({ value: t.value, label: t.label })), { value: 'NONE', label: 'Not recorded' }],
+          },
+        ]}
+        filterValues={{ guestType, idType: idFilter }}
+        onFilterChange={(k, v) => (k === 'guestType' ? setGuestType(v) : setIdFilter(v))}
         onReset={() => {
           setSearch('')
           setFrom('')
           setTo('')
+          setGuestType('ALL')
+          setIdFilter('ALL')
         }}
         onExport={doExport}
         onPrint={doPrint}
       >
+        <Select value="" onValueChange={applyPeriod}>
+          <SelectTrigger className="h-9 w-[130px] text-xs" aria-label="Quick period">
+            <SelectValue placeholder="Period…" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="TODAY">Today</SelectItem>
+            <SelectItem value="YESTERDAY">Yesterday</SelectItem>
+            <SelectItem value="WEEK">Last 7 days</SelectItem>
+            <SelectItem value="MONTH">This month</SelectItem>
+            <SelectItem value="LAST_MONTH">Last month</SelectItem>
+            <SelectItem value="ALL_TIME">Any time</SelectItem>
+          </SelectContent>
+        </Select>
         <div className="flex items-center gap-1.5">
           <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[145px] text-xs" aria-label="Stay from date" />
           <span className="text-xs font-medium text-muted-foreground">to</span>

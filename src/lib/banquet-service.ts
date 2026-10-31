@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { istDateStr } from '@/lib/stay'
 import { computeGst, isValidHalfRate } from '@/lib/gst'
 import { BanquetBooking, BanquetBill, BanquetHall, BanquetStats } from '@/types/banquet'
+import { MAX_BANQUET_DAYS, addDaysStr, isValidTime, slotLabel, slotTimes, toMinutes, windowsOverlap } from '@/lib/banquet-time'
 import crypto from 'crypto'
 
 function genId(): string {
@@ -26,33 +27,75 @@ async function nextNumber(table: 'BanquetBooking' | 'BanquetBill', column: 'book
 
 const HOLDING_STATUSES = ['CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
 
-function slotsClash(a: string, b: string) {
-  return a === b || a === 'FULL_DAY' || b === 'FULL_DAY'
+/** Validated days, slot and daily times of a booking */
+function normalizeSchedule(input: { days?: unknown; slot?: unknown; startTime?: unknown; endTime?: unknown }) {
+  const days = Math.floor(Number(input.days) || 1)
+  if (days < 1 || days > MAX_BANQUET_DAYS) throw new BanquetError(`A booking can be for 1 to ${MAX_BANQUET_DAYS} days`)
+  const slot = ['MORNING', 'EVENING', 'FULL_DAY', 'CUSTOM'].includes(String(input.slot)) ? String(input.slot) : 'EVENING'
+  if (slot === 'CUSTOM') {
+    if (!isValidTime(input.startTime) || !isValidTime(input.endTime)) {
+      throw new BanquetError('Enter the start and end time for custom hours')
+    }
+    if (toMinutes(input.endTime) <= toMinutes(input.startTime)) {
+      throw new BanquetError('End time must be after the start time (same day)')
+    }
+  }
+  const { start, end } = slotTimes(slot, input.startTime as string, input.endTime as string)
+  return { days, slot, startTime: start, endTime: end }
 }
 
-/** A hall can host one event per slot per day (FULL_DAY blocks the whole day) */
-async function assertHallAvailable(opts: { hallId: string; eventDate: Date; slot: string; status: string; excludeId?: string }) {
+/** Event date (IST noon) and the last day of a booking of `days` days */
+function eventDates(eventDate: string | Date, days: number) {
+  const dayStr = typeof eventDate === 'string' && eventDate.length <= 10 ? eventDate : istDateStr(new Date(eventDate))
+  const start = new Date(`${dayStr}T12:00:00+05:30`)
+  if (isNaN(start.getTime())) throw new BanquetError('Valid event date is required')
+  const end = new Date(`${addDaysStr(dayStr, days - 1)}T12:00:00+05:30`)
+  return { dayStr, start, end }
+}
+
+/**
+ * A hall holds one event at a time: two bookings clash when they share a day and their daily
+ * time windows overlap (Morning and Evening on the same day do not clash; Full Day clashes with both).
+ */
+async function assertHallAvailable(opts: {
+  hallId: string
+  eventDate: Date
+  days: number
+  slot: string
+  startTime: string
+  endTime: string
+  status: string
+  excludeId?: string
+}) {
   const hallRows = await prisma.$queryRawUnsafe<any[]>('SELECT "name", "status" FROM "BanquetHall" WHERE "id" = $1', opts.hallId)
   const hall = hallRows?.[0]
   if (!hall) throw new BanquetError('Selected banquet hall not found')
   if (!HOLDING_STATUSES.includes(opts.status)) return
   if (hall.status === 'MAINTENANCE') throw new BanquetError(`${hall.name} is under maintenance`)
 
-  const dayStr = istDateStr(opts.eventDate)
+  const firstDay = istDateStr(opts.eventDate)
+  const myDays = new Set(Array.from({ length: opts.days }, (_, i) => addDaysStr(firstDay, i)))
+  const lastDay = addDaysStr(firstDay, opts.days - 1)
   const others = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT "id", "bookingNumber", "customerName", "eventDate", "slot" FROM "BanquetBooking"
+    `SELECT "id", "bookingNumber", "customerName", "eventDate", "days", "slot", "startTime", "endTime" FROM "BanquetBooking"
      WHERE "hallId" = $1 AND "status" IN ('CONFIRMED', 'IN_PROGRESS', 'COMPLETED') AND "id" <> $2
-       AND "eventDate" BETWEEN $3 AND $4`,
+       AND "eventDate" <= $3 AND "eventDate" >= $4`,
     opts.hallId,
     opts.excludeId || '',
-    new Date(opts.eventDate.getTime() - 2 * 24 * 60 * 60 * 1000),
-    new Date(opts.eventDate.getTime() + 2 * 24 * 60 * 60 * 1000)
+    new Date(`${lastDay}T23:59:59+05:30`),
+    new Date(new Date(`${firstDay}T00:00:00+05:30`).getTime() - MAX_BANQUET_DAYS * 24 * 60 * 60 * 1000)
   )
-  const clash = others.find((o) => istDateStr(o.eventDate) === dayStr && slotsClash(o.slot, opts.slot))
-  if (clash) {
-    throw new BanquetError(
-      `${hall.name} is already booked on ${dayStr} (${clash.slot}) for ${clash.customerName} — ${clash.bookingNumber}`
-    )
+  const mine = { start: opts.startTime, end: opts.endTime }
+  for (const o of others) {
+    const oFirst = istDateStr(new Date(o.eventDate))
+    const oDays = Math.max(1, Number(o.days) || 1)
+    const shared = Array.from({ length: oDays }, (_, i) => addDaysStr(oFirst, i)).find((d) => myDays.has(d))
+    if (!shared) continue
+    if (windowsOverlap(mine, slotTimes(o.slot, o.startTime, o.endTime))) {
+      throw new BanquetError(
+        `${hall.name} is already booked on ${shared} (${slotLabel(o.slot, o.startTime, o.endTime)}) for ${o.customerName} — ${o.bookingNumber}`
+      )
+    }
   }
 }
 
@@ -333,11 +376,17 @@ export async function getBanquetBookings(query?: {
     customerAddress: b.customerAddress,
     companyName: b.companyName,
     gstNumber: b.gstNumber,
+    idProof: b.idProof || null,
     eventName: b.eventName,
     eventDate: b.eventDate?.toISOString?.() || b.eventDate,
     endDate: b.endDate?.toISOString?.() || b.endDate,
+    days: Math.max(1, Number(b.days) || 1),
     slot: b.slot,
+    startTime: slotTimes(b.slot, b.startTime, b.endTime).start,
+    endTime: slotTimes(b.slot, b.startTime, b.endTime).end,
     guestCount: Number(b.guestCount || 0),
+    // Older bookings have no per-day rate: their whole rent was for one day
+    hallRatePerDay: Number(b.hallRatePerDay) > 0 ? Number(b.hallRatePerDay) : Number(b.hallRent || 0) / Math.max(1, Number(b.days) || 1),
     hallRent: Number(b.hallRent || 0),
     foodRatePerPlate: Number(b.foodRatePerPlate || 0),
     foodPackageName: b.foodPackageName,
@@ -376,11 +425,16 @@ export async function createBanquetBooking(
     customerAddress?: string
     companyName?: string
     gstNumber?: string
+    idProof?: string
     eventName: string
     eventDate: string
     endDate?: string
+    days?: number
     slot?: string
+    startTime?: string
+    endTime?: string
     guestCount?: number
+    hallRatePerDay?: number
     hallRent?: number
     foodRatePerPlate?: number
     foodPackageName?: string
@@ -402,10 +456,19 @@ export async function createBanquetBooking(
   const id = genId()
   const now = new Date()
 
+  const phoneDigits = String(data.customerPhone || '').replace(/\D/g, '')
+  if (phoneDigits.length !== 10) throw new BanquetError('A valid 10-digit mobile number is required for the host')
+  if (!String(data.customerName || '').trim()) throw new BanquetError('Customer / host name is required')
+  const schedule = normalizeSchedule(data)
+  const { start: eventDateObj, end: endDateObj } = eventDates(data.eventDate, schedule.days)
   const guestCount = Number(data.guestCount) || 100
-  const hallRent = Number(data.hallRent) || 0
+  // Hall rent is per day; older callers send only the total
+  const hallRatePerDay =
+    data.hallRatePerDay !== undefined ? Math.max(0, Number(data.hallRatePerDay) || 0) : Math.max(0, Number(data.hallRent) || 0) / schedule.days
+  const hallRent = Math.round(hallRatePerDay * schedule.days * 100) / 100
   const foodRatePerPlate = Number(data.foodRatePerPlate) || 0
-  const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : foodRatePerPlate * guestCount
+  // Catering: plates for every guest on every day of the booking
+  const foodTotal = foodRatePerPlate > 0 ? Math.round(foodRatePerPlate * guestCount * schedule.days * 100) / 100 : 0
   // The "Decor, AV Services & Discounts" section can be switched off for an event;
   // then decor, sound/AV extras and the discount all carry nothing
   const decorEnabled = data.decorEnabled !== false
@@ -419,12 +482,9 @@ export async function createBanquetBooking(
   const paymentStatus =
     advancePaid >= totalEstimated && totalEstimated > 0 ? 'PAID' : advancePaid > 0 ? 'PARTIAL' : 'UNPAID'
 
-  const eventDateObj = new Date(data.eventDate.length <= 10 ? data.eventDate + 'T12:00:00' : data.eventDate)
-  const endDateObj = data.endDate ? new Date(data.endDate) : null
-  if (isNaN(eventDateObj.getTime())) throw new BanquetError('Valid event date is required')
   // Only an enquiry can be created without holding the hall; anything else is a confirmed booking
   const status = data.status === 'ENQUIRY' ? 'ENQUIRY' : 'CONFIRMED'
-  await assertHallAvailable({ hallId: data.hallId, eventDate: eventDateObj, slot: data.slot || 'EVENING', status })
+  await assertHallAvailable({ hallId: data.hallId, eventDate: eventDateObj, ...schedule, status })
 
   await prisma.$executeRawUnsafe(
     `INSERT INTO "BanquetBooking" (
@@ -440,7 +500,7 @@ export async function createBanquetBooking(
     bookingNumber,
     data.hallId,
     data.customerName.trim(),
-    data.customerPhone.trim(),
+    phoneDigits,
     data.customerEmail || null,
     data.customerAddress || null,
     data.companyName || null,
@@ -448,7 +508,7 @@ export async function createBanquetBooking(
     data.eventName.trim(),
     eventDateObj,
     endDateObj,
-    data.slot || 'EVENING',
+    schedule.slot,
     guestCount,
     hallRent,
     foodRatePerPlate,
@@ -486,7 +546,16 @@ export async function createBanquetBooking(
     }
   }
 
-  await prisma.$executeRawUnsafe('UPDATE "BanquetBooking" SET "decorEnabled" = $2 WHERE "id" = $1', id, decorEnabled)
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBooking" SET "decorEnabled" = $2, "days" = $3, "startTime" = $4, "endTime" = $5, "hallRatePerDay" = $6, "idProof" = $7 WHERE "id" = $1',
+    id,
+    decorEnabled,
+    schedule.days,
+    schedule.startTime,
+    schedule.endTime,
+    hallRatePerDay,
+    data.idProof ? String(data.idProof).trim() : null
+  )
 
   const created = await getBanquetBookings({ search: bookingNumber })
   return created[0] || { id, bookingNumber, customerName: data.customerName, totalEstimated, advancePaid }
@@ -502,23 +571,55 @@ export async function updateBanquetBooking(
   if (!existing) throw new BanquetError('Banquet booking not found')
 
   const nextHallId = data.hallId || existing.hallId
-  const nextEventDate = data.eventDate
-    ? new Date(String(data.eventDate).length <= 10 ? String(data.eventDate) + 'T12:00:00' : String(data.eventDate))
-    : new Date(existing.eventDate)
   const nextSlot = data.slot || existing.slot
+  const schedule = normalizeSchedule({
+    days: data.days ?? existing.days,
+    slot: nextSlot,
+    // A slot change without new times keeps custom hours only when still custom
+    startTime: data.startTime ?? existing.startTime,
+    endTime: data.endTime ?? existing.endTime,
+  })
+  const { start: nextEventDate, end: nextEndDate } = eventDates(
+    data.eventDate ? String(data.eventDate) : new Date(existing.eventDate),
+    schedule.days
+  )
   const nextStatus = data.status || existing.status
-  await assertHallAvailable({ hallId: nextHallId, eventDate: nextEventDate, slot: nextSlot, status: nextStatus, excludeId: id })
+  await assertHallAvailable({ hallId: nextHallId, eventDate: nextEventDate, ...schedule, status: nextStatus, excludeId: id })
 
   // An edited advance (absolute advancePaid) is money in/out too: record the difference in the ledger
   let advanceAddition = Number(data.advanceAddition) || 0
   if (data.advancePaid !== undefined && !advanceAddition) {
     advanceAddition = Math.round((Number(data.advancePaid) - Number(existing.advancePaid)) * 100) / 100
   }
+  if (Math.abs(advanceAddition) > 0.001) {
+    const invoiced = await prisma.$queryRawUnsafe<{ billNumber: string }[]>('SELECT "billNumber" FROM "BanquetBill" WHERE "banquetBookingId" = $1', id)
+    if (invoiced.length > 0) {
+      throw new BanquetError(`This booking is invoiced (${invoiced[0].billNumber}). Record payments on the invoice instead.`)
+    }
+  }
   const newAdvance = Math.max(0, Number(existing.advancePaid) + advanceAddition)
 
-  const hallRent = data.hallRent !== undefined ? Number(data.hallRent) : Number(existing.hallRent)
+  const oldDays = Math.max(1, Number(existing.days) || 1)
+  const existingRate = Number(existing.hallRatePerDay) > 0 ? Number(existing.hallRatePerDay) : Number(existing.hallRent) / oldDays
+  const hallRatePerDay =
+    data.hallRatePerDay !== undefined
+      ? Math.max(0, Number(data.hallRatePerDay) || 0)
+      : data.hallRent !== undefined
+        ? Math.max(0, Number(data.hallRent) || 0) / schedule.days
+        : existingRate
+  const hallRent = Math.round(hallRatePerDay * schedule.days * 100) / 100
   const guestCount = data.guestCount !== undefined ? Number(data.guestCount) : Number(existing.guestCount)
-  const foodTotal = data.foodTotal !== undefined ? Number(data.foodTotal) : Number(existing.foodTotal)
+  const foodRate = data.foodRatePerPlate !== undefined ? Number(data.foodRatePerPlate) || 0 : Number(existing.foodRatePerPlate) || 0
+  // Catering follows the rate x guests x days whenever any of them is known; old bookings without a
+  // rate keep their stored food total
+  const foodTotal =
+    foodRate > 0
+      ? Math.round(foodRate * guestCount * schedule.days * 100) / 100
+      : data.foodRatePerPlate !== undefined
+        ? 0
+        : data.foodTotal !== undefined
+          ? Number(data.foodTotal)
+          : Number(existing.foodTotal)
   const decorEnabled =
     (data as { decorEnabled?: boolean }).decorEnabled !== undefined
       ? (data as { decorEnabled?: boolean }).decorEnabled !== false
@@ -555,9 +656,11 @@ export async function updateBanquetBooking(
     updates.push(`"customerName" = $${pIdx++}`)
     params.push(data.customerName.trim())
   }
-  if (data.customerPhone) {
+  if (data.customerPhone !== undefined) {
+    const digits = String(data.customerPhone).replace(/\D/g, '')
+    if (digits.length !== 10) throw new BanquetError('A valid 10-digit mobile number is required for the host')
     updates.push(`"customerPhone" = $${pIdx++}`)
-    params.push(data.customerPhone.trim())
+    params.push(digits)
   }
   if (data.customerEmail !== undefined) {
     updates.push(`"customerEmail" = $${pIdx++}`)
@@ -579,17 +682,23 @@ export async function updateBanquetBooking(
     updates.push(`"eventName" = $${pIdx++}`)
     params.push(data.eventName.trim())
   }
-  if (data.eventDate) {
-    updates.push(`"eventDate" = $${pIdx++}`)
-    params.push(new Date(String(data.eventDate).length <= 10 ? String(data.eventDate) + 'T12:00:00' : String(data.eventDate)))
-  }
-  if (data.endDate !== undefined) {
-    updates.push(`"endDate" = $${pIdx++}`)
-    params.push(data.endDate ? new Date(String(data.endDate)) : null)
-  }
-  if (data.slot) {
-    updates.push(`"slot" = $${pIdx++}`)
-    params.push(data.slot)
+  updates.push(`"eventDate" = $${pIdx++}`)
+  params.push(nextEventDate)
+  updates.push(`"endDate" = $${pIdx++}`)
+  params.push(nextEndDate)
+  updates.push(`"days" = $${pIdx++}`)
+  params.push(schedule.days)
+  updates.push(`"slot" = $${pIdx++}`)
+  params.push(schedule.slot)
+  updates.push(`"startTime" = $${pIdx++}`)
+  params.push(schedule.startTime)
+  updates.push(`"endTime" = $${pIdx++}`)
+  params.push(schedule.endTime)
+  updates.push(`"hallRatePerDay" = $${pIdx++}`)
+  params.push(hallRatePerDay)
+  if ((data as { idProof?: string }).idProof !== undefined) {
+    updates.push(`"idProof" = $${pIdx++}`)
+    params.push((data as { idProof?: string }).idProof || null)
   }
   if (data.hallId) {
     updates.push(`"hallId" = $${pIdx++}`)
@@ -599,22 +708,18 @@ export async function updateBanquetBooking(
     updates.push(`"guestCount" = $${pIdx++}`)
     params.push(guestCount)
   }
-  if (data.hallRent !== undefined) {
-    updates.push(`"hallRent" = $${pIdx++}`)
-    params.push(hallRent)
-  }
+  updates.push(`"hallRent" = $${pIdx++}`)
+  params.push(hallRent)
   if (data.foodRatePerPlate !== undefined) {
     updates.push(`"foodRatePerPlate" = $${pIdx++}`)
-    params.push(Number(data.foodRatePerPlate))
+    params.push(foodRate)
   }
   if (data.foodPackageName !== undefined) {
     updates.push(`"foodPackageName" = $${pIdx++}`)
     params.push(data.foodPackageName)
   }
-  if (data.foodTotal !== undefined) {
-    updates.push(`"foodTotal" = $${pIdx++}`)
-    params.push(foodTotal)
-  }
+  updates.push(`"foodTotal" = $${pIdx++}`)
+  params.push(foodTotal)
   if (data.decorCharges !== undefined || !decorEnabled) {
     updates.push(`"decorCharges" = $${pIdx++}`)
     params.push(decorCharges)
@@ -870,7 +975,6 @@ export async function createBanquetBill(
   }
 
   const year = new Date().getFullYear()
-  const billNumber = await nextNumber('BanquetBill', 'billNumber', `BNQ-${year}-`, 1)
 
   const id = genId()
   const now = new Date()
@@ -902,7 +1006,10 @@ export async function createBanquetBill(
   const gstAmount = computeGst(taxableAmount, cgstPercent, sgstPercent).total
   const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
 
-  const advanceApplied = Math.min(Number(data.advanceApplied ?? booking.advancePaid), grandTotal)
+  // GST invoices and estimates (no GST) have separate number series
+  const billNumber = await nextNumber('BanquetBill', 'billNumber', gstAmount > 0 ? `BNQ-${year}-` : `BNQ-EST-${year}-`, 1)
+  // The whole advance already received counts towards the invoice (never less); any excess is a refund due
+  const advanceApplied = Math.min(Number(booking.advancePaid) || 0, grandTotal)
   const payCash = Number(data.payCash) || 0
   const payUpi = Number(data.payUpi) || 0
   const payCard = Number(data.payCard) || 0
@@ -940,7 +1047,8 @@ export async function createBanquetBill(
     booking.gstNumber || null,
     booking.eventName,
     booking.hall_name || 'Banquet Hall',
-    booking.slot,
+    // Printed on the invoice, e.g. "2 days · Custom · 10:00 AM – 4:00 PM"
+    `${Number(booking.days) > 1 ? `${booking.days} days · ` : ''}${slotLabel(booking.slot, booking.startTime, booking.endTime)}`,
     Number(booking.guestCount || 100),
     hallRent,
     foodCharges,
@@ -1158,7 +1266,19 @@ export async function getBanquetStats(): Promise<BanquetStats> {
       (Number(b.payBank) || 0),
     0
   )
-  const totalOutstanding = Math.max(0, Math.round((totalBilledRevenue - totalCollected) * 100) / 100)
+  const invoiceOutstanding = Math.round(
+    allBills.reduce((s: number, b: any) => {
+      const paid = (Number(b.advanceApplied) || 0) + (Number(b.payCash) || 0) + (Number(b.payUpi) || 0) + (Number(b.payCard) || 0) + (Number(b.payBank) || 0)
+      return s + Math.max(0, (Number(b.grandTotal) || 0) - paid)
+    }, 0) * 100
+  ) / 100
+  // Confirmed bookings not invoiced yet: estimate less advance received
+  const openRows = await prisma.$queryRawUnsafe<{ due: number | null }[]>(
+    `SELECT SUM(GREATEST(b."totalEstimated" - b."advancePaid", 0))::float AS due FROM "BanquetBooking" b
+     WHERE b."status" IN ('CONFIRMED', 'IN_PROGRESS') AND NOT EXISTS (SELECT 1 FROM "BanquetBill" x WHERE x."banquetBookingId" = b."id")`
+  )
+  const bookingsOutstanding = Math.round((Number(openRows?.[0]?.due) || 0) * 100) / 100
+  const totalOutstanding = Math.round((invoiceOutstanding + bookingsOutstanding) * 100) / 100
 
   const todayRevenue = todayBills.reduce((s: number, b: any) => s + (Number(b.grandTotal) || 0), 0)
   const todayCash = todayBills.reduce((s: number, b: any) => s + (Number(b.payCash) || 0), 0)
@@ -1175,9 +1295,193 @@ export async function getBanquetStats(): Promise<BanquetStats> {
     totalBilledRevenue,
     totalCollected,
     totalOutstanding,
+    invoiceOutstanding,
+    bookingsOutstanding,
     todayCash,
     todayUpi,
     todayCard,
     todayBank,
   }
+}
+
+// ---------------- PART PAYMENTS, PAYMENT HISTORY, INVOICE EDIT ----------------
+
+/**
+ * Money received for a banquet booking at any time. Before the invoice it is added to the advance
+ * (cannot exceed the estimate); after the invoice it is a payment on that invoice (cannot exceed its balance).
+ */
+export async function recordBanquetPayment(
+  bookingId: string,
+  payment: { amount?: number; method?: string; note?: string },
+  userName?: string
+) {
+  const amount = Math.round((Number(payment.amount) || 0) * 100) / 100
+  if (amount <= 0) throw new BanquetError('Enter the amount received')
+  const method = ['CASH', 'UPI', 'CARD', 'BANK'].includes(String(payment.method)) ? String(payment.method) : 'CASH'
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bookingId)
+  const booking = rows?.[0]
+  if (!booking) throw new BanquetError('Banquet booking not found')
+  if (booking.status === 'CANCELLED') throw new BanquetError('This booking is cancelled')
+
+  const bills = await prisma.$queryRawUnsafe<{ id: string }[]>('SELECT "id" FROM "BanquetBill" WHERE "banquetBookingId" = $1', bookingId)
+  if (bills.length > 0) {
+    const key = method === 'CASH' ? 'payCash' : method === 'UPI' ? 'payUpi' : method === 'CARD' ? 'payCard' : 'payBank'
+    const bill = await addBanquetBillPayment(bills[0].id, { [key]: amount }, userName)
+    return { stage: 'INVOICE' as const, bill, booking }
+  }
+
+  const balance = Math.round((Number(booking.totalEstimated) - Number(booking.advancePaid)) * 100) / 100
+  if (amount > balance + 0.01) {
+    throw new BanquetError(`Only ₹${Math.max(0, balance)} is left to pay on the estimate. Update the booking first if the charges changed.`)
+  }
+  const advancePaid = Math.round((Number(booking.advancePaid) + amount) * 100) / 100
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBooking" SET "advancePaid" = $2, "paymentStatus" = $3, "updatedAt" = $4 WHERE "id" = $1',
+    bookingId,
+    advancePaid,
+    advancePaymentStatus(advancePaid, Number(booking.totalEstimated)),
+    new Date()
+  )
+  await prisma.ledgerEntry.create({
+    data: {
+      type: 'INCOME',
+      category: 'ADVANCE',
+      description: `Banquet part payment - ${booking.eventName} (${booking.bookingNumber}) from ${booking.customerName}${payment.note ? ` [${payment.note}]` : ''}`,
+      amount,
+      method,
+      source: 'AUTO',
+      refId: bookingId,
+    },
+  })
+  return { stage: 'ADVANCE' as const, booking: { ...booking, advancePaid } }
+}
+
+/** Every rupee received (and refunded) for a banquet booking, oldest first, with the running totals */
+export async function banquetPaymentHistory(bookingId: string) {
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bookingId)
+  const booking = rows?.[0]
+  if (!booking) throw new BanquetError('Banquet booking not found')
+  const bills = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBill" WHERE "banquetBookingId" = $1', bookingId)
+  const ledger = await prisma.ledgerEntry.findMany({
+    where: { refId: { in: [bookingId, ...bills.map((b) => b.id)] } },
+    orderBy: { date: 'asc' },
+  })
+  const payments = ledger
+    .filter((e) => (e.type === 'INCOME' && (e.category === 'ADVANCE' || e.category === 'BANQUET')) || (e.type === 'EXPENSE' && e.category === 'REFUND'))
+    .map((e) => ({
+      id: e.id,
+      date: e.date,
+      kind:
+        e.type === 'EXPENSE'
+          ? 'REFUND'
+          : e.category === 'BANQUET'
+            ? 'INVOICE_PAYMENT'
+            : /part payment/i.test(e.description)
+              ? 'PART_PAYMENT'
+              : 'ADVANCE',
+      method: e.method,
+      amount: e.type === 'EXPENSE' ? -e.amount : e.amount,
+      description: e.description,
+    }))
+  const received = Math.round(payments.filter((p) => p.amount > 0).reduce((t, p) => t + p.amount, 0) * 100) / 100
+  const refunded = Math.round(payments.filter((p) => p.amount < 0).reduce((t, p) => t - p.amount, 0) * 100) / 100
+  const bill = bills[0]
+  const total = bill ? Number(bill.grandTotal) : Number(booking.totalEstimated)
+  const paidOnBooking = bill
+    ? Number(bill.advanceApplied) + Number(bill.payCash) + Number(bill.payUpi) + Number(bill.payCard) + Number(bill.payBank)
+    : Number(booking.advancePaid)
+  return {
+    payments,
+    received,
+    refunded,
+    stage: bill ? 'INVOICE' : 'ESTIMATE',
+    billNumber: bill?.billNumber || null,
+    total,
+    paid: Math.round(paidOnBooking * 100) / 100,
+    balance: Math.max(0, Math.round((total - paidOnBooking) * 100) / 100),
+    // advance received beyond the invoice total: to be refunded
+    excessAdvance: bill ? Math.max(0, Math.round((Number(booking.advancePaid) - Number(bill.advanceApplied)) * 100) / 100) : 0,
+  }
+}
+
+/**
+ * Correct an invoice's charges or GST. Payments stay as they are; the new total cannot be less than
+ * what has been paid. Switching GST on or off moves the invoice to the other number series.
+ */
+export async function updateBanquetBill(
+  id: string,
+  data: {
+    hallRent?: number
+    foodCharges?: number
+    decorCharges?: number
+    soundAvCharges?: number
+    extraCharges?: number
+    discount?: number
+    cgstPercent?: number
+    sgstPercent?: number
+    notes?: string
+  }
+) {
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBill" WHERE "id" = $1', id)
+  const bill = rows?.[0]
+  if (!bill) throw new BanquetError('Banquet bill not found')
+  const v = (k: keyof typeof data, fallback: unknown) => Math.max(0, data[k] !== undefined ? Number(data[k]) || 0 : Number(fallback) || 0)
+  const hallRent = v('hallRent', bill.hallRent)
+  const foodCharges = v('foodCharges', bill.foodCharges)
+  const decorCharges = v('decorCharges', bill.decorCharges)
+  const soundAvCharges = v('soundAvCharges', bill.soundAvCharges)
+  const extraCharges = v('extraCharges', bill.extraCharges)
+  const discount = v('discount', bill.discount)
+  const cgstPercent = data.cgstPercent !== undefined ? Number(data.cgstPercent) : Number(bill.cgstPercent)
+  const sgstPercent = data.sgstPercent !== undefined ? Number(data.sgstPercent) : Number(bill.sgstPercent)
+  if (!isValidHalfRate(cgstPercent) || !isValidHalfRate(sgstPercent)) throw new BanquetError('CGST and SGST can each only be 0% or 2.5%')
+  const taxableAmount = Math.max(0, hallRent + foodCharges + decorCharges + soundAvCharges + extraCharges - discount)
+  const gstAmount = computeGst(taxableAmount, cgstPercent, sgstPercent).total
+  const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
+
+  const booking = (await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bill.banquetBookingId))?.[0]
+  const advanceApplied = Math.min(Number(booking?.advancePaid ?? bill.advanceApplied) || 0, grandTotal)
+  const otherPaid = Number(bill.payCash) + Number(bill.payUpi) + Number(bill.payCard) + Number(bill.payBank)
+  if (advanceApplied + otherPaid > grandTotal + 0.01) {
+    throw new BanquetError(`₹${Math.round((advanceApplied + otherPaid) * 100) / 100} is already paid; the invoice total cannot be less than that`)
+  }
+  const balanceDue = Math.max(0, grandTotal - advanceApplied - otherPaid)
+  const paymentStatus = balanceDue <= 0.01 ? 'PAID' : advanceApplied + otherPaid > 0 ? 'PARTIAL' : 'UNPAID'
+
+  let billNumber = bill.billNumber
+  const wasGst = Number(bill.gstAmount) > 0
+  if (wasGst !== gstAmount > 0) {
+    const year = new Date(bill.createdAt).getFullYear()
+    billNumber = await nextNumber('BanquetBill', 'billNumber', gstAmount > 0 ? `BNQ-${year}-` : `BNQ-EST-${year}-`, 1)
+  }
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE "BanquetBill" SET "hallRent" = $2, "foodCharges" = $3, "decorCharges" = $4, "soundAvCharges" = $5,
+       "extraCharges" = $6, "discount" = $7, "taxableAmount" = $8, "gstPercent" = $9, "cgstPercent" = $10,
+       "sgstPercent" = $11, "gstAmount" = $12, "grandTotal" = $13, "advanceApplied" = $14, "paymentStatus" = $15,
+       "billNumber" = $16, "notes" = COALESCE($17, "notes"), "updatedAt" = $18 WHERE "id" = $1`,
+    id,
+    hallRent,
+    foodCharges,
+    decorCharges,
+    soundAvCharges,
+    extraCharges,
+    discount,
+    taxableAmount,
+    cgstPercent + sgstPercent,
+    cgstPercent,
+    sgstPercent,
+    gstAmount,
+    grandTotal,
+    advanceApplied,
+    paymentStatus,
+    billNumber,
+    data.notes !== undefined ? String(data.notes) : null,
+    new Date()
+  )
+  if (booking) {
+    await prisma.$executeRawUnsafe('UPDATE "BanquetBooking" SET "paymentStatus" = $2 WHERE "id" = $1', booking.id, paymentStatus)
+  }
+  const updated = await getBanquetBills({ search: billNumber })
+  return { bill: updated[0], before: bill, renumbered: billNumber !== bill.billNumber ? billNumber : null }
 }

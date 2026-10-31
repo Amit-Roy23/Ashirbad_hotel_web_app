@@ -15,6 +15,7 @@ import { ReportsTab } from '@/components/hotel/reports-tab'
 import { SettingsTab } from '@/components/hotel/settings-tab'
 import { BanquetTab } from '@/components/hotel/banquet-tab'
 import { InventoryTab } from '@/components/hotel/inventory-tab'
+import { AccountsTab } from '@/components/hotel/accounts-tab'
 import { GlobalSearch } from '@/components/hotel/global-search'
 import { AdminPinHost } from '@/components/hotel/admin-pin-host'
 import { LoginDialog } from '@/components/hotel/login-dialog'
@@ -61,6 +62,7 @@ const TABS = [
   { id: 'staff', label: 'Staff', component: StaffTab, icon: UsersRound },
   { id: 'expenses', label: 'Expenses', component: ExpensesTab, icon: TrendingDown },
   { id: 'inventory', label: 'Inventory', component: InventoryTab, icon: Boxes },
+  { id: 'accounts', label: 'Accounts', component: AccountsTab, icon: BookOpenCheck },
   { id: 'reports', label: 'Reports', component: ReportsTab, icon: FileBarChart },
   { id: 'settings', label: 'Settings', component: SettingsTab, icon: SettingsIcon },
 ] as const
@@ -74,7 +76,7 @@ interface Stats {
 }
 
 const MOBILE_PRIMARY: TabId[] = ['dashboard', 'bookings', 'banquet', 'billing', 'restaurant']
-const MOBILE_MORE: TabId[] = ['rooms', 'guests', 'payments', 'staff', 'expenses', 'inventory', 'reports', 'settings']
+const MOBILE_MORE: TabId[] = ['rooms', 'guests', 'payments', 'staff', 'expenses', 'inventory', 'accounts', 'reports', 'settings']
 
 interface NavTarget {
   tab: string
@@ -193,6 +195,8 @@ function Shell() {
         return <ExpensesTab {...props} />
       case 'inventory':
         return <InventoryTab {...props} />
+      case 'accounts':
+        return <AccountsTab {...props} />
       case 'reports':
         return <ReportsTab {...props} />
       case 'settings':

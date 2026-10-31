@@ -27,10 +27,12 @@ import { PartPaymentDialog, type PartPaymentBooking } from './part-payment-dialo
 import { PrintableInvoice } from './printable-invoice'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { BookingDialog } from './booking-dialog'
+import { StayDetails, type StayBooking } from './stay-details'
+import { EditRoomDialog } from './edit-room-dialog'
 import { RoomStatusBadge } from './status-badge'
 import { TableControls } from './table-controls'
 import { Separator } from '@/components/ui/separator'
-import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState, todayStr, addDays, toDateStr } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, getRoomOperationalState, todayStr, addDays, toDateStr, matchesSearch } from '@/lib/hotel-utils'
 import { nextAutoExtensionAt } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { runWithAdminPin } from '@/lib/admin-pin'
@@ -59,6 +61,7 @@ import {
   AlertTriangle,
   Clock,
   Utensils,
+  Pencil,
 } from 'lucide-react'
 
 interface Guest {
@@ -148,6 +151,10 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
   const [newType, setNewType] = useState(TYPES[0])
   const [newRate, setNewRate] = useState('800')
   const [newCapacity, setNewCapacity] = useState('2')
+  const [addAdminPin, setAddAdminPin] = useState('')
+  const [addError, setAddError] = useState('')
+  const [editRoom, setEditRoom] = useState<Room | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
   const [billBooking, setBillBooking] = useState<any | null>(null)
   const [lastBill, setLastBill] = useState<Bill | null>(null)
   const [editBill, setEditBill] = useState<Bill | null>(null)
@@ -214,10 +221,16 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
     const q = search.trim().toLowerCase()
     return rooms.filter((r) => {
       const opState = getRoomOperationalState(r)
-      const allGuestInfo = (r.bookings || [])
-        .map((b) => `${b.guest?.name || ''} ${b.guest?.phone || ''} ${b.guest?.company || ''}`)
-        .join(' ')
-      if (q && !`${r.number} ${r.type} ${allGuestInfo} ${opState.nextFutureBooking?.guest?.name || ''} ${opState.nextFutureBooking?.guest?.phone || ''}`.toLowerCase().includes(q)) return false
+      const guests = [...(r.bookings || []).map((b) => b.guest), opState.nextFutureBooking?.guest]
+      if (
+        q &&
+        !matchesSearch(
+          q,
+          [r.number, r.type, ...guests.flatMap((g) => [g?.name, (g as { company?: string | null } | undefined)?.company])],
+          guests.map((g) => g?.phone)
+        )
+      )
+        return false
       if (floor !== 'ALL' && (r.floor ? r.floor !== floor : !r.number.startsWith(floor))) return false
       if (type !== 'ALL' && r.type !== type) return false
       if (status !== 'ALL') {
@@ -388,10 +401,16 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
       })
       return
     }
+    if (!addAdminPin.trim()) {
+      setAddError('Enter the Admin PIN to add a room')
+      return
+    }
     setBusy(true)
+    setAddError('')
     try {
       const res = await apiAs<{ error?: string }>('/api/rooms', getCachedUser(), {
         method: 'POST',
+        adminPin: addAdminPin.trim(),
         body: JSON.stringify({
           number: cleanNum,
           floor: newFloor.trim() || cleanNum.charAt(0) || '1',
@@ -411,6 +430,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
       setAddOpen(false)
       setNewNumber('')
       setNewFloor('1')
+      setAddAdminPin('')
       await load()
       onDataChanged()
       toast({
@@ -419,6 +439,7 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         description: `Room ${cleanNum} has been added successfully.`,
       })
     } catch (e) {
+      setAddError(e instanceof Error ? e.message : 'Could not add room')
       toast({
         variant: 'destructive',
         title: 'Error',
@@ -473,6 +494,16 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
 
           <Button variant="outline" className="gap-2 max-sm:h-9 max-sm:px-3" onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4" /> <span className="max-[419px]:sr-only">Add<span className="hidden sm:inline"> Room</span></span>
+          </Button>
+          <Button
+            variant="outline"
+            className="gap-2 max-sm:h-9 max-sm:px-3"
+            onClick={() => {
+              setEditRoom(null)
+              setEditOpen(true)
+            }}
+          >
+            <Pencil className="h-4 w-4" /> <span className="max-[419px]:sr-only">Edit<span className="hidden sm:inline"> Room</span></span>
           </Button>
           <Button
             variant="outline"
@@ -1217,47 +1248,26 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           </span>
                         </div>
                       )}
-                      <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">In-House Guest</span>
-                          <span className="font-semibold">{opState.activeBooking.guest?.name || 'Guest'}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Phone</span>
-                          <span className="font-semibold">{opState.activeBooking.guest?.phone}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Check-In</span>
-                          <span className="font-semibold">{formatDate(opState.activeBooking.checkIn)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Expected Out</span>
-                          <span className="font-semibold">{formatDateTime(opState.activeBooking.checkOut)}</span>
-                        </div>
-                        {(opState.activeBooking.autoExtendedDays || 0) > 0 && (
-                          <div className="rounded border border-amber-300 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 space-y-1">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold flex items-center gap-1">
-                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-                                OVERSTAY +{opState.activeBooking.autoExtendedDays} day{opState.activeBooking.autoExtendedDays! > 1 ? 's' : ''} (auto)
-                              </span>
-                            </div>
-                            {opState.activeBooking.originalCheckOut && (
-                              <div className="text-[11px] text-muted-foreground">
-                                Original check-out: {formatDateTime(opState.activeBooking.originalCheckOut)}
-                              </div>
-                            )}
-                            <div className="text-[11px] text-muted-foreground flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              Next auto-extension: {formatDateTime(nextAutoExtensionAt(opState.activeBooking, parseInt(settings.overstayGraceMinutes || '0', 10)))}
-                            </div>
+                      {(opState.activeBooking.autoExtendedDays || 0) > 0 && (
+                        <div className="rounded border border-amber-300 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold flex items-center gap-1">
+                              <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                              OVERSTAY +{opState.activeBooking.autoExtendedDays} day{opState.activeBooking.autoExtendedDays! > 1 ? 's' : ''} (auto)
+                            </span>
                           </div>
-                        )}
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Paid so far (advance + part payments)</span>
-                          <span className="font-semibold">{formatINR(opState.activeBooking.advance)}</span>
+                          {opState.activeBooking.originalCheckOut && (
+                            <div className="text-[11px] text-muted-foreground">
+                              Original check-out: {formatDateTime(opState.activeBooking.originalCheckOut)}
+                            </div>
+                          )}
+                          <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            Next auto-extension: {formatDateTime(nextAutoExtensionAt(opState.activeBooking, parseInt(settings.overstayGraceMinutes || '0', 10)))}
+                          </div>
                         </div>
-                      </div>
+                      )}
+                      <StayDetails booking={opState.activeBooking as unknown as StayBooking} />
 
                       {/* Billing & Action Options: Print Bill, Lodging Checkout & Fooding Bill */}
                       <div className="space-y-2">
@@ -1399,39 +1409,23 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                   )}
 
                   {viewRoom && (
-                    <>
-                      <div className="flex gap-2">
-                        <div className="flex-1 space-y-1">
-                          <Label htmlFor="room-rate" className="text-xs">
-                            Rate / night
-                          </Label>
-                          <Input
-                            id="room-rate"
-                            type="number"
-                            defaultValue={viewRoom.rate}
-                            onBlur={(e) => {
-                              const v = parseFloat(e.target.value)
-                              if (!isNaN(v) && v > 0 && v !== viewRoom.rate) patchRoom(viewRoom, { rate: v })
-                            }}
-                          />
-                        </div>
-                        <div className="flex-1 space-y-1">
-                          <Label className="text-xs">Type</Label>
-                          <Select value={viewRoom.type} onValueChange={(t) => t !== viewRoom.type && patchRoom(viewRoom, { type: t })}>
-                            <SelectTrigger aria-label="Room type">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {(TYPES.includes(viewRoom.type) ? TYPES : [viewRoom.type, ...TYPES]).map((t) => (
-                                <SelectItem key={t} value={t}>
-                                  {t}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    </>
+                    <div className="flex items-center justify-between gap-2 rounded-lg border p-2.5 text-xs">
+                      <span className="text-muted-foreground">
+                        {viewRoom.type} · {viewRoom.capacity} bed{viewRoom.capacity === 1 ? '' : 's'} · {formatINR(viewRoom.rate)}/night
+                        {viewRoom.floor ? ` · ${floorLabel(viewRoom.floor)}` : ''}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 text-xs"
+                        onClick={() => {
+                          setEditRoom(viewRoom)
+                          setEditOpen(true)
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" /> Edit Room
+                      </Button>
+                    </div>
                   )}
                 </div>
               </>
@@ -1440,8 +1434,33 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
         </DialogContent>
       </Dialog>
 
+      <EditRoomDialog
+        open={editOpen}
+        room={editRoom}
+        rooms={rooms}
+        types={[...new Set([...TYPES, ...rooms.map((r) => r.type)])]}
+        onOpenChange={(open) => {
+          setEditOpen(open)
+          if (!open) setEditRoom(null)
+        }}
+        onSaved={async () => {
+          setViewRoom(null)
+          await load()
+          onDataChanged()
+        }}
+      />
+
       {/* Add room */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+      <Dialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open)
+          if (!open) {
+            setAddAdminPin('')
+            setAddError('')
+          }
+        }}
+      >
         <DialogContent className="max-w-xs">
           <DialogHeader>
             <DialogTitle>Add Room</DialogTitle>
@@ -1503,7 +1522,23 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
               <Label htmlFor="add-cap">Capacity (beds / guests)</Label>
               <Input id="add-cap" type="number" min="1" max="10" value={newCapacity} onChange={(e) => setNewCapacity(e.target.value)} />
             </div>
-            <Button className="w-full" disabled={busy || !newNumber.trim()} onClick={addRoom}>
+            <div className="space-y-1.5 rounded-lg border border-amber-300 bg-amber-50/60 p-2.5 dark:border-amber-800 dark:bg-amber-950/30">
+              <Label htmlFor="add-admin-pin">Admin PIN *</Label>
+              <Input
+                id="add-admin-pin"
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="Needed to add a room"
+                value={addAdminPin}
+                onChange={(e) => {
+                  setAddAdminPin(e.target.value)
+                  setAddError('')
+                }}
+              />
+            </div>
+            {addError && <p className="text-xs text-red-600">{addError}</p>}
+            <Button className="w-full" disabled={busy || !newNumber.trim() || !addAdminPin.trim()} onClick={addRoom}>
               Add Room
             </Button>
           </div>

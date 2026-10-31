@@ -1,5 +1,6 @@
-import { formatINR, formatDate, formatDateTime } from '@/lib/hotel-utils'
-import { BanquetBill } from '@/types/banquet'
+import { api, formatINR, formatDate, formatDateTime, formatGovIdDisplay } from '@/lib/hotel-utils'
+import { BanquetBill, BanquetBooking } from '@/types/banquet'
+import { addDaysStr, slotLabel } from '@/lib/banquet-time'
 import { splitGst } from '@/lib/gst'
 
 export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Record<string, string> = {}) {
@@ -10,6 +11,8 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
   const hotelPhone = settings.hotelPhone || '+91 90000 00000'
   const hotelGstin = settings.hotelGstin || ''
 
+  // GST on: tax invoice copy; GST off: estimate copy
+  const isGstCopy = Number(bill.gstAmount || 0) > 0
   const paidAfterAdvance = (bill.payCash || 0) + (bill.payUpi || 0) + (bill.payCard || 0) + (bill.payBank || 0)
   const totalPaid = (bill.advanceApplied || 0) + paidAfterAdvance
   const balance = Math.max(0, Math.round(((bill.grandTotal || 0) - totalPaid) * 100) / 100)
@@ -183,10 +186,10 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
         <div class="hotel-name">${hotelName}</div>
         <div class="hotel-sub">Premium Banquets, Luxury Events &amp; Conventions</div>
         <div class="hotel-sub">${hotelAddress}</div>
-        <div class="hotel-sub">Phone: ${hotelPhone} ${hotelGstin ? ` · GSTIN: <b>${hotelGstin}</b>` : ''}</div>
+        <div class="hotel-sub">Phone: ${hotelPhone} ${isGstCopy && hotelGstin ? ` · GSTIN: <b>${hotelGstin}</b>` : ''}</div>
       </div>
       <div class="invoice-title">
-        <div class="invoice-badge">BANQUET TAX INVOICE</div>
+        <div class="invoice-badge">${isGstCopy ? 'BANQUET TAX INVOICE (GST COPY)' : 'BANQUET ESTIMATE'}</div>
         <div style="font-size: 14px; font-weight: 800; color: #111827;">${bill.billNumber}</div>
         <div style="font-size: 11px; color: #6b7280;">Date: ${formatDateTime(bill.createdAt || bill.eventDate)}</div>
       </div>
@@ -222,7 +225,7 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
       <tbody>
         <tr>
           <td><b>Venue / Hall Rental</b> (${bill.hallName})</td>
-          <td style="text-align: center;">${bill.slot} slot</td>
+          <td style="text-align: center;">${/^(MORNING|EVENING|FULL_DAY|CUSTOM)$/.test(bill.slot) ? `${bill.slot} slot` : bill.slot}</td>
           <td class="text-right">${formatINR(bill.hallRent)}</td>
         </tr>
         ${
@@ -279,6 +282,7 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
           <span>Taxable Subtotal:</span>
           <b>${formatINR(bill.taxableAmount)}</b>
         </div>
+        ${isGstCopy ? `
         <div class="tot-row">
           <span>CGST (${splitGst({ ...bill, actualGst: bill.gstAmount }).cgstPercent}%):</span>
           <b>${formatINR(splitGst({ ...bill, actualGst: bill.gstAmount }).cgst)}</b>
@@ -286,7 +290,7 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
         <div class="tot-row">
           <span>SGST (${splitGst({ ...bill, actualGst: bill.gstAmount }).sgstPercent}%):</span>
           <b>${formatINR(splitGst({ ...bill, actualGst: bill.gstAmount }).sgst)}</b>
-        </div>
+        </div>` : ''}
         <div class="tot-row grand">
           <span>Grand Total:</span>
           <span>${formatINR(bill.grandTotal)}</span>
@@ -339,4 +343,175 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
     w.document.write(html)
     w.document.close()
   }
+}
+
+interface AdvancePayment {
+  date: string
+  amount: number
+  method: string
+  description: string
+}
+
+function esc(v: unknown) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/**
+ * Advance receipt for a banquet booking: event details, the estimate and every advance
+ * payment received so far (date and mode). Given right after booking; the final GST invoice
+ * is made after the event.
+ */
+export async function triggerPrintBanquetAdvanceReceipt(booking: BanquetBooking) {
+  if (!booking) return
+  let settings: Record<string, string> = {}
+  let payments: AdvancePayment[] = []
+  try {
+    const [s, p] = await Promise.all([
+      api<Record<string, string>>('/api/settings'),
+      api<AdvancePayment[]>(`/api/banquet-bookings?advancesFor=${encodeURIComponent(booking.id)}`),
+    ])
+    settings = s || {}
+    payments = Array.isArray(p) ? p : []
+  } catch {
+    // print with what we have
+  }
+
+  const hotelName = settings.hotelName || 'Ashirbad Lodge & Banquets'
+  const hotelAddress = settings.hotelAddress || ''
+  const hotelPhone = settings.hotelPhone || ''
+  const hotelGstin = settings.hotelGstin || ''
+  const days = Math.max(1, Number(booking.days) || 1)
+  const lastDay = addDaysStr(booking.eventDate.slice(0, 10), days - 1)
+  const ratePerDay = Number(booking.hallRatePerDay) || Number(booking.hallRent) / days
+  const balance = Math.max(0, Math.round((booking.totalEstimated - booking.advancePaid) * 100) / 100)
+  const rows: [string, string, number][] = []
+  if (booking.hallRent > 0) rows.push([`Hall rent — ${booking.hall?.name || 'Banquet hall'}`, `${formatINR(ratePerDay)} × ${days} day${days > 1 ? 's' : ''}`, booking.hallRent])
+  if (booking.foodTotal > 0)
+    rows.push([
+      `Catering${booking.foodPackageName ? ` — ${booking.foodPackageName}` : ''}`,
+      `${booking.guestCount} guests × ${formatINR(booking.foodRatePerPlate)}${days > 1 ? ` × ${days} days` : ''}`,
+      booking.foodTotal,
+    ])
+  if (booking.decorCharges > 0) rows.push(['Stage & decor', '', booking.decorCharges])
+  if (booking.extraCharges > 0) rows.push(['Sound, DJ & extra AV', '', booking.extraCharges])
+  if (booking.discount > 0) rows.push(['Discount', '', -booking.discount])
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Advance Receipt ${esc(booking.bookingNumber)} - ${esc(hotelName)}</title>
+  <style>
+    @page { size: A4 portrait; margin: 10mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; padding: 8mm; font-size: 12.5px; line-height: 1.5; }
+    .card { max-width: 720px; margin: 0 auto; border: 1.5px solid #065f46; border-radius: 10px; padding: 22px; }
+    .head { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid #065f46; padding-bottom: 12px; }
+    .hotel { font-size: 20px; font-weight: 800; color: #065f46; }
+    .muted { color: #6b7280; font-size: 11.5px; }
+    .badge { display: inline-block; padding: 4px 12px; border-radius: 999px; background: #ecfdf5; color: #065f46; font-weight: 700; font-size: 11px; letter-spacing: .5px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    .box { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; }
+    .box h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #065f46; margin-bottom: 6px; }
+    .row { display: flex; justify-content: space-between; gap: 10px; }
+    .row span:first-child { color: #6b7280; }
+    .row span:last-child { font-weight: 600; text-align: right; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align: left; }
+    th { background: #f9fafb; font-size: 11.5px; }
+    .r { text-align: right; white-space: nowrap; }
+    .total td { font-weight: 800; border-top: 2px solid #111827; border-bottom: 0; font-size: 13.5px; }
+    .section { margin-top: 16px; font-weight: 700; }
+    .sign { display: flex; justify-content: space-between; margin-top: 40px; font-size: 11.5px; color: #374151; }
+    .sign div { border-top: 1px solid #9ca3af; padding-top: 4px; width: 200px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <div>
+        <div class="hotel">${esc(hotelName)}</div>
+        ${hotelAddress ? `<div class="muted">${esc(hotelAddress)}</div>` : ''}
+        ${hotelPhone ? `<div class="muted">Ph: ${esc(hotelPhone)}</div>` : ''}
+        ${hotelGstin ? `<div class="muted">GSTIN: ${esc(hotelGstin)}</div>` : ''}
+      </div>
+      <div style="text-align:right">
+        <div class="badge">BANQUET ADVANCE RECEIPT</div>
+        <div style="margin-top:6px; font-weight:700">${esc(booking.bookingNumber)}</div>
+        <div class="muted">Booked on ${formatDateTime(booking.createdAt)}</div>
+        <div class="muted">Status: ${esc(booking.status)}</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h4>Host / Client</h4>
+        <div class="row"><span>Name</span><span>${esc(booking.customerName)}</span></div>
+        <div class="row"><span>Phone</span><span>${esc(booking.customerPhone)}</span></div>
+        ${booking.customerAddress ? `<div class="row"><span>Address</span><span>${esc(booking.customerAddress)}</span></div>` : ''}
+        ${booking.companyName ? `<div class="row"><span>Company</span><span>${esc(booking.companyName)}</span></div>` : ''}
+        ${booking.gstNumber ? `<div class="row"><span>GSTIN</span><span>${esc(booking.gstNumber)}</span></div>` : ''}
+        ${booking.idProof ? `<div class="row"><span>ID Proof</span><span>${esc(formatGovIdDisplay(booking.idProof))}</span></div>` : ''}
+      </div>
+      <div class="box">
+        <h4>Event</h4>
+        <div class="row"><span>Occasion</span><span>${esc(booking.eventName)}</span></div>
+        <div class="row"><span>Hall</span><span>${esc(booking.hall?.name || '')}</span></div>
+        <div class="row"><span>Date</span><span>${formatDate(booking.eventDate)}${days > 1 ? ` to ${formatDate(lastDay)} (${days} days)` : ''}</span></div>
+        <div class="row"><span>Time</span><span>${esc(slotLabel(booking.slot, booking.startTime, booking.endTime))}</span></div>
+        <div class="row"><span>Guests</span><span>${booking.guestCount}</span></div>
+      </div>
+    </div>
+
+    <div class="section">Booking Estimate</div>
+    <table>
+      <thead><tr><th>Item</th><th>Details</th><th class="r">Amount</th></tr></thead>
+      <tbody>
+        ${rows.map(([item, detail, amt]) => `<tr><td>${esc(item)}</td><td class="muted">${esc(detail)}</td><td class="r">${amt < 0 ? '-' : ''}${formatINR(Math.abs(amt))}</td></tr>`).join('')}
+        <tr class="total"><td colspan="2">Estimated Total (before GST)</td><td class="r">${formatINR(booking.totalEstimated)}</td></tr>
+      </tbody>
+    </table>
+
+    <div class="section">Advance Received</div>
+    <table>
+      <thead><tr><th>#</th><th>Date</th><th>Mode</th><th class="r">Amount</th></tr></thead>
+      <tbody>
+        ${
+          payments.length
+            ? payments.map((p, i) => `<tr><td>${i + 1}</td><td>${formatDateTime(p.date)}</td><td>${esc(p.method)}</td><td class="r">${formatINR(p.amount)}</td></tr>`).join('')
+            : `<tr><td colspan="4" class="muted" style="text-align:center">${booking.advancePaid > 0 ? 'Advance recorded' : 'No advance received yet'}</td></tr>`
+        }
+        <tr class="total"><td colspan="3">Total Advance</td><td class="r" style="color:#047857">${formatINR(booking.advancePaid)}</td></tr>
+        <tr><td colspan="3" style="font-weight:700">Balance (estimate − advance)</td><td class="r" style="font-weight:700; color:${balance > 0 ? '#dc2626' : '#047857'}">${formatINR(balance)}</td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:10px">The advance is adjusted in the final banquet invoice. GST (CGST + SGST) is added on the final invoice.</p>
+
+    <div class="sign"><div>Customer Signature</div><div>For ${esc(hotelName)}</div></div>
+  </div>
+</body>
+</html>`
+
+  const iframe = document.createElement('iframe')
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
+  document.body.appendChild(iframe)
+  const doc = iframe.contentWindow?.document
+  if (!doc) return
+  doc.open()
+  doc.write(html)
+  doc.close()
+  setTimeout(() => {
+    iframe.contentWindow?.focus()
+    iframe.contentWindow?.print()
+    setTimeout(() => document.body.removeChild(iframe), 1000)
+  }, 300)
 }

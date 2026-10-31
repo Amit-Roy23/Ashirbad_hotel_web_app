@@ -23,6 +23,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
 import { api, apiAs, formatDateTime, exportCSV, printTableReport } from '@/lib/hotel-utils'
+import { askAdminPin } from '@/lib/admin-pin'
 import { normalizeHalfRate } from '@/lib/gst'
 import { GstPicker } from './gst-picker'
 import { useUser, getCachedUser } from './user-context'
@@ -131,11 +132,14 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
   }, [load, refreshKey])
 
   async function saveSettings() {
+    const adminPin = await askAdminPin('Saving settings changes the whole hotel app. Enter the Admin PIN to save.')
+    if (!adminPin) return
     setSaving(true)
     try {
       const currentUser = user || getCachedUser()
       const updated = await apiAs<Record<string, string>>('/api/settings', currentUser, {
         method: 'PATCH',
+        adminPin,
         body: JSON.stringify(settings),
       })
       if (updated && typeof updated === 'object') {
@@ -162,16 +166,22 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
 
   async function saveUser() {
     if (!userDlg) return
+    const adminPin = await askAdminPin(
+      userDlg.mode === 'add' ? `Adding user ${uName || ''}. Enter the Admin PIN.` : `Changing user ${uName || ''}. Enter the Admin PIN.`
+    )
+    if (!adminPin) return
     try {
       const currentUser = user || getCachedUser()
       if (userDlg.mode === 'add') {
         await apiAs('/api/users', currentUser, {
           method: 'POST',
+          adminPin,
           body: JSON.stringify({ name: uName, role: uRole, pin: uPin }),
         })
       } else {
         await apiAs('/api/users', currentUser, {
           method: 'PATCH',
+          adminPin,
           body: JSON.stringify({ id: userDlg.row!.id, name: uName, role: uRole, ...(uPin ? { pin: uPin } : {}) }),
         })
       }
@@ -312,7 +322,7 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
             {/* GST section: CGST + SGST (each 0% or 2.5%) with on/off, for lodging and food bills */}
             {([
               { key: 'lodging', title: 'Lodging Bill GST', hint: 'Default CGST / SGST on room checkout bills' },
-              { key: 'food', title: 'Food Bill GST', hint: 'CGST / SGST on restaurant bills paid at the counter (room-service food is taxed on the room bill)' },
+              { key: 'food', title: 'Food Bill GST', hint: 'Default CGST / SGST on restaurant and room-service food bills (can be switched per order)' },
             ] as const).map((sec) => {
               const enabledKey = `${sec.key}GstEnabled`
               const on = sec.key === 'lodging' ? settings[enabledKey] !== 'false' : settings[enabledKey] === 'true'
@@ -343,17 +353,32 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
                 </div>
               )
             })}
+            <p className="text-xs text-muted-foreground">
+              Bills with GST are tax invoices; bills without GST are estimates. Each has its own number series.
+            </p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="s-inv">Invoice Prefix</Label>
+                <Label htmlFor="s-inv">GST Invoice Prefix</Label>
                 <Input id="s-inv" value={settings.invoicePrefix || ''} onChange={(e) => setSettings({ ...settings, invoicePrefix: e.target.value })} />
               </div>
-              <div className="col-span-2 space-y-1.5">
-                <Label htmlFor="s-counter" className="flex items-center gap-1.5">
-                  <Hash className="h-3 w-3" /> Next Invoice Number
+              <div className="space-y-1.5">
+                <Label htmlFor="s-est">Estimate Prefix (no GST)</Label>
+                <Input id="s-est" value={settings.estimatePrefix || ''} placeholder="EST" onChange={(e) => setSettings({ ...settings, estimatePrefix: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5">
+                  <Hash className="h-3 w-3" /> Next GST Invoice
                 </Label>
                 <div className="rounded-md bg-muted px-3 py-2 text-sm font-semibold">
                   {settings.invoicePrefix || 'INV'}-{String(settings.invoiceCounter || 1).padStart(4, '0')}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5">
+                  <Hash className="h-3 w-3" /> Next Estimate
+                </Label>
+                <div className="rounded-md bg-muted px-3 py-2 text-sm font-semibold">
+                  {settings.estimatePrefix || 'EST'}-{String(settings.estimateCounter || 1).padStart(4, '0')}
                 </div>
               </div>
             </div>

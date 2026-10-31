@@ -1,5 +1,6 @@
 'use client'
 
+import { maxGuestsFor } from '@/lib/stay'
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
@@ -20,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { apiAs, formatINR, todayStr, addDays, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
+import { apiAs, formatINR, todayStr, addDays, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId, sanitizePhone } from '@/lib/hotel-utils'
 import { calcNights } from '@/lib/stay'
 import { getCachedUser } from './user-context'
 import { RoomDatePicker } from './room-date-picker'
@@ -42,6 +43,7 @@ export interface BookingData {
     id: string
     number: string
     type: string
+    capacity?: number
   }
   guest: {
     id: string
@@ -161,8 +163,9 @@ export function EditAdvanceBookingDialog({
       setError('Number of guests must be at least 1')
       return
     }
-    if (gCount > 4) {
-      setError('Maximum 4 guests allowed per room')
+    const maxGuests = maxGuestsFor(booking.room?.capacity)
+    if (gCount > maxGuests) {
+      setError(`Maximum ${maxGuests} guests allowed in this room`)
       return
     }
 
@@ -263,9 +266,9 @@ export function EditAdvanceBookingDialog({
                 <Label className="text-xs font-semibold text-foreground">Phone Number (10 Digits) *</Label>
                 <Input
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => setPhone(sanitizePhone(e.target.value))}
+                  inputMode="numeric"
                   placeholder="e.g. 9876543210"
-                  maxLength={10}
                   className="h-9 mt-1 text-xs"
                 />
               </div>

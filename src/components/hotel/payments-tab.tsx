@@ -13,7 +13,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV, printTableReport } from '@/lib/hotel-utils'
+import { api, apiAs, apiList, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, matchesSearch } from '@/lib/hotel-utils'
 import { triggerPrintInvoice } from '@/lib/print-invoice'
 import { getCachedUser } from './user-context'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -23,6 +23,8 @@ import { AdminDeleteDialog } from './admin-delete-dialog'
 
 interface PaymentRow {
   id: string
+  /** for a room bill payment: the bill it belongs to */
+  billId?: string
   source: 'BILL' | 'ORDER' | 'ADVANCE'
   ref: string
   date: string
@@ -34,6 +36,17 @@ interface PaymentRow {
   cash: number
   upi: number
   card: number
+}
+
+interface BillPaymentRow {
+  id: string
+  date: string
+  kind: 'CHECKOUT' | 'DUE' | 'ADJUST'
+  cash: number
+  upi: number
+  card: number
+  amount: number
+  bill: { id: string; billNumber: string; roomNumber?: string | null; booking?: { guest?: { name: string; phone?: string }; room?: { number: string } } }
 }
 
 interface Bill {
@@ -87,6 +100,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
   const [bills, setBills] = useState<Bill[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [ledger, setLedger] = useState<LedgerEntry[]>([])
+  const [billPays, setBillPays] = useState<BillPaymentRow[]>([])
   // refId -> guest phone / room, so advances & part payments can be searched by number
   const [refInfo, setRefInfo] = useState<Record<string, { phone?: string; room?: string; name?: string }>>({})
   const [loading, setLoading] = useState(true)
@@ -101,13 +115,14 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
 
   const load = useCallback(async () => {
     try {
-      const [b, o, l, s, bk, bq] = await Promise.all([
+      const [b, o, l, s, bk, bq, bp] = await Promise.all([
         apiList<Bill>('/api/bills'),
         apiList<Order>('/api/orders'),
         apiList<LedgerEntry>('/api/ledger?type=INCOME'),
         api<Record<string, string>>('/api/settings').catch(() => ({})),
         apiList<{ id: string; guest?: { name?: string; phone?: string }; room?: { number?: string } }>('/api/bookings').catch(() => []),
         apiList<{ id: string; customerName?: string; customerPhone?: string }>('/api/banquet-bookings').catch(() => []),
+        apiList<BillPaymentRow>('/api/bill-payments').catch(() => []),
       ])
       const info: Record<string, { phone?: string; room?: string; name?: string }> = {}
       for (const x of bk) info[x.id] = { phone: x.guest?.phone, room: x.room?.number, name: x.guest?.name }
@@ -117,6 +132,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
       setBills(b)
       setOrders(o)
       setLedger(l)
+      setBillPays(bp)
     } catch {
       // silent — keep previous data
     } finally {
@@ -130,24 +146,30 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
 
   const rows = useMemo<PaymentRow[]>(() => {
     const out: PaymentRow[] = []
-    for (const b of bills) {
-      const paid = b.payCash + b.payUpi + b.payCard
-      if (paid > 0) {
-        out.push({
-          id: `bill-${b.id}`,
-          source: 'BILL',
-          ref: b.billNumber,
-          date: b.createdAt,
-          guest: b.booking?.guest?.name || 'Guest',
-          phone: b.booking?.guest?.phone,
-          roomNo: b.booking?.room?.number,
-          detail: `Room ${b.booking?.room?.number ?? '-'} — room + food bill`,
-          amount: paid,
-          cash: b.payCash,
-          upi: b.payUpi,
-          card: b.payCard,
-        })
-      }
+    // Each room bill payment on the day it was received (paid at checkout, dues collected later)
+    for (const p of billPays) {
+      if (Math.abs(p.amount) < 0.005) continue
+      const room = p.bill.booking?.room?.number
+      out.push({
+        id: `bill-${p.id}`,
+        billId: p.bill.id,
+        source: 'BILL',
+        ref: p.bill.billNumber,
+        date: p.date,
+        guest: p.bill.booking?.guest?.name || 'Guest',
+        phone: p.bill.booking?.guest?.phone,
+        roomNo: room,
+        detail:
+          p.kind === 'CHECKOUT'
+            ? `Room ${room ?? '-'} — paid at checkout`
+            : p.kind === 'DUE'
+              ? `Room ${room ?? '-'} — due collected`
+              : `Room ${room ?? '-'} — payment corrected (bill edited)`,
+        amount: p.amount,
+        cash: p.cash,
+        upi: p.upi,
+        card: p.card,
+      })
     }
     // Payment method of a directly-settled order is recorded on its ledger row
     const orderMethod = new Map<string, string>()
@@ -186,7 +208,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
       })
     }
     return out.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-  }, [bills, orders, ledger, refInfo])
+  }, [billPays, orders, ledger, refInfo])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -194,10 +216,10 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
     return rows.filter((r) => {
       if (q) {
         // Search by text, phone number, room number, bill number or amount
-        const hay = `${r.ref} ${r.guest} ${r.detail} ${r.phone || ''} ${r.roomNo || ''} ${r.amount}`.toLowerCase()
-        const digitHay = `${r.phone || ''} ${r.roomNo || ''} ${r.ref} ${r.amount}`.replace(/[^0-9 ]/g, '')
-        const textHit = hay.includes(q)
-        const numberHit = qDigits.length > 0 && qDigits === q.replace(/[\s+-]/g, '') && digitHay.replace(/ /g, '|').split('|').some((part) => part.includes(qDigits))
+        // Phone numbers match from the 5th digit typed; room, bill number and amount match any number
+        const textHit = matchesSearch(q, [r.ref, r.guest, r.detail, r.roomNo, r.amount], [r.phone])
+        const digitHay = `${r.roomNo || ''} ${r.ref} ${r.amount}`.replace(/[^0-9 ]/g, '')
+        const numberHit = qDigits.length > 0 && qDigits === q.replace(/[\s+-]/g, '') && digitHay.split(' ').some((part) => part.includes(qDigits))
         if (!textHit && !numberHit) return false
       }
       const d = new Date(r.date).toISOString().slice(0, 10)
@@ -406,8 +428,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
                       <button
                         className="text-xs font-medium text-emerald-700 underline dark:text-emerald-400 hover:text-emerald-800"
                         onClick={() => {
-                          const rawId = r.id.replace('bill-', '')
-                          const b = bills.find((item) => item.id === rawId)
+                          const b = bills.find((item) => item.id === r.billId)
                           if (b) setLastBill(b)
                         }}
                       >
@@ -502,7 +523,7 @@ export function PaymentsTab({ refreshKey, onDataChanged, settings: settingsProp 
           const isOrder = deleteTargetPayment.source === 'ORDER'
           const cleanId = deleteTargetPayment.id.replace(/^(bill|order|adv)-/, '')
           const endpoint = isBill
-            ? `/api/bills?id=${cleanId}`
+            ? `/api/bills?id=${deleteTargetPayment.billId}`
             : isOrder
               ? `/api/orders?id=${cleanId}`
               : `/api/ledger?id=${cleanId}`
