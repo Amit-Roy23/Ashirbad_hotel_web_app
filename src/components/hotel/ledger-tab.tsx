@@ -28,7 +28,7 @@ interface LedgerEntry {
   source: string
 }
 
-const EXPENSE_CATEGORIES = ['SALARY', 'PURCHASE', 'UTILITIES', 'MAINTENANCE', 'STAFF', 'OTHER']
+const EXPENSE_CATEGORIES = ['SALARY', 'PURCHASE', 'UTILITIES', 'MAINTENANCE', 'STAFF', 'RESTAURANT', 'OTHER']
 const INCOME_CATEGORIES = ['ROOM_RENT', 'FOOD', 'ADVANCE', 'GST', 'OTHER']
 
 export function LedgerTab({ refreshKey, onDataChanged }: { refreshKey: number; onDataChanged: () => void }) {

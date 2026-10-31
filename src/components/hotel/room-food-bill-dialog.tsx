@@ -36,6 +36,10 @@ interface OrderItem {
 
 interface FoodOrder {
   id: string
+  subtotal?: number
+  cgstPercent?: number
+  sgstPercent?: number
+  taxAmount?: number
   total: number
   status: string
   notes?: string
@@ -136,9 +140,16 @@ export function RoomFoodBillDialog({
     if (pendingOrders.length === 0 && orders.length === 0) return
 
     const targetOrders = pendingOrders.length > 0 ? pendingOrders : orders
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    // Carry each order's GST onto the combined bill, so a GST fooding bill prints as a tax invoice
+    const taxed = targetOrders.find((o) => (o.taxAmount || 0) > 0)
     const aggregatedOrder: FoodOrder = {
       id: targetOrders[0]?.id || 'FOOD-ROOM',
-      total: targetOrders.reduce((s, o) => s + o.total, 0),
+      subtotal: r2(targetOrders.reduce((s, o) => s + (o.subtotal ?? o.total - (o.taxAmount || 0)), 0)),
+      taxAmount: r2(targetOrders.reduce((s, o) => s + (o.taxAmount || 0), 0)),
+      cgstPercent: taxed?.cgstPercent || 0,
+      sgstPercent: taxed?.sgstPercent || 0,
+      total: r2(targetOrders.reduce((s, o) => s + o.total, 0)),
       status: pendingOrders.length > 0 ? 'PENDING' : 'PAID',
       items: targetOrders.flatMap((o) => o.items),
       room: { id: roomId || '', number: roomNumber || '' },
@@ -274,7 +285,12 @@ export function RoomFoodBillDialog({
                       <Separator />
 
                       <div className="flex items-center justify-between pt-0.5">
-                        <span className="font-bold">Order Total: {formatINR(o.total)}</span>
+                        <span className="font-bold">
+                          Order Total: {formatINR(o.total)}
+                          {(o.taxAmount || 0) > 0 && (
+                            <span className="ml-1 text-[10px] font-normal text-muted-foreground">incl. GST {formatINR(o.taxAmount || 0)}</span>
+                          )}
+                        </span>
                         {o.status === 'PENDING' && (
                           <div className="flex items-center gap-1.5">
                             <Button

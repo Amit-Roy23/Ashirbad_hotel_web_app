@@ -322,7 +322,7 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
             {/* GST section: CGST + SGST (each 0% or 2.5%) with on/off, for lodging and food bills */}
             {([
               { key: 'lodging', title: 'Lodging Bill GST', hint: 'Default CGST / SGST on room checkout bills' },
-              { key: 'food', title: 'Food Bill GST', hint: 'CGST / SGST on restaurant bills paid at the counter (room-service food is taxed on the room bill)' },
+              { key: 'food', title: 'Food Bill GST', hint: 'Default CGST / SGST on restaurant and room-service food bills (can be switched per order)' },
             ] as const).map((sec) => {
               const enabledKey = `${sec.key}GstEnabled`
               const on = sec.key === 'lodging' ? settings[enabledKey] !== 'false' : settings[enabledKey] === 'true'

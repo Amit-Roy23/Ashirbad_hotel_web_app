@@ -38,8 +38,12 @@ import {
   RotateCcw,
   SendHorizontal,
   PackageCheck,
+  Pencil,
+  BarChart3,
 } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
+import { RestaurantReportPanel } from './restaurant-report'
+import { askAdminPin } from '@/lib/admin-pin'
 
 export interface MenuItem {
   id: string
@@ -113,6 +117,7 @@ export function RestaurantTab({
   const [orderFilter, setOrderFilter] = useState('ALL') // ALL | PENDING | ROOM | DIRECT
   const [printOrder, setPrintOrder] = useState<FoodOrder | null>(null)
   const [deleteTargetMenuItem, setDeleteTargetMenuItem] = useState<MenuItem | null>(null)
+  const [editMenuItem, setEditMenuItem] = useState<MenuItem | null>(null)
 
   // Order building state (POS)
   const [orderType, setOrderType] = useState<'ROOM' | 'DIRECT'>('ROOM')
@@ -120,7 +125,7 @@ export function RestaurantTab({
   const [orderNotes, setOrderNotes] = useState('')
   const [cart, setCart] = useState<Record<string, { menuItemId: string; itemNumber: number; name: string; price: number; quantity: number }>>({})
   const [saving, setSaving] = useState(false)
-  // Food bill GST on/off for this order (default from Settings; only for direct restaurant bills)
+  // Food bill GST on/off for this order (default from Settings)
   const [foodGstOn, setFoodGstOn] = useState<boolean | null>(null)
   const [error, setError] = useState('')
   const [quickNumInput, setQuickNumInput] = useState('')
@@ -392,7 +397,7 @@ export function RestaurantTab({
       prev.map((m) => (m.id === item.id ? { ...m, available: nextAvailable } : m))
     )
     try {
-      await api('/api/menu', { method: 'PATCH', body: JSON.stringify({ id: item.id, available: nextAvailable }) })
+      await apiAs('/api/menu', getCachedUser(), { method: 'PATCH', body: JSON.stringify({ id: item.id, available: nextAvailable }) })
     } catch (e) {
       setRawMenu((prev) =>
         prev.map((m) => (m.id === item.id ? { ...m, available: item.available } : m))
@@ -414,10 +419,13 @@ export function RestaurantTab({
       return
     }
 
+    const pin = await askAdminPin(`Add menu item ${trimmedName} at ${formatINR(parsedPrice)}. Enter the Admin PIN.`)
+    if (!pin) return
     setAdding(true)
     try {
-      const createdItem = await api<MenuItem>('/api/menu', {
+      const createdItem = await apiAs<MenuItem>('/api/menu', getCachedUser(), {
         method: 'POST',
+        adminPin: pin,
         body: JSON.stringify({ name: trimmedName, category: newCategory, price: parsedPrice }),
       })
       setRawMenu((prev) => [...prev, createdItem])
@@ -507,7 +515,7 @@ export function RestaurantTab({
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <TabsList className="w-full grid grid-cols-3 sm:w-auto sm:inline-flex">
+          <TabsList className="w-full grid grid-cols-4 sm:w-auto sm:inline-flex">
             <TabsTrigger value="order" className="gap-1.5">
               <Utensils className="hidden h-3.5 w-3.5 min-[400px]:block" />
               <span className="sm:hidden">New Order</span><span className="hidden sm:inline">Room Service Order</span>
@@ -528,6 +536,10 @@ export function RestaurantTab({
             <TabsTrigger value="menu" className="gap-1.5">
               <span className="sm:hidden">Menu</span><span className="hidden sm:inline">Menu Items</span>
               <span className="text-[11px] text-muted-foreground">({menu.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="report" className="gap-1.5">
+              <BarChart3 className="hidden h-3.5 w-3.5 min-[400px]:block" />
+              <span className="sm:hidden">Report</span><span className="hidden sm:inline">Report &amp; Expenses</span>
             </TabsTrigger>
           </TabsList>
 
@@ -933,6 +945,9 @@ export function RestaurantTab({
                             <Switch checked={foodGst.on} onCheckedChange={(v) => setFoodGstOn(v)} className="scale-75" aria-label="Food bill GST on or off" />
                           </div>
                         </div>
+                        {foodGst.applies && foodGst.cgstPct + foodGst.sgstPct === 0 && (
+                          <p className="text-[11px] text-amber-700 dark:text-amber-400">Food CGST and SGST are 0% in Settings, so no GST is added.</p>
+                        )}
                         {foodGst.applies && (
                           <>
                             <div className="flex justify-between text-muted-foreground">
@@ -1096,6 +1111,10 @@ export function RestaurantTab({
           ))}
         </TabsContent>
 
+        <TabsContent value="report" className="mt-4">
+          {activeTab === 'report' && <RestaurantReportPanel refreshKey={refreshKey} />}
+        </TabsContent>
+
         {/* ================= MENU MANAGEMENT TAB ================= */}
         <TabsContent value="menu" className="mt-4 space-y-4">
           {/* Add Menu Item Card */}
@@ -1117,7 +1136,7 @@ export function RestaurantTab({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {['Breakfast', 'Rice & Bread', 'Main Course', 'Snacks', 'Beverages', 'Dessert'].map((c) => (
+                    {MENU_CATEGORIES.map((c) => (
                       <SelectItem key={c} value={c}>
                         {c}
                       </SelectItem>
@@ -1189,7 +1208,10 @@ export function RestaurantTab({
                               )}
                             </Button>
                             <Switch checked={item.available} onCheckedChange={() => toggleAvailability(item)} title="Toggle availability" />
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => deleteMenuItem(item)}>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${item.name}`} onClick={() => setEditMenuItem(item)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" aria-label={`Delete ${item.name}`} onClick={() => deleteMenuItem(item)}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           </div>
@@ -1333,12 +1355,98 @@ export function RestaurantTab({
         warningNotice="This will permanently delete this item from the restaurant menu. Admin PIN is required."
         onConfirm={async (adminPin) => {
           if (!deleteTargetMenuItem) return
-          await api(`/api/menu?id=${deleteTargetMenuItem.id}`, { method: 'DELETE', adminPin })
+          await apiAs(`/api/menu?id=${deleteTargetMenuItem.id}`, getCachedUser(), { method: 'DELETE', adminPin })
           setRawMenu((prev) => prev.filter((m) => m.id !== deleteTargetMenuItem.id))
           setDeleteTargetMenuItem(null)
           onDataChanged()
         }}
       />
+
+      {editMenuItem && (
+        <MenuItemEditDialog
+          item={editMenuItem}
+          onClose={() => setEditMenuItem(null)}
+          onSaved={(updated) => {
+            setRawMenu((prev) => prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m)))
+            setEditMenuItem(null)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+const MENU_CATEGORIES = ['Breakfast', 'Rice & Bread', 'Main Course', 'Snacks', 'Beverages', 'Dessert']
+
+/** Change a menu item's name, category or price (Admin PIN). Bills already made keep their old price. */
+function MenuItemEditDialog({ item, onClose, onSaved }: { item: MenuItem; onClose: () => void; onSaved: (m: MenuItem) => void }) {
+  const [name, setName] = useState(item.name)
+  const [category, setCategory] = useState(item.category)
+  const [price, setPrice] = useState(String(item.price))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function save() {
+    const p = parseFloat(price)
+    if (!name.trim()) return setError('Enter the item name')
+    if (!(p > 0)) return setError('Enter a price above 0')
+    const pin = await askAdminPin(`Change menu item ${item.name}${p !== item.price ? `: price ${formatINR(item.price)} → ${formatINR(p)}` : ''}. Enter the Admin PIN.`)
+    if (!pin) return
+    setSaving(true)
+    setError('')
+    try {
+      const updated = await apiAs<MenuItem>('/api/menu', getCachedUser(), {
+        method: 'PATCH',
+        adminPin: pin,
+        body: JSON.stringify({ id: item.id, name: name.trim(), category, price: p }),
+      })
+      onSaved(updated)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit Menu Item #{item.itemNumber}</DialogTitle>
+          <DialogDescription>Orders already taken keep their old price.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="mi-name">Name</Label>
+            <Input id="mi-name" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Select value={category} onValueChange={setCategory}>
+                <SelectTrigger className="w-full" aria-label="Category">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[...new Set([...MENU_CATEGORIES, item.category])].map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="mi-price">Price (₹)</Label>
+              <Input id="mi-price" type="number" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
+            </div>
+          </div>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <Button className="w-full bg-emerald-600 text-white hover:bg-emerald-700" disabled={saving} onClick={save}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />} Save Changes
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

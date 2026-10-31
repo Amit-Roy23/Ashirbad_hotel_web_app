@@ -43,6 +43,8 @@ import {
   InventoryError,
 } from '@/lib/inventory-service'
 import { getDayBook } from '@/lib/daybook'
+import { getRestaurantReport } from '@/lib/restaurant-report'
+import { RESTAURANT_EXPENSE_HEADS } from '@/lib/restaurant-expense'
 import {
   listStaff as listStaffMembers,
   createStaff as createStaffMember,
@@ -2734,34 +2736,90 @@ async function listMenu() {
   return NextResponse.json(items)
 }
 
-async function createMenuItem(body: Record<string, unknown>) {
+async function createMenuItem(body: Record<string, unknown>, user: RequestUser) {
   const { name, category, price } = body
-  if (!name || !price) {
-    return NextResponse.json({ error: 'Name and price required' }, { status: 400 })
+  if (!name || !String(name).trim() || !(num(price) > 0)) {
+    return NextResponse.json({ error: 'Name and a price above 0 are required' }, { status: 400 })
   }
   const item = await prisma.menuItem.create({
     data: {
-      name: String(name),
+      name: String(name).trim(),
       category: category ? String(category) : 'Main Course',
       price: num(price),
     },
   })
+  await logAudit('MENU_ADD', 'MenuItem', item.id, `Added menu item ${item.name} (${item.category}) ₹${item.price}`, user)
   return NextResponse.json(item)
 }
 
-async function updateMenuItem(body: Record<string, unknown>) {
+async function updateMenuItem(body: Record<string, unknown>, user: RequestUser) {
   const { id, name, category, price, available } = body
   if (!id) return NextResponse.json({ error: 'Item id required' }, { status: 400 })
+  const before = await prisma.menuItem.findUnique({ where: { id: String(id) } })
+  if (!before) return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
+  if (name !== undefined && !String(name).trim()) return NextResponse.json({ error: 'Item name is required' }, { status: 400 })
+  if (price !== undefined && !(num(price) > 0)) return NextResponse.json({ error: 'Price must be above 0' }, { status: 400 })
   const item = await prisma.menuItem.update({
     where: { id: String(id) },
     data: {
-      ...(name !== undefined && { name: String(name) }),
+      ...(name !== undefined && { name: String(name).trim() }),
       ...(category !== undefined && { category: String(category) }),
       ...(price !== undefined && { price: num(price) }),
       ...(available !== undefined && { available: !!available }),
     },
   })
+  const changes: string[] = []
+  if (before.name !== item.name) changes.push(`name ${before.name} → ${item.name}`)
+  if (before.category !== item.category) changes.push(`category ${before.category} → ${item.category}`)
+  if (before.price !== item.price) changes.push(`price ₹${before.price} → ₹${item.price}`)
+  if (before.available !== item.available) changes.push(item.available ? 'available' : 'out of stock')
+  if (changes.length) await logAudit('MENU_UPDATE', 'MenuItem', item.id, `Menu item ${item.name}: ${changes.join(', ')}`, user)
   return NextResponse.json(item)
+}
+
+// ============ RESTAURANT EXPENSES ============
+// Kept as ledger EXPENSE rows in the RESTAURANT category, described as "Head: note"
+async function saveRestaurantExpense(body: Record<string, unknown>, user: RequestUser) {
+  const head = (RESTAURANT_EXPENSE_HEADS as readonly string[]).includes(String(body.head)) ? String(body.head) : 'Other'
+  const note = body.note ? String(body.note).trim() : ''
+  const amount = Math.round(num(body.amount) * 100) / 100
+  if (!(amount > 0)) return NextResponse.json({ error: 'Enter the amount spent' }, { status: 400 })
+  if (head === 'Other' && !note) return NextResponse.json({ error: 'Say what the expense was for' }, { status: 400 })
+  const data = {
+    type: 'EXPENSE',
+    category: 'RESTAURANT',
+    description: note ? `${head}: ${note}` : head,
+    amount,
+    method: ['CASH', 'UPI', 'CARD', 'BANK'].includes(String(body.method)) ? String(body.method) : 'CASH',
+    vendor: body.vendor ? String(body.vendor).trim() || null : null,
+    source: 'MANUAL',
+    // Today's expense keeps the time it was entered; an earlier date is put at noon IST
+    date: !body.date || String(body.date) === istDateStr(new Date()) ? new Date() : makeIST(String(body.date), '12:00'),
+  }
+  if (body.id) {
+    const existing = await prisma.ledgerEntry.findUnique({ where: { id: String(body.id) } })
+    if (!existing || existing.category !== 'RESTAURANT' || existing.type !== 'EXPENSE') {
+      return NextResponse.json({ error: 'Restaurant expense not found' }, { status: 404 })
+    }
+    const entry = await prisma.ledgerEntry.update({ where: { id: existing.id }, data })
+    await logAudit('RESTAURANT_EXPENSE_UPDATE', 'LedgerEntry', entry.id, `Restaurant expense ${existing.description} ₹${existing.amount} → ${entry.description} ₹${entry.amount}`, user)
+    return NextResponse.json(entry)
+  }
+  const entry = await prisma.ledgerEntry.create({ data })
+  await logAudit('RESTAURANT_EXPENSE', 'LedgerEntry', entry.id, `Restaurant expense ₹${amount} — ${entry.description} (${entry.method})`, user)
+  return NextResponse.json(entry)
+}
+
+async function deleteRestaurantExpense(req: NextRequest, user: RequestUser) {
+  const id = new URL(req.url).searchParams.get('id')
+  if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  const existing = await prisma.ledgerEntry.findUnique({ where: { id } })
+  if (!existing || existing.category !== 'RESTAURANT' || existing.type !== 'EXPENSE') {
+    return NextResponse.json({ error: 'Restaurant expense not found' }, { status: 404 })
+  }
+  await prisma.ledgerEntry.delete({ where: { id } })
+  await logAudit('RESTAURANT_EXPENSE_DELETE', 'LedgerEntry', id, `Deleted restaurant expense ${existing.description} ₹${existing.amount}`, user)
+  return NextResponse.json({ success: true })
 }
 
 async function deleteMenuItem(req: NextRequest, user: RequestUser) {
@@ -4353,12 +4411,36 @@ async function dispatch(
       if (method === 'PATCH') return await updateBill(body, user)
       if (method === 'DELETE') return await deleteBill(req, user)
       break
-    case 'menu':
+    case 'menu': {
       if (method === 'GET') return await listMenu()
-      if (method === 'POST') return await createMenuItem(body)
-      if (method === 'PATCH') return await updateMenuItem(body)
       if (method === 'DELETE') return await deleteMenuItem(req, user)
+      // Adding or changing a menu item (name, price, category) needs the Admin PIN; switching an
+      // item available / out of stock does not
+      const availabilityOnly = method === 'PATCH' && Object.keys(body).every((k) => ['id', 'available', 'adminPin'].includes(k))
+      if ((method === 'POST' || method === 'PATCH') && !availabilityOnly) {
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to add or change a menu item' }, { status: 403 })
+      }
+      delete body.adminPin
+      if (method === 'POST') return await createMenuItem(body, user)
+      if (method === 'PATCH') return await updateMenuItem(body, user)
       break
+    }
+    case 'restaurant-report': {
+      if (method !== 'GET') break
+      const today = istDateStr(new Date())
+      const from = url.searchParams.get('from') || today
+      const to = url.searchParams.get('to') || from
+      return NextResponse.json(await getRestaurantReport(makeIST(from, '00:00'), makeIST(to, '23:59:59')))
+    }
+    case 'restaurant-expenses': {
+      if (method === 'DELETE') return await deleteRestaurantExpense(req, user)
+      if (method !== 'POST' && method !== 'PATCH') break
+      const admin = await verifyAdminAuth(req, body)
+      if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to add or change a restaurant expense' }, { status: 403 })
+      delete body.adminPin
+      return await saveRestaurantExpense(body, user)
+    }
     case 'orders':
       if (method === 'GET') return await listOrders(req)
       if (method === 'POST') return await createOrder(body, user)
