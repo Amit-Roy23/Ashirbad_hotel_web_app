@@ -34,7 +34,7 @@ SET "status" = CASE WHEN "status" = 'MAINTENANCE' THEN 'MAINTENANCE' ELSE 'VACAN
 
 UPDATE "BanquetHall" SET "status" = 'AVAILABLE' WHERE "status" <> 'MAINTENANCE';
 
-UPDATE "Setting" SET "value" = '1' WHERE "key" = 'invoiceCounter';
+UPDATE "Setting" SET "value" = '1' WHERE "key" IN ('invoiceCounter', 'estimateCounter');
 
 -- Inventory tables exist once the app has run with the inventory feature
 DO $$

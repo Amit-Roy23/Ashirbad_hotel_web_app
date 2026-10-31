@@ -353,17 +353,32 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
                 </div>
               )
             })}
+            <p className="text-xs text-muted-foreground">
+              Bills with GST are tax invoices; bills without GST are estimates. Each has its own number series.
+            </p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="s-inv">Invoice Prefix</Label>
+                <Label htmlFor="s-inv">GST Invoice Prefix</Label>
                 <Input id="s-inv" value={settings.invoicePrefix || ''} onChange={(e) => setSettings({ ...settings, invoicePrefix: e.target.value })} />
               </div>
-              <div className="col-span-2 space-y-1.5">
-                <Label htmlFor="s-counter" className="flex items-center gap-1.5">
-                  <Hash className="h-3 w-3" /> Next Invoice Number
+              <div className="space-y-1.5">
+                <Label htmlFor="s-est">Estimate Prefix (no GST)</Label>
+                <Input id="s-est" value={settings.estimatePrefix || ''} placeholder="EST" onChange={(e) => setSettings({ ...settings, estimatePrefix: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5">
+                  <Hash className="h-3 w-3" /> Next GST Invoice
                 </Label>
                 <div className="rounded-md bg-muted px-3 py-2 text-sm font-semibold">
                   {settings.invoicePrefix || 'INV'}-{String(settings.invoiceCounter || 1).padStart(4, '0')}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5">
+                  <Hash className="h-3 w-3" /> Next Estimate
+                </Label>
+                <div className="rounded-md bg-muted px-3 py-2 text-sm font-semibold">
+                  {settings.estimatePrefix || 'EST'}-{String(settings.estimateCounter || 1).padStart(4, '0')}
                 </div>
               </div>
             </div>

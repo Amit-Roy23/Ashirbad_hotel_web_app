@@ -38,6 +38,8 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
 
   const subtotal = Math.max(0, (bill.billedRoomTotal || 0) + (bill.foodTotal || 0) + (bill.extraCharges || 0) - (bill.discount || 0))
   const gst = splitGst(bill)
+  // GST on: tax invoice copy with GSTIN and CGST / SGST. GST off: an estimate copy without them
+  const isGstCopy = Number(bill.actualGst || 0) > 0
   const previousDue = Number(bill.previousDue || 0)
   const guestAddress = guest?.address || ''
   const roomRatePerNight = bill.days > 0 ? Math.round((bill.billedRoomTotal / bill.days) * 100) / 100 : bill.billedRoomTotal
@@ -47,7 +49,7 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Invoice ${bill.billNumber} - ${hotelName}</title>
+  <title>${Number(bill.actualGst || 0) > 0 ? 'Invoice' : 'Estimate'} ${bill.billNumber} - ${hotelName}</title>
   <style>
     @page {
       size: A4 portrait;
@@ -156,9 +158,9 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
       <div class="hotel-name">${escapeHtml(hotelName)}</div>
       ${hotelAddress ? `<div class="hotel-sub">${escapeHtml(hotelAddress)}</div>` : ''}
       ${hotelPhone ? `<div class="hotel-sub">Ph: ${escapeHtml(hotelPhone)}</div>` : ''}
-      ${hotelGstin ? `<div class="hotel-sub semi-bold">GSTIN: ${escapeHtml(hotelGstin)}</div>` : ''}
+      ${isGstCopy && hotelGstin ? `<div class="hotel-sub semi-bold">GSTIN: ${escapeHtml(hotelGstin)}</div>` : ''}
       <div class="badge">
-        ${bill.actualGst > 0 ? 'GST TAX INVOICE' : 'NON-GST INVOICE / CASH MEMO'}
+        ${isGstCopy ? 'TAX INVOICE (GST COPY)' : 'ESTIMATE'}
       </div>
     </div>
 
@@ -166,7 +168,7 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
 
     <div class="meta-grid">
       <div class="meta-col">
-        <div class="meta-row">Invoice No: <span class="val">${escapeHtml(bill.billNumber)}</span></div>
+        <div class="meta-row">${isGstCopy ? 'Invoice No' : 'Estimate No'}: <span class="val">${escapeHtml(bill.billNumber)}</span></div>
         <div class="meta-row">Date: <span class="val">${formatDateTime(bill.createdAt)}</span></div>
         <div class="meta-row">Billing Room No: <span class="val">${escapeHtml(roomNo)} ${roomDesc ? `(${escapeHtml(roomDesc)})` : ''}</span></div>
         <div class="meta-row">Check-In: <span class="val">${formatDateTime(bill.booking?.checkIn)}</span></div>
@@ -213,6 +215,7 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
         <span>${formatINR(subtotal)}</span>
       </div>
 
+      ${isGstCopy ? `
       <div class="row">
         <span>CGST (${gst.cgstPercent}%)</span>
         <span class="semi-bold">${formatINR(gst.cgst)}</span>
@@ -220,7 +223,7 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
       <div class="row">
         <span>SGST (${gst.sgstPercent}%)</span>
         <span class="semi-bold">${formatINR(gst.sgst)}</span>
-      </div>
+      </div>` : ''}
 
       ${previousDue > 0 ? `
       <div class="row red">
@@ -238,6 +241,7 @@ export async function triggerPrintInvoice(bill: any, settings: Record<string, st
 
 
     <div class="footer-note">
+      ${isGstCopy ? '' : 'This is an estimate (no GST charged), not a tax invoice.<br>'}
       Thank you for staying with us! Please visit again.
     </div>
   </div>
@@ -336,7 +340,7 @@ export function triggerPrintFoodBill(order: any, settings: Record<string, string
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Food Bill - ${order.id}</title>
+  <title>${Number(order.taxAmount || 0) > 0 ? 'Food Tax Invoice' : 'Food Estimate'} - ${order.id}</title>
   <style>
     @page { size: A4 portrait; margin: 0mm; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -353,10 +357,10 @@ export function triggerPrintFoodBill(order: any, settings: Record<string, string
     <div class="text-center">
       <h2 style="font-size: 18px; margin-bottom: 2px;">${escapeHtml(restaurantName)}</h2>
       <p style="font-size: 11px; color: #4b5563;">${escapeHtml(restaurantAddress)} • Ph: ${escapeHtml(restaurantPhone)}</p>
-      ${restaurantGstin ? `<p style="font-size: 11px; color: #4b5563; font-weight:600;">GSTIN: ${escapeHtml(restaurantGstin)}</p>` : ''}
+      ${Number(order.taxAmount || 0) > 0 && restaurantGstin ? `<p style="font-size: 11px; color: #4b5563; font-weight:600;">GSTIN: ${escapeHtml(restaurantGstin)}</p>` : ''}
       ${restaurantFssai ? `<p style="font-size: 11px; color: #4b5563; font-weight:600;">FSSAI Lic No: ${escapeHtml(restaurantFssai)}</p>` : ''}
       <div style="margin-top:6px; font-weight:700; font-size:12px; letter-spacing:0.5px; color:#047857;">
-        RESTAURANT & KITCHEN RECEIPT
+        ${Number(order.taxAmount || 0) > 0 ? 'RESTAURANT TAX INVOICE (GST COPY)' : 'RESTAURANT ESTIMATE'}
       </div>
     </div>
     <div class="divider"></div>

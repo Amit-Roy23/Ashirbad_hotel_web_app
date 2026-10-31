@@ -30,7 +30,7 @@ import { EditAdvanceBookingDialog } from './edit-advance-booking-dialog'
 import { PrintableInvoice } from './printable-invoice'
 import { PrintableAdvanceReceipt } from './printable-advance-receipt'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, payableNow, matchesSearch } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, payableNow, matchesSearch, bookingPaymentStatus } from '@/lib/hotel-utils'
 import { splitGst } from '@/lib/gst'
 import { toast } from '@/hooks/use-toast'
 import { getCachedUser } from './user-context'
@@ -51,6 +51,7 @@ import {
   CheckCircle2,
   Phone,
   ArrowDownRight,
+  Search,
 } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
 
@@ -187,6 +188,14 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
   const paidOf = (b: Bill) => totalReceived(b)
   const balanceOf = (b: Bill) => balanceDue(b)
   const outstandingBills = useMemo(() => bills.filter((b) => balanceOf(b) > 0.01), [bills])
+  const [dueSearch, setDueSearch] = useState('')
+  const shownDues = useMemo(
+    () =>
+      outstandingBills.filter((b) =>
+        matchesSearch(dueSearch, [b.billNumber, b.booking?.guest?.name, b.corporateName, b.roomNumber || b.booking?.room?.number, balanceOf(b)], [b.booking?.guest?.phone])
+      ),
+    [outstandingBills, dueSearch]
+  )
 
   async function collectPayment() {
     if (!collectBill) return
@@ -315,7 +324,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
       formatINR(b.ratePerDay * b.days),
       formatINR(b.advance),
       formatINR(Math.max(0, b.ratePerDay * b.days - b.advance)),
-      'PAID',
+      bookingPaymentStatus(b),
     ])
   }
 
@@ -547,6 +556,23 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 </Badge>
               </div>
 
+              {outstandingBills.length > 0 && (
+                <div className="relative mb-2">
+                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={dueSearch}
+                    onChange={(e) => setDueSearch(e.target.value)}
+                    placeholder="Search dues: guest, bill no., room, phone (5+ digits)…"
+                    className="h-8 bg-background pl-8 text-xs"
+                    aria-label="Search outstanding dues"
+                  />
+                  {dueSearch && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {shownDues.length} of {outstandingBills.length} bills · {formatINR(shownDues.reduce((s, b) => s + balanceOf(b), 0))} due
+                    </p>
+                  )}
+                </div>
+              )}
               {outstandingBills.length === 0 ? (
                 <div className="flex items-center gap-2 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 border border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800">
                   <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
@@ -554,7 +580,8 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                 </div>
               ) : (
                 <ul className="max-h-60 space-y-2 overflow-y-auto">
-                  {outstandingBills.map((b) => {
+                  {shownDues.length === 0 && <li className="py-3 text-center text-xs text-muted-foreground">No dues match the search.</li>}
+                  {shownDues.map((b) => {
                     const custName = b.booking?.guest?.name || b.corporateName || 'Guest'
                     const custPhone = b.booking?.guest?.phone || '—'
                     const roomNo = b.roomNumber || b.booking?.room?.number || '—'
@@ -1007,7 +1034,7 @@ export function BillingTab({ refreshKey, onDataChanged, initialFilter }: TabProp
                         </TableCell>
                         <TableCell className="py-2.5">
                           <div className="flex flex-col gap-1 items-start">
-                            <PaymentStatusBadge status="PAID" />
+                            <PaymentStatusBadge status={bookingPaymentStatus(b)} />
                             <Badge variant="outline" className="h-4 border-amber-400 px-1 text-[9px] text-amber-800 dark:text-amber-300">
                               {b.status === 'BOOKED' ? 'RESERVED' : b.status}
                             </Badge>

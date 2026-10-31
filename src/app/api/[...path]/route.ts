@@ -40,7 +40,18 @@ import {
   InventoryError,
 } from '@/lib/inventory-service'
 import { getDayBook } from '@/lib/daybook'
+import {
+  listStaff as listStaffMembers,
+  createStaff as createStaffMember,
+  updateStaff as updateStaffMember,
+  recordStaffPayment,
+  deleteStaffPayment as removeStaffPayment,
+  setWorkDay,
+  periodLabel,
+  StaffError,
+} from '@/lib/staff-service'
 import { isValidHalfRate, normalizeHalfRate, computeGst, billBalance, billReceived, splitGst } from '@/lib/gst'
+import { bookingPaymentStatus } from '@/lib/hotel-utils'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -115,6 +126,9 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   foodSgst: '2.5',
   invoicePrefix: 'INV',
   invoiceCounter: '1',
+  // Bills without GST are estimates with their own number series
+  estimatePrefix: 'EST',
+  estimateCounter: '1',
   checkoutTime: '08:00',
   overstayGraceMinutes: '0',
   autoExtendEnabled: 'true',
@@ -249,6 +263,35 @@ function ensureSchema(): Promise<void> {
       )`,
       `CREATE INDEX IF NOT EXISTS "BillPayment_billId_idx" ON "BillPayment"("billId")`,
       `CREATE INDEX IF NOT EXISTS "BillPayment_date_idx" ON "BillPayment"("date")`,
+      `ALTER TABLE "Staff" ADD COLUMN IF NOT EXISTS "payType" TEXT NOT NULL DEFAULT 'MONTHLY'`,
+      `ALTER TABLE "Staff" ADD COLUMN IF NOT EXISTS "dailyRate" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "gross" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "recovered" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "deduction" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "period" TEXT`,
+      `ALTER TABLE "StaffPayment" ADD COLUMN IF NOT EXISTS "days" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `CREATE TABLE IF NOT EXISTS "StaffWorkDay" (
+        "id" TEXT NOT NULL,
+        "staffId" TEXT NOT NULL,
+        "date" TEXT NOT NULL,
+        "units" DOUBLE PRECISION NOT NULL DEFAULT 1,
+        "paymentId" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "StaffWorkDay_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "StaffWorkDay_staffId_fkey" FOREIGN KEY ("staffId") REFERENCES "Staff"("id") ON DELETE CASCADE ON UPDATE CASCADE
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "StaffWorkDay_staffId_date_key" ON "StaffWorkDay"("staffId", "date")`,
+      `CREATE INDEX IF NOT EXISTS "StaffWorkDay_staffId_idx" ON "StaffWorkDay"("staffId")`,
+      // Bookings without a bill used to be marked PAID even with nothing paid
+      `UPDATE "Booking" b SET "paymentStatus" = CASE
+          WHEN b."advance" <= 0.01 THEN 'UNPAID'
+          WHEN b."advance" >= b."ratePerDay" * GREATEST(b."days", 1) - 0.01 THEN 'PAID'
+          ELSE 'PARTIAL' END
+        WHERE NOT EXISTS (SELECT 1 FROM "Bill" x WHERE x."bookingId" = b."id")
+          AND b."paymentStatus" IS DISTINCT FROM (CASE
+          WHEN b."advance" <= 0.01 THEN 'UNPAID'
+          WHEN b."advance" >= b."ratePerDay" * GREATEST(b."days", 1) - 0.01 THEN 'PAID'
+          ELSE 'PARTIAL' END)`,
     ]
     schemaReady = (async () => {
       for (const sql of stmts) await prisma.$executeRawUnsafe(sql)
@@ -492,24 +535,9 @@ async function applyAutoExtensions(now = new Date()) {
 async function refreshBookingPaymentStatus(bookingId: string) {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
   if (!booking) return
-  let paymentStatus = 'PAID'
-  if (booking.status === 'CANCELLED' || booking.status === 'BOOKED') {
-    paymentStatus = 'PAID'
-  } else {
-    const bill = await prisma.bill.findFirst({
-      where: { bookingId },
-      orderBy: { createdAt: 'desc' },
-    })
-    if (bill) {
-      // Dues carried into a later bill are no longer owed here
-      const received = billReceived(bill)
-      if (billBalance(bill) <= 0.01) paymentStatus = 'PAID'
-      else if (received > 0.01) paymentStatus = 'PARTIAL'
-      else paymentStatus = 'UNPAID'
-    } else {
-      paymentStatus = (booking.advance || 0) > 0 ? 'PARTIAL' : 'UNPAID'
-    }
-  }
+  const bill = await prisma.bill.findFirst({ where: { bookingId }, orderBy: { createdAt: 'desc' } })
+  // Dues carried into a later bill are no longer owed here (balanceDue accounts for it)
+  const paymentStatus = bookingPaymentStatus({ ...booking, bills: bill ? [bill] : [] })
   if (paymentStatus !== booking.paymentStatus) {
     await prisma.booking.update({ where: { id: bookingId }, data: { paymentStatus } })
   }
@@ -578,7 +606,11 @@ async function syncBillAdvance(bookingId: string): Promise<string | null> {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } })
   if (!booking) return null
   const bill = await prisma.bill.findFirst({ where: { bookingId }, orderBy: { createdAt: 'desc' } })
-  if (!bill) return null
+  if (!bill) {
+    // No bill yet: the advance alone decides UNPAID / PARTIAL / PAID
+    await refreshBookingPaymentStatus(bookingId)
+    return null
+  }
   const advanceApplied = Math.min(booking.advance || 0, bill.grandTotal)
   if (Math.abs(advanceApplied - bill.advanceApplied) > 0.001) {
     await prisma.bill.update({ where: { id: bill.id }, data: { advanceApplied } })
@@ -655,6 +687,27 @@ function buildBillLedgerEntries(b: BillLedgerInput): Prisma.LedgerEntryCreateMan
     })
   }
   return entries
+}
+
+/**
+ * Next bill number: GST bills use the invoice series (INV-0001…), bills without GST the estimate
+ * series (EST-0001…). The counter is bumped in the same transaction, so two bills never share a number.
+ */
+async function takeBillNumber(tx: Prisma.TransactionClient, withGst: boolean, settings: Record<string, string>) {
+  const key = withGst ? 'invoiceCounter' : 'estimateCounter'
+  const prefix = (withGst ? settings.invoicePrefix || 'INV' : settings.estimatePrefix || 'EST').trim() || (withGst ? 'INV' : 'EST')
+  const start = parseInt(settings[key]) || 1
+  await tx.setting.upsert({ where: { key }, update: {}, create: { key, value: String(start) } })
+  for (let guard = 0; guard < 1000; guard++) {
+    const rows = await tx.$queryRaw<{ value: string }[]>`
+      UPDATE "Setting" SET "value" = (COALESCE(NULLIF(regexp_replace("value", '[^0-9]', '', 'g'), '')::int, 1) + 1)::text
+      WHERE "key" = ${key} RETURNING "value"`
+    const n = (parseInt(rows[0]?.value) || 2) - 1
+    const number = `${prefix}-${String(n).padStart(4, '0')}`
+    // Skip numbers already used (e.g. after the counter was set back in Settings)
+    if (!(await tx.bill.findUnique({ where: { billNumber: number } }))) return number
+  }
+  throw new Error('Could not allocate a bill number')
 }
 
 // ============ ROOMS ============
@@ -1072,16 +1125,6 @@ async function listBookings(req: NextRequest) {
   const from = searchParams.get('from')
   const to = searchParams.get('to')
 
-  // Clean any legacy UNPAID records in DB
-  await prisma.booking.updateMany({
-    where: {
-      paymentStatus: 'UNPAID',
-      OR: [
-        { status: { in: ['BOOKED', 'ACTIVE', 'CANCELLED'] } },
-      ],
-    },
-    data: { paymentStatus: 'PAID' },
-  }).catch(() => {})
 
   const bookings = await prisma.booking.findMany({
     where: {
@@ -1289,7 +1332,8 @@ async function createBooking(body: Record<string, unknown>, user: RequestUser) {
         guestCount: parsedGuestCount,
         ratePerDay: room.rate,
         status: isAdvanceBooking ? 'BOOKED' : 'ACTIVE',
-        paymentStatus: 'PAID',
+        // Nothing paid = UNPAID; an advance = PARTIAL; advance covering the stay = PAID
+        paymentStatus: bookingPaymentStatus({ advance: adv, ratePerDay: room.rate, days }),
         advance: adv,
         isCorporate: !!isCorporate,
         notes: notes ? String(notes) : null,
@@ -2074,17 +2118,9 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   const lodgingUpi = Math.max(0, Math.round((upi - foodUpi) * 100) / 100)
   const lodgingCard = Math.max(0, Math.round((card - foodCard) * 100) / 100)
 
-  const prefix = settings.invoicePrefix || 'INV'
-  const counter = parseInt(settings.invoiceCounter) || 1
-  const billNumber = `${prefix}-${String(counter).padStart(4, '0')}`
-
   const bill = await prisma.$transaction(async (tx) => {
-    // upsert: on a fresh database the counter only exists as a default, not as a row
-    await tx.setting.upsert({
-      where: { key: 'invoiceCounter' },
-      update: { value: String(counter + 1) },
-      create: { key: 'invoiceCounter', value: String(counter + 1) },
-    })
+    // GST bills (tax invoices) and bills without GST (estimates) have separate number series
+    const billNumber = await takeBillNumber(tx, billedGst > 0, settings)
 
     const createdBill = await tx.bill.create({
       data: {
@@ -2258,6 +2294,7 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
   })
 
   await refreshBookingPaymentStatus(booking.id)
+  const billNumber = bill.billNumber
 
   if (isCustom) {
     await logAudit(
@@ -2538,7 +2575,16 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
   }
   // Edited bills can have payment adjusted with or without an outstanding balance due
 
+  // Switching GST on / off moves the bill to the other number series (tax invoice ↔ estimate)
+  const seriesChanged = (bill.actualGst > 0) !== (newBilledGst > 0)
+  const numberSettings = seriesChanged ? await getSettingsMap() : {}
+  let renumberedTo: string | null = null
+
   const updatedBill = await prisma.$transaction(async (tx) => {
+    if (seriesChanged) {
+      renumberedTo = await takeBillNumber(tx, newBilledGst > 0, numberSettings)
+      await tx.bill.updateMany({ where: { carriedToBillNumber: bill.billNumber }, data: { carriedToBillNumber: renumberedTo } })
+    }
     // Optional room change for booking if requested
     if (roomId && String(roomId) !== bill.booking.roomId && (!isFinalized || managerPin)) {
       const targetRoom = await tx.room.findUnique({ where: { id: String(roomId) } })
@@ -2567,6 +2613,7 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
         extraCharges: extra,
         discount: disc,
         grandTotal: newGrandTotal,
+        ...(renumberedTo ? { billNumber: renumberedTo } : {}),
         payCash: cash,
         payUpi: upi,
         payCard: card,
@@ -2666,6 +2713,15 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
     include: { booking: { include: { room: true, guest: true } } },
   })
 
+  if (renumberedTo) {
+    await logAudit(
+      'BILL_RENUMBERED',
+      'Bill',
+      bill.id,
+      `Bill ${bill.billNumber} is now ${renumberedTo}: GST ${newBilledGst > 0 ? 'added (tax invoice series)' : 'removed (estimate series)'}`,
+      user
+    )
+  }
   return NextResponse.json(reloadedBill)
 }
 
@@ -2843,85 +2899,24 @@ async function updateOrder(body: Record<string, unknown>, user: RequestUser) {
 // ============ STAFF ============
 async function listStaff(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const q = searchParams.get('q')
-  const role = searchParams.get('role')
-  const staff = await prisma.staff.findMany({
-    where: {
-      ...(role ? { role } : {}),
-      ...(q
-        ? {
-          OR: [
-            { name: { contains: q, mode: 'insensitive' } },
-            { phone: { contains: q } },
-            { role: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-        : {}),
-    },
-    orderBy: { name: 'asc' },
-    include: { payments: { orderBy: { date: 'desc' } } },
-  })
+  return NextResponse.json(await listStaffMembers({ q: searchParams.get('q'), role: searchParams.get('role') }))
+}
+
+async function createStaff(body: Record<string, unknown>, user: RequestUser) {
+  const staff = await createStaffMember(body)
+  await logAudit(
+    'STAFF_CREATE',
+    'Staff',
+    staff.id,
+    `Added staff ${staff.name} (${staff.role}, ${staff.payType === 'DAILY' ? `₹${staff.dailyRate}/day` : `₹${staff.salary}/month`})`,
+    user
+  )
   return NextResponse.json(staff)
 }
 
-async function createStaff(body: Record<string, unknown>) {
-  const { name, phone, role, salary, joinDate, address, aadhaar } = body
-  if (!name) return NextResponse.json({ error: 'Name required' }, { status: 400 })
-  let cleanPhone: string | null = null
-  if (phone) {
-    const digits = String(phone).replace(/\D/g, '')
-    if (digits.length !== 10) {
-      return NextResponse.json(
-        { error: 'Staff phone number must be a valid 10-digit mobile number.' },
-        { status: 400 }
-      )
-    }
-    cleanPhone = digits
-  }
-  const staff = await prisma.staff.create({
-    data: {
-      name: String(name),
-      phone: cleanPhone,
-      role: role ? String(role) : 'Staff',
-      salary: num(salary),
-      joinDate: joinDate ? new Date(String(joinDate)) : new Date(),
-      address: address ? String(address) : null,
-      aadhaar: aadhaar ? String(aadhaar) : null,
-    },
-  })
-  return NextResponse.json(staff)
-}
-
-async function updateStaff(body: Record<string, unknown>) {
-  const { id, name, phone, role, salary, address, aadhaar, active } = body
-  if (!id) return NextResponse.json({ error: 'Staff id required' }, { status: 400 })
-  let cleanPhone: string | null | undefined = undefined
-  if (phone !== undefined) {
-    if (phone) {
-      const digits = String(phone).replace(/\D/g, '')
-      if (digits.length !== 10) {
-        return NextResponse.json(
-          { error: 'Staff phone number must be a valid 10-digit mobile number.' },
-          { status: 400 }
-        )
-      }
-      cleanPhone = digits
-    } else {
-      cleanPhone = null
-    }
-  }
-  const staff = await prisma.staff.update({
-    where: { id: String(id) },
-    data: {
-      ...(name !== undefined && { name: String(name) }),
-      ...(cleanPhone !== undefined && { phone: cleanPhone }),
-      ...(role !== undefined && { role: String(role) }),
-      ...(salary !== undefined && { salary: num(salary) }),
-      ...(address !== undefined && { address: String(address) }),
-      ...(aadhaar !== undefined && { aadhaar: String(aadhaar) }),
-      ...(active !== undefined && { active: !!active }),
-    },
-  })
+async function updateStaff(body: Record<string, unknown>, user: RequestUser) {
+  const { staff, changes } = await updateStaffMember(body)
+  if (changes.length) await logAudit('STAFF_UPDATE', 'Staff', staff.id, `Updated ${staff.name}: ${changes.join(', ')}`, user)
   return NextResponse.json(staff)
 }
 
@@ -3067,19 +3062,7 @@ async function deleteStaffPayment(req: NextRequest, user: RequestUser) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'Payment id required' }, { status: 400 })
-
-  const payment = await prisma.staffPayment.findUnique({
-    where: { id },
-    include: { staff: true },
-  })
-
-  if (!payment) return NextResponse.json({ error: 'Payment record not found' }, { status: 404 })
-
-  await prisma.$transaction(async (tx) => {
-    // The matching expense row must disappear from Expenses / Reports as well
-    await tx.ledgerEntry.deleteMany({ where: { refId: id } })
-    await tx.staffPayment.delete({ where: { id } })
-  })
+  const payment = await removeStaffPayment(id)
   await logAudit('DELETE_STAFF_PAYMENT', 'StaffPayment', id, `Deleted staff payment ${payment.type} ₹${payment.amount} for ${payment.staff.name}`, user)
   return NextResponse.json({ success: true, message: 'Staff payment deleted successfully' })
 }
@@ -3112,53 +3095,17 @@ async function listStaffPayments(req: NextRequest) {
 }
 
 async function createStaffPayment(body: Record<string, unknown>, user: RequestUser) {
-  const { staffId, type, amount, method, date, notes, recoveryNotes } = body
-  if (!staffId || !amount) {
-    return NextResponse.json({ error: 'Staff and amount required' }, { status: 400 })
-  }
-  const staff = await prisma.staff.findUnique({ where: { id: String(staffId) } })
-  if (!staff) return NextResponse.json({ error: 'Staff not found' }, { status: 404 })
-
-  const amt = num(amount)
-  const payMethod = method ? String(method) : 'CASH'
-  const paymentDate = (parseDateInput(date, '12:00') as Date) || new Date()
-  const paymentType = type ? String(type) : 'SALARY'
-  const category = paymentType === 'ADVANCE' ? 'STAFF_ADVANCE' : 'SALARY'
-
-  const payment = await prisma.$transaction(async (tx) => {
-    const p = await tx.staffPayment.create({
-      data: {
-        staffId: String(staffId),
-        type: paymentType,
-        amount: amt,
-        method: payMethod,
-        date: paymentDate,
-        recoveryNotes: recoveryNotes ? String(recoveryNotes) : null,
-        notes: notes ? String(notes) : null,
-      },
-      include: { staff: true },
-    })
-
-    // A DEDUCTION reduces what the staff member is owed; no money leaves the hotel, so no expense row
-    if (paymentType === 'DEDUCTION') return p
-
-    await tx.ledgerEntry.create({
-      data: {
-        date: paymentDate,
-        type: 'EXPENSE',
-        category,
-        description: `${paymentType === 'BONUS' ? 'Bonus' : paymentType === 'ADVANCE' ? 'Salary advance' : 'Salary'} - ${staff.name}${recoveryNotes ? ` (recovery: ${recoveryNotes})` : ''}`,
-        amount: amt,
-        method: payMethod === 'BANK' ? 'BANK' : payMethod,
-        source: 'AUTO',
-        vendor: staff.name,
-        refId: p.id,
-      },
-    })
-    return p
-  })
-
-  await logAudit('STAFF_PAYMENT', 'StaffPayment', payment.id, `${payment.type} ₹${amt} to ${staff.name} via ${payMethod}`, user)
+  const { payment, staff, summaryBefore } = await recordStaffPayment(body)
+  const rs = (n: number) => `₹${Math.round(n * 100) / 100}`
+  const detail =
+    payment.type === 'SALARY'
+      ? `Salary ${staff.payType === 'DAILY' ? payment.period : periodLabel(payment.period)} to ${staff.name}: earned ${rs(payment.gross)}${payment.recovered > 0 ? ` − advance ${rs(payment.recovered)}` : ''}${payment.deduction > 0 ? ` − deduction ${rs(payment.deduction)}` : ''} = paid ${rs(payment.amount)} via ${payment.method}. Advance left ${rs(Math.max(0, summaryBefore.advanceOutstanding - payment.recovered))}`
+      : payment.type === 'ADVANCE'
+        ? `Advance ${rs(payment.amount)} to ${staff.name} via ${payment.method}. Advance outstanding now ${rs(summaryBefore.advanceOutstanding + payment.amount)}`
+        : payment.type === 'ADVANCE_RETURN'
+          ? `${staff.name} returned ${rs(payment.amount)} advance via ${payment.method}. Advance left ${rs(Math.max(0, summaryBefore.advanceOutstanding - payment.amount))}`
+          : `${payment.type} ${rs(payment.amount)} for ${staff.name}`
+  await logAudit('STAFF_PAYMENT', 'StaffPayment', payment.id, detail, user)
   return NextResponse.json(payment)
 }
 
@@ -3250,8 +3197,11 @@ type LedgerLink =
 async function resolveLedgerLink(entry: { source: string; refId: string | null; category: string }): Promise<LedgerLink> {
   if (entry.source !== 'AUTO' || !entry.refId) return { kind: 'NONE' }
   const refId = entry.refId
-  const staffPayment = await prisma.staffPayment.findUnique({ where: { id: refId } })
-  if (staffPayment) return { kind: 'STAFF_PAYMENT', id: refId }
+  const staffPayment = await prisma.staffPayment.findUnique({ where: { id: refId }, include: { staff: true } })
+  // Salary rows carry the advance recovery and paid work days; change them where that is kept
+  if (staffPayment) {
+    return { kind: 'LOCKED', reason: `This is a staff payment of ${staffPayment.staff.name}. Change or delete it from the Staff tab (payment history).` }
+  }
   if (entry.category === 'ADVANCE') {
     const booking = await prisma.booking.findUnique({ where: { id: refId } })
     if (booking) return { kind: 'ROOM_ADVANCE', bookingId: refId }
@@ -4322,7 +4272,7 @@ async function route(
     res.headers.set('Expires', '0')
     return res
   } catch (e) {
-    if (e instanceof BanquetError || e instanceof InventoryError) {
+    if (e instanceof BanquetError || e instanceof InventoryError || e instanceof StaffError) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { 'Cache-Control': 'no-store' } })
     }
     console.error(`API Error [${method} ${url.pathname}]:`, e)
@@ -4377,6 +4327,15 @@ async function dispatch(
       if (method === 'DELETE') return await deleteGuest(req, user)
       break
     case 'bookings':
+      if (method === 'GET' && url.searchParams.get('paymentsFor')) {
+        // Advance and part payments of one stay, oldest first
+        const rows = await prisma.ledgerEntry.findMany({
+          where: { refId: String(url.searchParams.get('paymentsFor')), type: 'INCOME', category: 'ADVANCE' },
+          orderBy: { date: 'asc' },
+          select: { id: true, date: true, amount: true, method: true, description: true },
+        })
+        return NextResponse.json(rows)
+      }
       if (method === 'GET') return await listBookings(req)
       if (method === 'POST') return await createBooking(body, user)
       if (method === 'PATCH') return await updateBooking(body, user)
@@ -4404,10 +4363,34 @@ async function dispatch(
       if (method === 'DELETE') return await deleteFoodOrder(req, user)
       break
     case 'staff':
+      if (method === 'GET' && url.searchParams.get('historyFor')) {
+        // Everything recorded about one staff member: profile changes and payments
+        const id = String(url.searchParams.get('historyFor'))
+        const paymentIds = (await prisma.staffPayment.findMany({ where: { staffId: id }, select: { id: true } })).map((p) => p.id)
+        const rows = await prisma.auditLog.findMany({
+          where: { OR: [{ entity: 'Staff', entityId: id }, { entity: 'StaffPayment', entityId: { in: paymentIds } }] },
+          orderBy: { createdAt: 'desc' },
+          take: 500,
+        })
+        return NextResponse.json(rows)
+      }
       if (method === 'GET') return await listStaff(req)
-      if (method === 'POST') return await createStaff(body)
-      if (method === 'PATCH') return await updateStaff(body)
+      if (method === 'POST') return await createStaff(body, user)
+      if (method === 'PATCH') return await updateStaff(body, user)
       if (method === 'DELETE') return await deleteStaff(req, user)
+      break
+    case 'staff-workdays':
+      if (method === 'POST') {
+        const r = await setWorkDay(body)
+        await logAudit(
+          'STAFF_WORKDAY',
+          'Staff',
+          r.staff.id,
+          r.units === 0 ? `${r.staff.name}: work day ${r.date} cleared` : `${r.staff.name}: ${r.units === 1 ? 'full' : 'half'} day worked on ${r.date}`,
+          user
+        )
+        return NextResponse.json(r)
+      }
       break
     case 'staff-payments':
       if (method === 'GET') return await listStaffPayments(req)

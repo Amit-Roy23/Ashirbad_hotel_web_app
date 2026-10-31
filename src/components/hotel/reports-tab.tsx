@@ -257,6 +257,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
   const [loading, setLoading] = useState(true)
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [gstSearch, setGstSearch] = useState('')
+  const [dueSearch, setDueSearch] = useState('')
   const [gstTypeFilter, setGstTypeFilter] = useState<'ALL' | 'NORMAL' | 'CUSTOM'>('ALL')
   const [selectedGstBill, setSelectedGstBill] = useState<GstBillRow | null>(null)
 
@@ -289,6 +290,9 @@ export function ReportsTab({ refreshKey }: TabProps) {
   }, [load, refreshKey])
 
 
+  const dueRows = (data?.outstanding?.rows || []).filter((r) =>
+    matchesSearch(dueSearch, [r.billNumber, r.guestName, r.roomNumber, r.balance], [r.phone])
+  )
   const filteredGstRows = (data?.gstBills?.rows || []).filter((r) => {
     if (gstTypeFilter === 'NORMAL' && r.isCustom) return false
     if (gstTypeFilter === 'CUSTOM' && !r.isCustom) return false
@@ -948,6 +952,21 @@ export function ReportsTab({ refreshKey }: TabProps) {
                 <Badge className="bg-red-600">
                   Total Outstanding: {formatINR(data.outstanding.total)}
                 </Badge>
+                <div className="relative min-w-[200px] flex-1 sm:max-w-xs">
+                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={dueSearch}
+                    onChange={(e) => setDueSearch(e.target.value)}
+                    placeholder="Guest, bill no., room, phone (5+ digits)…"
+                    className="h-8 pl-8 text-xs"
+                    aria-label="Search outstanding dues"
+                  />
+                </div>
+                {dueSearch && (
+                  <span className="text-xs text-muted-foreground">
+                    {dueRows.length} bills · {formatINR(dueRows.reduce((s, r) => s + r.balance, 0))}
+                  </span>
+                )}
                 <div className="ml-auto flex items-center gap-1.5">
                   <Button
                     size="sm"
@@ -957,7 +976,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       printTableReport(
                         'Outstanding Due Report',
                         ['Invoice', 'Guest', 'Phone', 'Room', 'Total', 'Paid', 'Balance', 'Date'],
-                        data.outstanding.rows.map((r) => [
+                        dueRows.map((r) => [
                           r.billNumber, r.guestName, r.phone, r.roomNumber, formatINR(r.grandTotal), formatINR(r.paid), formatINR(r.balance), formatDate(r.createdAt),
                         ]),
                         `Total Outstanding: ${formatINR(data.outstanding.total)}`
@@ -974,7 +993,7 @@ export function ReportsTab({ refreshKey }: TabProps) {
                       exportCSV(
                         'outstanding-report.csv',
                         ['Invoice', 'Guest', 'Phone', 'Room', 'Total', 'Paid', 'Balance', 'Date'],
-                        data.outstanding.rows.map((r) => [
+                        dueRows.map((r) => [
                           r.billNumber, r.guestName, r.phone, r.roomNumber, r.grandTotal, r.paid, r.balance, formatDate(r.createdAt),
                         ])
                       )
@@ -997,14 +1016,14 @@ export function ReportsTab({ refreshKey }: TabProps) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.outstanding.rows.length === 0 && (
+                    {dueRows.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
                           Nothing outstanding — all bills collected.
                         </TableCell>
                       </TableRow>
                     )}
-                    {data.outstanding.rows.map((r) => (
+                    {dueRows.map((r) => (
                       <TableRow key={r.billNumber}>
                         <TableCell className="text-xs font-medium">{r.billNumber}</TableCell>
                         <TableCell className="text-xs">

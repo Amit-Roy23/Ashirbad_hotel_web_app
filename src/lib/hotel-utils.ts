@@ -679,3 +679,24 @@ export function matchesSearch(
   if (text.some((t) => t !== null && t !== undefined && String(t).toLowerCase().includes(q))) return true
   return phones.some((p) => matchesPhone(p, q))
 }
+
+/**
+ * Payment status of a stay. With a bill: from the bill's balance. Before a bill exists: from the
+ * advance against the stay amount (nothing paid = UNPAID, some = PARTIAL, whole stay = PAID).
+ */
+export function bookingPaymentStatus(b: {
+  advance?: number | null
+  ratePerDay?: number | null
+  days?: number | null
+  bills?: BillLike[] | null
+}): 'PAID' | 'PARTIAL' | 'UNPAID' {
+  const bill = b.bills?.[0]
+  if (bill) {
+    if (balanceDue(bill) <= 0.01) return 'PAID'
+    return totalReceived(bill) > 0.01 ? 'PARTIAL' : 'UNPAID'
+  }
+  const advance = Number(b.advance || 0)
+  const stay = Number(b.ratePerDay || 0) * Math.max(1, Number(b.days || 1))
+  if (advance <= 0.01) return 'UNPAID'
+  return stay > 0 && advance >= stay - 0.01 ? 'PAID' : 'PARTIAL'
+}

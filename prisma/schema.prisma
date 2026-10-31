@@ -200,12 +200,15 @@ model Staff {
   name      String
   phone     String?
   role      String         @default("Staff") // Manager | Reception | Housekeeping | Chef | Guard | Other
-  salary    Float          @default(0)
+  payType   String         @default("MONTHLY") // MONTHLY (fixed salary) | DAILY (paid per day worked)
+  salary    Float          @default(0) // monthly salary
+  dailyRate Float          @default(0) // pay per full day for DAILY staff
   joinDate  DateTime       @default(now())
   address   String?
   aadhaar   String?
   active    Boolean        @default(true)
   payments  StaffPayment[]
+  workDays  StaffWorkDay[]
   createdAt DateTime       @default(now())
   updatedAt DateTime       @default(now()) @updatedAt
 
@@ -216,8 +219,13 @@ model Staff {
 model StaffPayment {
   id            String   @id @default(cuid())
   staffId       String
-  type          String   // SALARY | ADVANCE | BONUS | DEDUCTION
-  amount        Float
+  type          String   // SALARY | ADVANCE | ADVANCE_RETURN | BONUS | DEDUCTION
+  amount        Float    // money actually paid (salary: net after recovery / deductions)
+  gross         Float    @default(0) // salary earned for the period, before recovery and deductions
+  recovered     Float    @default(0) // advance recovered from this salary
+  deduction     Float    @default(0) // other deductions from this salary
+  period        String?  // "2026-10" for a monthly salary, or "12 days" for day-basis pay
+  days          Float    @default(0) // days paid (DAILY staff)
   method        String   @default("CASH") // CASH | UPI | CARD | BANK
   date          DateTime @default(now())
   recoveryNotes String?  // advance recovery / adjustment notes
@@ -462,4 +470,18 @@ model BillPayment {
 
   @@index([billId])
   @@index([date])
+}
+
+// Days worked by DAILY staff; paid days point to the salary payment that paid them
+model StaffWorkDay {
+  id        String   @id @default(cuid())
+  staffId   String
+  date      String   // yyyy-mm-dd
+  units     Float    @default(1) // 1 = full day, 0.5 = half day
+  paymentId String?
+  createdAt DateTime @default(now())
+  staff     Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, date])
+  @@index([staffId])
 }

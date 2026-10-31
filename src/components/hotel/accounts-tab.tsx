@@ -130,7 +130,10 @@ export function AccountsTab({ refreshKey }: TabProps) {
   const { paged, controls } = usePagination(entries, 25)
   const shown = useMemo(() => {
     const t = { in: 0, out: 0 }
-    for (const e of entries) e.direction === 'IN' ? (t.in += e.amount) : (t.out += e.amount)
+    for (const e of entries) {
+      if (e.direction === 'IN') t.in += e.amount
+      else t.out += e.amount
+    }
     return t
   }, [entries])
 

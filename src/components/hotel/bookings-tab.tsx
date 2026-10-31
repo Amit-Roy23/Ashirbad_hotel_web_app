@@ -35,7 +35,7 @@ import { runWithAdminPin } from '@/lib/admin-pin'
 import { toast } from '@/hooks/use-toast'
 import { PaymentStatusBadge } from './status-badge'
 import { TableControls, SortableTh, useSort, usePagination } from './table-controls'
-import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState, matchesSearch } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, formatDateTime, exportCSV, printTableReport, totalReceived, balanceDue, todayStr, addDays, getRoomOperationalState, matchesSearch, bookingPaymentStatus } from '@/lib/hotel-utils'
 import { calcNights, nextAutoExtensionAt, istDateStr } from '@/lib/stay'
 import { Loader2, UserPlus, LogIn, CalendarClock, XCircle, ArrowLeftRight, Wallet, Pencil, Save, Trash2, AlertTriangle, Clock, ShieldAlert, History, Eye, Phone, Info } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
@@ -242,12 +242,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
     return bookings.filter((b) => {
       if (q && !matchesSearch(q, [b.guest?.name, b.guest?.company, b.room?.number, b.id], [b.guest?.phone])) return false
       if (status !== 'ALL' && b.status !== status) return false
-      if (paymentStatus !== 'ALL') {
-        const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
-        const eff = hasDue ? 'PARTIAL' : 'PAID'
-        if (paymentStatus === 'PAID' && eff !== 'PAID') return false
-        if (paymentStatus === 'PARTIAL' && eff !== 'PARTIAL') return false
-      }
+      if (paymentStatus !== 'ALL' && bookingPaymentStatus(b) !== paymentStatus) return false
       if (roomFilter !== 'ALL' && b.room?.id !== roomFilter) return false
       const created = new Date(b.checkIn).toISOString().slice(0, 10)
       if (from && created < from) return false
@@ -272,8 +267,7 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
 
   function getBookingRowsData() {
     return (filtered as unknown as Booking[]).map((b) => {
-      const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
-      const effPayment = hasDue ? 'PARTIAL' : 'PAID'
+      const effPayment = bookingPaymentStatus(b)
       return [
         b.guest?.name || '', b.guest?.phone || '', b.room?.number || '', formatDate(b.checkIn), formatDate(b.checkOut),
         b.days, formatINR(b.ratePerDay), formatINR(b.advance), b.status, effPayment, b.isCorporate ? 'Yes' : 'No',
@@ -498,8 +492,8 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
             )}
             {(paged as unknown as Booking[]).map((b) => {
               const busy = !!busyId && busyId.startsWith(b.id)
-              const hasDue = b.bills?.[0] && balanceDue(b.bills[0]) > 0.01
-              const effPaymentStatus = hasDue ? 'PARTIAL' : 'PAID'
+              // Before a bill: from the advance (nothing paid shows Unpaid, not Paid)
+              const effPaymentStatus = bookingPaymentStatus(b)
               return (
                 <TableRow key={b.id} className={b.status === 'CANCELLED' ? 'bg-muted/30' : ''}>
                   <TableCell>
@@ -587,11 +581,15 @@ export function BookingsTab({ refreshKey, onDataChanged, initialFilter }: TabPro
                   </TableCell>
                   <TableCell>
                     <PaymentStatusBadge status={effPaymentStatus} />
-                    {hasDue && (
+                    {b.bills?.[0] && balanceDue(b.bills[0]) > 0.01 ? (
                       <div className="mt-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
                         due {formatINR(balanceDue(b.bills[0]))}
                       </div>
-                    )}
+                    ) : !b.bills?.[0] && b.status !== 'CANCELLED' ? (
+                      <div className="mt-0.5 text-[10px] text-muted-foreground">
+                        paid {formatINR(b.advance || 0)} of {formatINR((b.ratePerDay || 0) * Math.max(1, b.days || 1))}
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="text-center">
                     {b.status === 'ACTIVE' && (

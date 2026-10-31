@@ -11,6 +11,8 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
   const hotelPhone = settings.hotelPhone || '+91 90000 00000'
   const hotelGstin = settings.hotelGstin || ''
 
+  // GST on: tax invoice copy; GST off: estimate copy
+  const isGstCopy = Number(bill.gstAmount || 0) > 0
   const paidAfterAdvance = (bill.payCash || 0) + (bill.payUpi || 0) + (bill.payCard || 0) + (bill.payBank || 0)
   const totalPaid = (bill.advanceApplied || 0) + paidAfterAdvance
   const balance = Math.max(0, Math.round(((bill.grandTotal || 0) - totalPaid) * 100) / 100)
@@ -184,10 +186,10 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
         <div class="hotel-name">${hotelName}</div>
         <div class="hotel-sub">Premium Banquets, Luxury Events &amp; Conventions</div>
         <div class="hotel-sub">${hotelAddress}</div>
-        <div class="hotel-sub">Phone: ${hotelPhone} ${hotelGstin ? ` · GSTIN: <b>${hotelGstin}</b>` : ''}</div>
+        <div class="hotel-sub">Phone: ${hotelPhone} ${isGstCopy && hotelGstin ? ` · GSTIN: <b>${hotelGstin}</b>` : ''}</div>
       </div>
       <div class="invoice-title">
-        <div class="invoice-badge">BANQUET TAX INVOICE</div>
+        <div class="invoice-badge">${isGstCopy ? 'BANQUET TAX INVOICE (GST COPY)' : 'BANQUET ESTIMATE'}</div>
         <div style="font-size: 14px; font-weight: 800; color: #111827;">${bill.billNumber}</div>
         <div style="font-size: 11px; color: #6b7280;">Date: ${formatDateTime(bill.createdAt || bill.eventDate)}</div>
       </div>
@@ -280,6 +282,7 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
           <span>Taxable Subtotal:</span>
           <b>${formatINR(bill.taxableAmount)}</b>
         </div>
+        ${isGstCopy ? `
         <div class="tot-row">
           <span>CGST (${splitGst({ ...bill, actualGst: bill.gstAmount }).cgstPercent}%):</span>
           <b>${formatINR(splitGst({ ...bill, actualGst: bill.gstAmount }).cgst)}</b>
@@ -287,7 +290,7 @@ export function triggerPrintBanquetInvoice(bill: BanquetBill | any, settings: Re
         <div class="tot-row">
           <span>SGST (${splitGst({ ...bill, actualGst: bill.gstAmount }).sgstPercent}%):</span>
           <b>${formatINR(splitGst({ ...bill, actualGst: bill.gstAmount }).sgst)}</b>
-        </div>
+        </div>` : ''}
         <div class="tot-row grand">
           <span>Grand Total:</span>
           <span>${formatINR(bill.grandTotal)}</span>

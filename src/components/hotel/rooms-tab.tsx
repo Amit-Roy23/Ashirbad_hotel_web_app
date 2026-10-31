@@ -27,6 +27,7 @@ import { PartPaymentDialog, type PartPaymentBooking } from './part-payment-dialo
 import { PrintableInvoice } from './printable-invoice'
 import { triggerPrintInvoice, triggerPrintAdvanceReceipt } from '@/lib/print-invoice'
 import { BookingDialog } from './booking-dialog'
+import { StayDetails, type StayBooking } from './stay-details'
 import { EditRoomDialog } from './edit-room-dialog'
 import { RoomStatusBadge } from './status-badge'
 import { TableControls } from './table-controls'
@@ -1247,47 +1248,26 @@ export function RoomsTab({ refreshKey, onDataChanged, initialFilter, onNavigate 
                           </span>
                         </div>
                       )}
-                      <div className="space-y-1.5 rounded-lg bg-muted p-3 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">In-House Guest</span>
-                          <span className="font-semibold">{opState.activeBooking.guest?.name || 'Guest'}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Phone</span>
-                          <span className="font-semibold">{opState.activeBooking.guest?.phone}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Check-In</span>
-                          <span className="font-semibold">{formatDate(opState.activeBooking.checkIn)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Expected Out</span>
-                          <span className="font-semibold">{formatDateTime(opState.activeBooking.checkOut)}</span>
-                        </div>
-                        {(opState.activeBooking.autoExtendedDays || 0) > 0 && (
-                          <div className="rounded border border-amber-300 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 space-y-1">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold flex items-center gap-1">
-                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-                                OVERSTAY +{opState.activeBooking.autoExtendedDays} day{opState.activeBooking.autoExtendedDays! > 1 ? 's' : ''} (auto)
-                              </span>
-                            </div>
-                            {opState.activeBooking.originalCheckOut && (
-                              <div className="text-[11px] text-muted-foreground">
-                                Original check-out: {formatDateTime(opState.activeBooking.originalCheckOut)}
-                              </div>
-                            )}
-                            <div className="text-[11px] text-muted-foreground flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              Next auto-extension: {formatDateTime(nextAutoExtensionAt(opState.activeBooking, parseInt(settings.overstayGraceMinutes || '0', 10)))}
-                            </div>
+                      {(opState.activeBooking.autoExtendedDays || 0) > 0 && (
+                        <div className="rounded border border-amber-300 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold flex items-center gap-1">
+                              <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                              OVERSTAY +{opState.activeBooking.autoExtendedDays} day{opState.activeBooking.autoExtendedDays! > 1 ? 's' : ''} (auto)
+                            </span>
                           </div>
-                        )}
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Paid so far (advance + part payments)</span>
-                          <span className="font-semibold">{formatINR(opState.activeBooking.advance)}</span>
+                          {opState.activeBooking.originalCheckOut && (
+                            <div className="text-[11px] text-muted-foreground">
+                              Original check-out: {formatDateTime(opState.activeBooking.originalCheckOut)}
+                            </div>
+                          )}
+                          <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            Next auto-extension: {formatDateTime(nextAutoExtensionAt(opState.activeBooking, parseInt(settings.overstayGraceMinutes || '0', 10)))}
+                          </div>
                         </div>
-                      </div>
+                      )}
+                      <StayDetails booking={opState.activeBooking as unknown as StayBooking} />
 
                       {/* Billing & Action Options: Print Bill, Lodging Checkout & Fooding Bill */}
                       <div className="space-y-2">
