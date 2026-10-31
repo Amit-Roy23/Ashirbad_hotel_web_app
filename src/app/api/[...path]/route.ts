@@ -39,6 +39,7 @@ import {
   lowStockCount as inventoryLowStockCount,
   InventoryError,
 } from '@/lib/inventory-service'
+import { getDayBook } from '@/lib/daybook'
 import { isValidHalfRate, normalizeHalfRate, computeGst, billBalance, billReceived, splitGst } from '@/lib/gst'
 
 export const dynamic = 'force-dynamic'
@@ -120,6 +121,49 @@ const DEFAULT_SETTINGS: Record<string, string> = {
 }
 
 /**
+ * Bills made before payments were recorded one by one: rebuild their payment rows once from the
+ * audit trail (each later collection is logged with its date and split) and the bill totals.
+ */
+async function backfillBillPayments() {
+  const bills = await prisma.$queryRawUnsafe<{ id: string; createdAt: Date; payCash: number; payUpi: number; payCard: number }[]>(
+    `SELECT b."id", b."createdAt", b."payCash", b."payUpi", b."payCard" FROM "Bill" b
+     WHERE (b."payCash" + b."payUpi" + b."payCard") > 0
+       AND NOT EXISTS (SELECT 1 FROM "BillPayment" p WHERE p."billId" = b."id")`
+  )
+  if (bills.length === 0) return
+  const logs = await prisma.auditLog.findMany({
+    where: { action: 'PAYMENT', entity: 'Bill', entityId: { in: bills.map((b) => b.id) } },
+    orderBy: { createdAt: 'asc' },
+  })
+  const money = (n: number) => Math.round(n * 100) / 100
+  const pick = (text: string, mode: string) => {
+    const m = text.match(new RegExp(`${mode} ₹([0-9]+(?:\\.[0-9]+)?)`))
+    return m ? Number(m[1]) : 0
+  }
+  const rows: Prisma.BillPaymentCreateManyInput[] = []
+  for (const b of bills) {
+    let cash = b.payCash
+    let upi = b.payUpi
+    let card = b.payCard
+    for (const a of logs.filter((l) => l.entityId === b.id)) {
+      const t = a.details || ''
+      const c = Math.min(cash, pick(t, 'Cash'))
+      const u = Math.min(upi, pick(t, 'UPI'))
+      const k = Math.min(card, pick(t, 'Card'))
+      if (c + u + k <= 0) continue
+      cash -= c
+      upi -= u
+      card -= k
+      rows.push({ billId: b.id, date: a.createdAt, kind: 'DUE', cash: c, upi: u, card: k, amount: money(c + u + k), createdBy: a.userName })
+    }
+    if (cash + upi + card > 0.001) {
+      rows.push({ billId: b.id, date: b.createdAt, kind: 'CHECKOUT', cash: money(cash), upi: money(upi), card: money(card), amount: money(cash + upi + card) })
+    }
+  }
+  if (rows.length) await prisma.billPayment.createMany({ data: rows })
+}
+
+/**
  * Columns added after the first deployment. Deploys do not run `prisma db push`, so make sure
  * they exist (idempotent) before any query that uses them.
  */
@@ -188,9 +232,27 @@ function ensureSchema(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS "InventoryMovement_itemId_idx" ON "InventoryMovement"("itemId")`,
       `CREATE INDEX IF NOT EXISTS "InventoryMovement_date_idx" ON "InventoryMovement"("date")`,
       `CREATE INDEX IF NOT EXISTS "InventoryMovement_type_idx" ON "InventoryMovement"("type")`,
+      `CREATE TABLE IF NOT EXISTS "BillPayment" (
+        "id" TEXT NOT NULL,
+        "billId" TEXT NOT NULL,
+        "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "kind" TEXT NOT NULL,
+        "cash" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "upi" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "card" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "amount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "note" TEXT,
+        "createdBy" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "BillPayment_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "BillPayment_billId_fkey" FOREIGN KEY ("billId") REFERENCES "Bill"("id") ON DELETE CASCADE ON UPDATE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS "BillPayment_billId_idx" ON "BillPayment"("billId")`,
+      `CREATE INDEX IF NOT EXISTS "BillPayment_date_idx" ON "BillPayment"("date")`,
     ]
     schemaReady = (async () => {
       for (const sql of stmts) await prisma.$executeRawUnsafe(sql)
+      await backfillBillPayments()
     })().catch((e) => {
       schemaReady = null
       throw e
@@ -2058,6 +2120,20 @@ async function createBill(body: Record<string, unknown>, user: RequestUser) {
         notes: notes ? String(notes) : null,
       },
     })
+    // The lodging payment taken at checkout, dated today
+    if (lodgingCash + lodgingUpi + lodgingCard > 0) {
+      await tx.billPayment.create({
+        data: {
+          billId: createdBill.id,
+          kind: 'CHECKOUT',
+          cash: lodgingCash,
+          upi: lodgingUpi,
+          card: lodgingCard,
+          amount: Math.round((lodgingCash + lodgingUpi + lodgingCard) * 100) / 100,
+          createdBy: user.name || null,
+        },
+      })
+    }
 
     if (foodTotal > 0 && foodOrderIdsToUpdate.length > 0) {
       await tx.foodOrder.updateMany({
@@ -2234,13 +2310,20 @@ async function addBillPayment(body: Record<string, unknown>, user: RequestUser) 
     )
   }
 
-  const updated = await prisma.bill.update({
-    where: { id: bill.id },
-    data: {
-      payCash: bill.payCash + cash,
-      payUpi: bill.payUpi + upi,
-      payCard: bill.payCard + card,
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    const b = await tx.bill.update({
+      where: { id: bill.id },
+      data: {
+        payCash: bill.payCash + cash,
+        payUpi: bill.payUpi + upi,
+        payCard: bill.payCard + card,
+      },
+    })
+    // Recorded on the day it is received, so that day's collection and accounts include it
+    await tx.billPayment.create({
+      data: { billId: bill.id, kind: 'DUE', cash, upi, card, amount: Math.round(adding * 100) / 100, createdBy: user.name || null },
+    })
+    return b
   })
   await refreshBookingPaymentStatus(bill.bookingId)
   await logAudit(
@@ -2297,42 +2380,20 @@ async function billPaymentHistory(billId: string) {
     })
   }
 
-  // Later collections on this bill are recorded one by one in the audit trail
-  const later = await prisma.auditLog.findMany({
-    where: { action: 'PAYMENT', entity: 'Bill', entityId: bill.id },
-    orderBy: { createdAt: 'asc' },
-  })
-  const pick = (text: string, mode: string) => {
-    const m = text.match(new RegExp(`${mode} ₹([0-9]+(?:\\.[0-9]+)?)`))
-    return m ? Number(m[1]) : 0
+  // Payments on the bill itself, each on the day it was received
+  const paid = await prisma.billPayment.findMany({ where: { billId: bill.id }, orderBy: { date: 'asc' } })
+  for (const p of paid) {
+    if (Math.abs(p.amount) < 0.005) continue
+    rows.push({
+      date: p.date,
+      kind: p.kind === 'CHECKOUT' ? 'CHECKOUT' : 'DUE_COLLECTION',
+      label: p.kind === 'CHECKOUT' ? 'Paid at checkout' : p.kind === 'DUE' ? 'Due collected' : 'Payment corrected (bill edited)',
+      cash: p.cash,
+      upi: p.upi,
+      card: p.card,
+      amount: r2(p.amount),
+    })
   }
-  let laterCash = 0
-  let laterUpi = 0
-  let laterCard = 0
-  const laterRows: PaymentHistoryRow[] = []
-  for (const a of later) {
-    const text = a.details || ''
-    const cash = pick(text, 'Cash')
-    const upi = pick(text, 'UPI')
-    const card = pick(text, 'Card')
-    const amount = r2(cash + upi + card)
-    if (amount <= 0) continue
-    laterCash += cash
-    laterUpi += upi
-    laterCard += card
-    laterRows.push({ date: a.createdAt, kind: 'DUE_COLLECTION', label: 'Due collected', cash, upi, card, amount })
-  }
-
-  const atCheckout = {
-    cash: r2(Math.max(0, bill.payCash - laterCash)),
-    upi: r2(Math.max(0, bill.payUpi - laterUpi)),
-    card: r2(Math.max(0, bill.payCard - laterCard)),
-  }
-  const checkoutAmount = r2(atCheckout.cash + atCheckout.upi + atCheckout.card)
-  if (checkoutAmount > 0) {
-    rows.push({ date: bill.createdAt, kind: 'CHECKOUT', label: 'Paid at checkout', ...atCheckout, amount: checkoutAmount })
-  }
-  rows.push(...laterRows)
   rows.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
   const totalPaid = r2(rows.reduce((sum, row) => sum + row.amount, 0))
@@ -2518,6 +2579,24 @@ async function updateBill(body: Record<string, unknown>, user: RequestUser) {
         notes: notes !== undefined ? (notes ? String(notes) : null) : bill.notes,
       },
     })
+    // A changed payment split is recorded as a dated correction so the payment rows keep adding up
+    const dCash = Math.round((cash - bill.payCash) * 100) / 100
+    const dUpi = Math.round((upi - bill.payUpi) * 100) / 100
+    const dCard = Math.round((card - bill.payCard) * 100) / 100
+    if (dCash || dUpi || dCard) {
+      await tx.billPayment.create({
+        data: {
+          billId: bill.id,
+          kind: 'ADJUST',
+          cash: dCash,
+          upi: dUpi,
+          card: dCard,
+          amount: Math.round((dCash + dUpi + dCard) * 100) / 100,
+          note: 'Bill edited',
+          createdBy: user.name || null,
+        },
+      })
+    }
 
     if (isFinalized && isFinancialChange) {
       await tx.auditLog.create({
@@ -3379,6 +3458,7 @@ async function getStats() {
 
   const outstanding = allBills.reduce((s, b) => s + billBalance(b), 0)
   const lowStockItems = await inventoryLowStockCount()
+  const todayBook = await getDayBook(startToday, endToday)
 
   return NextResponse.json({
     lowStockItems,
@@ -3423,9 +3503,11 @@ async function getStats() {
           .reduce((s, bill) => s + billBalance(bill), 0) || 0,
     })),
     todayRevenue,
-    todayCash: todayBills.reduce((s, b) => s + b.payCash, 0),
-    todayUpi: todayBills.reduce((s, b) => s + b.payUpi, 0),
-    todayCard: todayBills.reduce((s, b) => s + b.payCard, 0),
+    // Everything received today, on the day it was received (dues collected today included)
+    todayCash: todayBook.totals.inCash + todayBook.totals.inOther,
+    todayUpi: todayBook.totals.inUpi,
+    todayCard: todayBook.totals.inCard + todayBook.totals.inBank,
+    todayCollected: todayBook.totals.in,
     todayIncome: income,
     todayExpense: expense,
     todayNet: income - expense,
@@ -3931,12 +4013,14 @@ async function getReports(req: NextRequest) {
     }
     return row
   }
-  for (const b of bills) {
-    const row = dayRow(b.createdAt)
-    row.cash += b.payCash
-    row.upi += b.payUpi
-    row.card += b.payCard
-    row.bills += b.payCash + b.payUpi + b.payCard
+  // Room bill payments on the day they were received (a due collected later counts on that day)
+  const billPays = await prisma.billPayment.findMany({ where: { date: { gte: start, lte: end } } })
+  for (const p of billPays) {
+    const row = dayRow(p.date)
+    row.cash += p.cash
+    row.upi += p.upi
+    row.card += p.card
+    row.bills += p.amount
   }
   for (const e of ledger) {
     if (e.type !== 'INCOME' || e.category !== 'ADVANCE') continue
@@ -4425,17 +4509,58 @@ async function dispatch(
         return NextResponse.json({ success: true })
       }
       break
+    case 'daybook': {
+      if (method !== 'GET') break
+      // Default: today (IST)
+      const today = istDateStr(new Date())
+      const from = url.searchParams.get('from') || today
+      const to = url.searchParams.get('to') || today
+      return NextResponse.json(await getDayBook(makeIST(from, '00:00'), makeIST(to, '23:59:59')))
+    }
+    case 'bill-payments': {
+      if (method !== 'GET') break
+      const range: { gte?: Date; lte?: Date } = {}
+      if (url.searchParams.get('from')) range.gte = makeIST(String(url.searchParams.get('from')), '00:00')
+      if (url.searchParams.get('to')) range.lte = makeIST(String(url.searchParams.get('to')), '23:59:59')
+      const rows = await prisma.billPayment.findMany({
+        where: range.gte || range.lte ? { date: range } : undefined,
+        orderBy: { date: 'desc' },
+        take: 3000,
+        include: {
+          bill: {
+            select: {
+              id: true,
+              billNumber: true,
+              roomNumber: true,
+              booking: { select: { guest: { select: { name: true, phone: true } }, room: { select: { number: true } } } },
+            },
+          },
+        },
+      })
+      return NextResponse.json(rows)
+    }
     case 'inventory-report':
       if (method === 'GET') return NextResponse.json(await inventoryStockReport(url.searchParams.get('from'), url.searchParams.get('to')))
       break
     case 'settings':
       if (method === 'GET') return await getSettings()
-      if (method === 'PATCH' || method === 'POST') return await updateSettings(body, user)
+      if (method === 'PATCH' || method === 'POST') {
+        // Every settings change needs an Admin
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to change settings' }, { status: 403 })
+        delete body.adminPin
+        return await updateSettings(body, user)
+      }
       break
     case 'users':
       if (method === 'GET') return await listUsers()
-      if (method === 'POST') return await createUser(body, user)
-      if (method === 'PATCH') return await updateUser(body, user)
+      if (method === 'POST' || method === 'PATCH') {
+        // Adding users, changing a role or PIN is an Admin action
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to change app users' }, { status: 403 })
+        delete body.adminPin
+        return method === 'POST' ? await createUser(body, user) : await updateUser(body, user)
+      }
       if (method === 'DELETE') return await deleteUser(req, user)
       break
     case 'auth':

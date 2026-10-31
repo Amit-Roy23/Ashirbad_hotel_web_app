@@ -131,6 +131,7 @@ model Bill {
   status          String   @default("FINAL") // DRAFT | FINAL
   notes           String?
   booking         Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  payments        BillPayment[]
   createdAt       DateTime @default(now())
   updatedAt       DateTime @default(now()) @updatedAt
 
@@ -441,4 +442,24 @@ model InventoryMovement {
   @@index([itemId])
   @@index([date])
   @@index([type])
+}
+
+// Every payment received on a room bill, on the date it was received (the bill totals
+// payCash / payUpi / payCard are the sum of these rows)
+model BillPayment {
+  id        String   @id @default(cuid())
+  billId    String
+  date      DateTime @default(now())
+  kind      String   // CHECKOUT | DUE | ADJUST (bill edited)
+  cash      Float    @default(0)
+  upi       Float    @default(0)
+  card      Float    @default(0)
+  amount    Float    @default(0)
+  note      String?
+  createdBy String?
+  createdAt DateTime @default(now())
+  bill      Bill     @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([billId])
+  @@index([date])
 }

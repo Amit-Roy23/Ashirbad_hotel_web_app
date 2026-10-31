@@ -23,6 +23,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useTheme } from 'next-themes'
 import { api, apiAs, formatDateTime, exportCSV, printTableReport } from '@/lib/hotel-utils'
+import { askAdminPin } from '@/lib/admin-pin'
 import { normalizeHalfRate } from '@/lib/gst'
 import { GstPicker } from './gst-picker'
 import { useUser, getCachedUser } from './user-context'
@@ -131,11 +132,14 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
   }, [load, refreshKey])
 
   async function saveSettings() {
+    const adminPin = await askAdminPin('Saving settings changes the whole hotel app. Enter the Admin PIN to save.')
+    if (!adminPin) return
     setSaving(true)
     try {
       const currentUser = user || getCachedUser()
       const updated = await apiAs<Record<string, string>>('/api/settings', currentUser, {
         method: 'PATCH',
+        adminPin,
         body: JSON.stringify(settings),
       })
       if (updated && typeof updated === 'object') {
@@ -162,16 +166,22 @@ export function SettingsTab({ refreshKey, onDataChanged }: TabProps) {
 
   async function saveUser() {
     if (!userDlg) return
+    const adminPin = await askAdminPin(
+      userDlg.mode === 'add' ? `Adding user ${uName || ''}. Enter the Admin PIN.` : `Changing user ${uName || ''}. Enter the Admin PIN.`
+    )
+    if (!adminPin) return
     try {
       const currentUser = user || getCachedUser()
       if (userDlg.mode === 'add') {
         await apiAs('/api/users', currentUser, {
           method: 'POST',
+          adminPin,
           body: JSON.stringify({ name: uName, role: uRole, pin: uPin }),
         })
       } else {
         await apiAs('/api/users', currentUser, {
           method: 'PATCH',
+          adminPin,
           body: JSON.stringify({ id: userDlg.row!.id, name: uName, role: uRole, ...(uPin ? { pin: uPin } : {}) }),
         })
       }
