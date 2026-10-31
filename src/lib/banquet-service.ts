@@ -591,6 +591,12 @@ export async function updateBanquetBooking(
   if (data.advancePaid !== undefined && !advanceAddition) {
     advanceAddition = Math.round((Number(data.advancePaid) - Number(existing.advancePaid)) * 100) / 100
   }
+  if (Math.abs(advanceAddition) > 0.001) {
+    const invoiced = await prisma.$queryRawUnsafe<{ billNumber: string }[]>('SELECT "billNumber" FROM "BanquetBill" WHERE "banquetBookingId" = $1', id)
+    if (invoiced.length > 0) {
+      throw new BanquetError(`This booking is invoiced (${invoiced[0].billNumber}). Record payments on the invoice instead.`)
+    }
+  }
   const newAdvance = Math.max(0, Number(existing.advancePaid) + advanceAddition)
 
   const oldDays = Math.max(1, Number(existing.days) || 1)
@@ -969,7 +975,6 @@ export async function createBanquetBill(
   }
 
   const year = new Date().getFullYear()
-  const billNumber = await nextNumber('BanquetBill', 'billNumber', `BNQ-${year}-`, 1)
 
   const id = genId()
   const now = new Date()
@@ -1001,7 +1006,10 @@ export async function createBanquetBill(
   const gstAmount = computeGst(taxableAmount, cgstPercent, sgstPercent).total
   const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
 
-  const advanceApplied = Math.min(Number(data.advanceApplied ?? booking.advancePaid), grandTotal)
+  // GST invoices and estimates (no GST) have separate number series
+  const billNumber = await nextNumber('BanquetBill', 'billNumber', gstAmount > 0 ? `BNQ-${year}-` : `BNQ-EST-${year}-`, 1)
+  // The whole advance already received counts towards the invoice (never less); any excess is a refund due
+  const advanceApplied = Math.min(Number(booking.advancePaid) || 0, grandTotal)
   const payCash = Number(data.payCash) || 0
   const payUpi = Number(data.payUpi) || 0
   const payCard = Number(data.payCard) || 0
@@ -1258,7 +1266,19 @@ export async function getBanquetStats(): Promise<BanquetStats> {
       (Number(b.payBank) || 0),
     0
   )
-  const totalOutstanding = Math.max(0, Math.round((totalBilledRevenue - totalCollected) * 100) / 100)
+  const invoiceOutstanding = Math.round(
+    allBills.reduce((s: number, b: any) => {
+      const paid = (Number(b.advanceApplied) || 0) + (Number(b.payCash) || 0) + (Number(b.payUpi) || 0) + (Number(b.payCard) || 0) + (Number(b.payBank) || 0)
+      return s + Math.max(0, (Number(b.grandTotal) || 0) - paid)
+    }, 0) * 100
+  ) / 100
+  // Confirmed bookings not invoiced yet: estimate less advance received
+  const openRows = await prisma.$queryRawUnsafe<{ due: number | null }[]>(
+    `SELECT SUM(GREATEST(b."totalEstimated" - b."advancePaid", 0))::float AS due FROM "BanquetBooking" b
+     WHERE b."status" IN ('CONFIRMED', 'IN_PROGRESS') AND NOT EXISTS (SELECT 1 FROM "BanquetBill" x WHERE x."banquetBookingId" = b."id")`
+  )
+  const bookingsOutstanding = Math.round((Number(openRows?.[0]?.due) || 0) * 100) / 100
+  const totalOutstanding = Math.round((invoiceOutstanding + bookingsOutstanding) * 100) / 100
 
   const todayRevenue = todayBills.reduce((s: number, b: any) => s + (Number(b.grandTotal) || 0), 0)
   const todayCash = todayBills.reduce((s: number, b: any) => s + (Number(b.payCash) || 0), 0)
@@ -1275,9 +1295,193 @@ export async function getBanquetStats(): Promise<BanquetStats> {
     totalBilledRevenue,
     totalCollected,
     totalOutstanding,
+    invoiceOutstanding,
+    bookingsOutstanding,
     todayCash,
     todayUpi,
     todayCard,
     todayBank,
   }
+}
+
+// ---------------- PART PAYMENTS, PAYMENT HISTORY, INVOICE EDIT ----------------
+
+/**
+ * Money received for a banquet booking at any time. Before the invoice it is added to the advance
+ * (cannot exceed the estimate); after the invoice it is a payment on that invoice (cannot exceed its balance).
+ */
+export async function recordBanquetPayment(
+  bookingId: string,
+  payment: { amount?: number; method?: string; note?: string },
+  userName?: string
+) {
+  const amount = Math.round((Number(payment.amount) || 0) * 100) / 100
+  if (amount <= 0) throw new BanquetError('Enter the amount received')
+  const method = ['CASH', 'UPI', 'CARD', 'BANK'].includes(String(payment.method)) ? String(payment.method) : 'CASH'
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bookingId)
+  const booking = rows?.[0]
+  if (!booking) throw new BanquetError('Banquet booking not found')
+  if (booking.status === 'CANCELLED') throw new BanquetError('This booking is cancelled')
+
+  const bills = await prisma.$queryRawUnsafe<{ id: string }[]>('SELECT "id" FROM "BanquetBill" WHERE "banquetBookingId" = $1', bookingId)
+  if (bills.length > 0) {
+    const key = method === 'CASH' ? 'payCash' : method === 'UPI' ? 'payUpi' : method === 'CARD' ? 'payCard' : 'payBank'
+    const bill = await addBanquetBillPayment(bills[0].id, { [key]: amount }, userName)
+    return { stage: 'INVOICE' as const, bill, booking }
+  }
+
+  const balance = Math.round((Number(booking.totalEstimated) - Number(booking.advancePaid)) * 100) / 100
+  if (amount > balance + 0.01) {
+    throw new BanquetError(`Only ₹${Math.max(0, balance)} is left to pay on the estimate. Update the booking first if the charges changed.`)
+  }
+  const advancePaid = Math.round((Number(booking.advancePaid) + amount) * 100) / 100
+  await prisma.$executeRawUnsafe(
+    'UPDATE "BanquetBooking" SET "advancePaid" = $2, "paymentStatus" = $3, "updatedAt" = $4 WHERE "id" = $1',
+    bookingId,
+    advancePaid,
+    advancePaymentStatus(advancePaid, Number(booking.totalEstimated)),
+    new Date()
+  )
+  await prisma.ledgerEntry.create({
+    data: {
+      type: 'INCOME',
+      category: 'ADVANCE',
+      description: `Banquet part payment - ${booking.eventName} (${booking.bookingNumber}) from ${booking.customerName}${payment.note ? ` [${payment.note}]` : ''}`,
+      amount,
+      method,
+      source: 'AUTO',
+      refId: bookingId,
+    },
+  })
+  return { stage: 'ADVANCE' as const, booking: { ...booking, advancePaid } }
+}
+
+/** Every rupee received (and refunded) for a banquet booking, oldest first, with the running totals */
+export async function banquetPaymentHistory(bookingId: string) {
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bookingId)
+  const booking = rows?.[0]
+  if (!booking) throw new BanquetError('Banquet booking not found')
+  const bills = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBill" WHERE "banquetBookingId" = $1', bookingId)
+  const ledger = await prisma.ledgerEntry.findMany({
+    where: { refId: { in: [bookingId, ...bills.map((b) => b.id)] } },
+    orderBy: { date: 'asc' },
+  })
+  const payments = ledger
+    .filter((e) => (e.type === 'INCOME' && (e.category === 'ADVANCE' || e.category === 'BANQUET')) || (e.type === 'EXPENSE' && e.category === 'REFUND'))
+    .map((e) => ({
+      id: e.id,
+      date: e.date,
+      kind:
+        e.type === 'EXPENSE'
+          ? 'REFUND'
+          : e.category === 'BANQUET'
+            ? 'INVOICE_PAYMENT'
+            : /part payment/i.test(e.description)
+              ? 'PART_PAYMENT'
+              : 'ADVANCE',
+      method: e.method,
+      amount: e.type === 'EXPENSE' ? -e.amount : e.amount,
+      description: e.description,
+    }))
+  const received = Math.round(payments.filter((p) => p.amount > 0).reduce((t, p) => t + p.amount, 0) * 100) / 100
+  const refunded = Math.round(payments.filter((p) => p.amount < 0).reduce((t, p) => t - p.amount, 0) * 100) / 100
+  const bill = bills[0]
+  const total = bill ? Number(bill.grandTotal) : Number(booking.totalEstimated)
+  const paidOnBooking = bill
+    ? Number(bill.advanceApplied) + Number(bill.payCash) + Number(bill.payUpi) + Number(bill.payCard) + Number(bill.payBank)
+    : Number(booking.advancePaid)
+  return {
+    payments,
+    received,
+    refunded,
+    stage: bill ? 'INVOICE' : 'ESTIMATE',
+    billNumber: bill?.billNumber || null,
+    total,
+    paid: Math.round(paidOnBooking * 100) / 100,
+    balance: Math.max(0, Math.round((total - paidOnBooking) * 100) / 100),
+    // advance received beyond the invoice total: to be refunded
+    excessAdvance: bill ? Math.max(0, Math.round((Number(booking.advancePaid) - Number(bill.advanceApplied)) * 100) / 100) : 0,
+  }
+}
+
+/**
+ * Correct an invoice's charges or GST. Payments stay as they are; the new total cannot be less than
+ * what has been paid. Switching GST on or off moves the invoice to the other number series.
+ */
+export async function updateBanquetBill(
+  id: string,
+  data: {
+    hallRent?: number
+    foodCharges?: number
+    decorCharges?: number
+    soundAvCharges?: number
+    extraCharges?: number
+    discount?: number
+    cgstPercent?: number
+    sgstPercent?: number
+    notes?: string
+  }
+) {
+  const rows = await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBill" WHERE "id" = $1', id)
+  const bill = rows?.[0]
+  if (!bill) throw new BanquetError('Banquet bill not found')
+  const v = (k: keyof typeof data, fallback: unknown) => Math.max(0, data[k] !== undefined ? Number(data[k]) || 0 : Number(fallback) || 0)
+  const hallRent = v('hallRent', bill.hallRent)
+  const foodCharges = v('foodCharges', bill.foodCharges)
+  const decorCharges = v('decorCharges', bill.decorCharges)
+  const soundAvCharges = v('soundAvCharges', bill.soundAvCharges)
+  const extraCharges = v('extraCharges', bill.extraCharges)
+  const discount = v('discount', bill.discount)
+  const cgstPercent = data.cgstPercent !== undefined ? Number(data.cgstPercent) : Number(bill.cgstPercent)
+  const sgstPercent = data.sgstPercent !== undefined ? Number(data.sgstPercent) : Number(bill.sgstPercent)
+  if (!isValidHalfRate(cgstPercent) || !isValidHalfRate(sgstPercent)) throw new BanquetError('CGST and SGST can each only be 0% or 2.5%')
+  const taxableAmount = Math.max(0, hallRent + foodCharges + decorCharges + soundAvCharges + extraCharges - discount)
+  const gstAmount = computeGst(taxableAmount, cgstPercent, sgstPercent).total
+  const grandTotal = Math.round((taxableAmount + gstAmount) * 100) / 100
+
+  const booking = (await prisma.$queryRawUnsafe<any[]>('SELECT * FROM "BanquetBooking" WHERE "id" = $1', bill.banquetBookingId))?.[0]
+  const advanceApplied = Math.min(Number(booking?.advancePaid ?? bill.advanceApplied) || 0, grandTotal)
+  const otherPaid = Number(bill.payCash) + Number(bill.payUpi) + Number(bill.payCard) + Number(bill.payBank)
+  if (advanceApplied + otherPaid > grandTotal + 0.01) {
+    throw new BanquetError(`₹${Math.round((advanceApplied + otherPaid) * 100) / 100} is already paid; the invoice total cannot be less than that`)
+  }
+  const balanceDue = Math.max(0, grandTotal - advanceApplied - otherPaid)
+  const paymentStatus = balanceDue <= 0.01 ? 'PAID' : advanceApplied + otherPaid > 0 ? 'PARTIAL' : 'UNPAID'
+
+  let billNumber = bill.billNumber
+  const wasGst = Number(bill.gstAmount) > 0
+  if (wasGst !== gstAmount > 0) {
+    const year = new Date(bill.createdAt).getFullYear()
+    billNumber = await nextNumber('BanquetBill', 'billNumber', gstAmount > 0 ? `BNQ-${year}-` : `BNQ-EST-${year}-`, 1)
+  }
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE "BanquetBill" SET "hallRent" = $2, "foodCharges" = $3, "decorCharges" = $4, "soundAvCharges" = $5,
+       "extraCharges" = $6, "discount" = $7, "taxableAmount" = $8, "gstPercent" = $9, "cgstPercent" = $10,
+       "sgstPercent" = $11, "gstAmount" = $12, "grandTotal" = $13, "advanceApplied" = $14, "paymentStatus" = $15,
+       "billNumber" = $16, "notes" = COALESCE($17, "notes"), "updatedAt" = $18 WHERE "id" = $1`,
+    id,
+    hallRent,
+    foodCharges,
+    decorCharges,
+    soundAvCharges,
+    extraCharges,
+    discount,
+    taxableAmount,
+    cgstPercent + sgstPercent,
+    cgstPercent,
+    sgstPercent,
+    gstAmount,
+    grandTotal,
+    advanceApplied,
+    paymentStatus,
+    billNumber,
+    data.notes !== undefined ? String(data.notes) : null,
+    new Date()
+  )
+  if (booking) {
+    await prisma.$executeRawUnsafe('UPDATE "BanquetBooking" SET "paymentStatus" = $2 WHERE "id" = $1', booking.id, paymentStatus)
+  }
+  const updated = await getBanquetBills({ search: billNumber })
+  return { bill: updated[0], before: bill, renumbered: billNumber !== bill.billNumber ? billNumber : null }
 }

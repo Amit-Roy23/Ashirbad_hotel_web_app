@@ -111,6 +111,8 @@ export interface BanquetStats {
   totalBilledRevenue: number
   totalCollected: number
   totalOutstanding: number
+  invoiceOutstanding?: number
+  bookingsOutstanding?: number
   todayCash: number
   todayUpi: number
   todayCard: number

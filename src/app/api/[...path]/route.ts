@@ -25,6 +25,9 @@ import {
   deleteBanquetBill,
   getBanquetStats,
   adjustBanquetAdvance,
+  recordBanquetPayment,
+  banquetPaymentHistory,
+  updateBanquetBill,
   BanquetError,
 } from '@/lib/banquet-service'
 import {
@@ -4587,6 +4590,22 @@ async function dispatch(
       }
       break
     case 'banquet-bookings':
+      if (method === 'GET' && url.searchParams.get('paymentsFor')) {
+        return NextResponse.json(await banquetPaymentHistory(String(url.searchParams.get('paymentsFor'))))
+      }
+      if (method === 'POST' && body.action === 'payment') {
+        const id = String(body.id || '')
+        if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+        const r = await recordBanquetPayment(id, body as any, user.name)
+        await logAudit(
+          'BANQUET_PAYMENT',
+          'BanquetBooking',
+          id,
+          `Received ₹${body.amount} via ${body.method || 'CASH'} for ${r.booking.bookingNumber} (${r.booking.customerName})${r.stage === 'INVOICE' ? ` on invoice ${r.bill?.billNumber}` : ' as part payment'}`,
+          user
+        )
+        return NextResponse.json(r)
+      }
       if (method === 'GET' && url.searchParams.get('advancesFor')) {
         // Advance payments of one banquet booking, oldest first (for its receipt)
         const rows = await prisma.ledgerEntry.findMany({
@@ -4664,6 +4683,22 @@ async function dispatch(
         const b = await createBanquetBill(body as any, user.name, String(body.managerName || user.name))
         await logAudit('BANQUET_BILL', 'BanquetBill', b.id, `Generated banquet invoice ${b.billNumber} for ${b.customerName}`, user)
         return NextResponse.json(b)
+      }
+      if (method === 'PATCH') {
+        // Changing an invoice's charges or GST is an Admin action
+        const admin = await verifyAdminAuth(req, body)
+        if (!admin.ok) return NextResponse.json({ error: 'Admin PIN is required to edit an invoice' }, { status: 403 })
+        const id = String(body.id || '')
+        if (!id) return NextResponse.json({ error: 'Bill ID is required' }, { status: 400 })
+        const { bill, before, renumbered } = await updateBanquetBill(id, body as any)
+        await logAudit(
+          'BANQUET_BILL',
+          'BanquetBill',
+          id,
+          `Edited banquet invoice ${before.billNumber}: total ₹${before.grandTotal} → ₹${bill?.grandTotal}${renumbered ? `, now ${renumbered} (${Number(bill?.gstAmount) > 0 ? 'GST invoice' : 'estimate'})` : ''}${admin.adminUser ? ` — approved by ${admin.adminUser.name}` : ''}`,
+          user
+        )
+        return NextResponse.json(bill)
       }
       if (method === 'DELETE') {
         const id = url.searchParams.get('id')

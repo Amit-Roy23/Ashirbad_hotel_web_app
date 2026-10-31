@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { apiAs, formatINR, formatDate, todayStr, sanitizePhone, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
+import { api, apiAs, formatINR, formatDate, todayStr, sanitizePhone, GovIdType, GOV_ID_TYPES, validateGovId, parseGovId } from '@/lib/hotel-utils'
 import { getCachedUser } from './user-context'
 import { toast } from '@/hooks/use-toast'
 import { BanquetHall, BanquetBooking } from '@/types/banquet'
@@ -84,6 +84,7 @@ export function BanquetBookingDialog({
 }: BanquetBookingDialogProps) {
   const [busy, setBusy] = useState(false)
   const isEditing = !!booking
+  const [autofillNote, setAutofillNote] = useState('')
 
   // Toggles for Venue Pricing and Catering
   const [includeVenueRent, setIncludeVenueRent] = useState(true)
@@ -176,6 +177,7 @@ export function BanquetBookingDialog({
         setHallRent(String(first.baseRate || 20000))
         setGuestCount(String(first.capacity || 150))
       }
+      setAutofillNote('')
       setCustomerName('')
       setCustomerPhone('')
       setIdType('AADHAAR')
@@ -234,6 +236,38 @@ export function BanquetBookingDialog({
 
   const grandEstimated = Math.max(0, numHallRent + totalFood + numDecor + numExtra - numDiscount)
   const balanceEstimated = Math.max(0, grandEstimated - numAdvance)
+
+  /** Returning customer: fill empty fields from their last banquet booking, or their room-guest profile */
+  async function autofillFromPhone(digits: string) {
+    if (isEditing || digits.length !== 10) return
+    try {
+      const past = await api<BanquetBooking[]>(`/api/banquet-bookings?search=${digits}`)
+      const last = (Array.isArray(past) ? past : []).find((b) => b.customerPhone === digits)
+      let src: { name?: string; email?: string | null; address?: string | null; company?: string | null; gst?: string | null; idProof?: string | null } | null = null
+      if (last) {
+        src = { name: last.customerName, email: last.customerEmail, address: last.customerAddress, company: last.companyName, gst: last.gstNumber, idProof: last.idProof }
+      } else {
+        const guest = await api<{ name?: string; address?: string | null; company?: string | null; gst?: string | null; idProof?: string | null } | null>(
+          `/api/guests?phone=${digits}`
+        )
+        if (guest) src = { ...guest, email: null }
+      }
+      if (!src) return setAutofillNote('')
+      setCustomerName((v) => v || src!.name || '')
+      setCustomerEmail((v) => v || src!.email || '')
+      setCustomerAddress((v) => v || src!.address || '')
+      setCompanyName((v) => v || src!.company || '')
+      setGstNumber((v) => v || src!.gst || '')
+      if (src.idProof && !idNumber) {
+        const parsed = parseGovId(src.idProof)
+        setIdType(parsed.idType)
+        setIdNumber(parsed.idNumber)
+      }
+      setAutofillNote(last ? `Returning banquet customer — details filled from ${last.bookingNumber}` : 'Returning hotel guest — details filled')
+    } catch {
+      // autofill is a convenience; ignore lookup errors
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -646,11 +680,17 @@ export function BanquetBookingDialog({
                   type="tel"
                   inputMode="numeric"
                   value={customerPhone}
-                  onChange={(e) => setCustomerPhone(sanitizePhone(e.target.value))}
+                  onChange={(e) => {
+                    const digits = sanitizePhone(e.target.value)
+                    setCustomerPhone(digits)
+                    if (digits.length === 10) autofillFromPhone(digits)
+                    else setAutofillNote('')
+                  }}
                   placeholder="10-digit primary mobile"
                   className="h-9 text-xs font-mono"
                   required
                 />
+                {autofillNote && <p className="text-[11px] text-emerald-700 dark:text-emerald-400">✓ {autofillNote}</p>}
               </div>
 
               {/* Email Address */}

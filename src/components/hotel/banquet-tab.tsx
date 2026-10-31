@@ -65,6 +65,7 @@ import {
   FileText,
 } from 'lucide-react'
 import { AdminDeleteDialog } from './admin-delete-dialog'
+import { BanquetPaymentDialog, BanquetPaymentHistory } from './banquet-payments'
 
 interface BanquetTabProps {
   refreshKey: number
@@ -107,6 +108,9 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   const [billDialogOpen, setBillDialogOpen] = useState(false)
   const [billingBooking, setBillingBooking] = useState<BanquetBooking | null>(null)
   const [editingBill, setEditingBill] = useState<BanquetBill | null>(null)
+  const [billMode, setBillMode] = useState<'pay' | 'edit'>('pay')
+  const [payFor, setPayFor] = useState<BanquetBooking | null>(null)
+  const [deleteHall, setDeleteHall] = useState<BanquetHall | null>(null)
 
   // Hall modal state
   const [hallModalOpen, setHallModalOpen] = useState(false)
@@ -281,6 +285,19 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
   )
 
   const todayIso = todayStr()
+  // Paid / balance: from the invoice once there is one, before that from the estimate and advance
+  const billOf = (b: BanquetBooking) => bills.find((x) => x.banquetBookingId === b.id)
+  const paidFor = (b: BanquetBooking) => {
+    const bill = billOf(b)
+    return bill
+      ? (bill.advanceApplied || 0) + (bill.payCash || 0) + (bill.payUpi || 0) + (bill.payCard || 0) + (bill.payBank || 0)
+      : b.advancePaid || 0
+  }
+  const balanceFor = (b: BanquetBooking) => {
+    const bill = billOf(b)
+    return Math.max(0, Math.round(((bill ? bill.grandTotal : b.totalEstimated) - paidFor(b)) * 100) / 100)
+  }
+
   // A multi-day event runs from its first to its last day
   const lastDayOf = (b: BanquetBooking) => addDaysStr(b.eventDate.slice(0, 10), Math.max(1, b.days || 1) - 1)
   const todayBookings = bookings.filter(
@@ -395,7 +412,9 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
             <div>
               <p className="text-xs text-muted-foreground">Outstanding Balance</p>
               <p className="text-lg font-bold text-red-700 dark:text-red-400">{formatINR(stats?.totalOutstanding)}</p>
-              <p className="text-[10px] text-muted-foreground">To collect from events</p>
+              <p className="text-[10px] text-muted-foreground">
+                Invoices {formatINR(stats?.invoiceOutstanding)} · bookings {formatINR(stats?.bookingsOutstanding)}
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -708,7 +727,8 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                   <TableHead>Host / Client</TableHead>
                   <TableHead className="text-right">Guests</TableHead>
                   <TableHead className="text-right">Est. Total</TableHead>
-                  <TableHead className="text-right">Advance</TableHead>
+                  <TableHead className="text-right">Paid</TableHead>
+                  <TableHead className="text-right">Balance</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-center">Actions</TableHead>
                 </TableRow>
@@ -716,7 +736,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               <TableBody>
                 {filteredBookings.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-muted-foreground">
                       No banquet bookings found matching your search.
                     </TableCell>
                   </TableRow>
@@ -744,7 +764,10 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       <TableCell className="text-right text-xs font-semibold">{b.guestCount}</TableCell>
                       <TableCell className="text-right text-xs font-bold">{formatINR(b.totalEstimated)}</TableCell>
                       <TableCell className="text-right text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                        {formatINR(b.advancePaid)}
+                        {formatINR(paidFor(b))}
+                      </TableCell>
+                      <TableCell className={`text-right text-xs font-bold ${balanceFor(b) > 0.01 && b.status !== 'CANCELLED' ? 'text-red-600' : 'text-muted-foreground'}`}>
+                        {b.status === 'CANCELLED' ? '—' : formatINR(balanceFor(b))}
                       </TableCell>
                       <TableCell className="text-xs">
                         {b.status === 'CONFIRMED' && (
@@ -997,13 +1020,28 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                                 onClick={() => {
                                   setEditingBill(b)
                                   setBillingBooking(null)
+                                  setBillMode('pay')
                                   setBillDialogOpen(true)
                                 }}
-                                title="Settle Remaining Balance"
+                                title="Record a payment"
                               >
                                 <Wallet className="h-3 w-3" /> Pay
                               </Button>
                             )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              onClick={() => {
+                                setEditingBill(b)
+                                setBillingBooking(null)
+                                setBillMode('edit')
+                                setBillDialogOpen(true)
+                              }}
+                              title="Edit invoice (Admin PIN)"
+                            >
+                              <Edit className="h-3.5 w-3.5" />
+                            </Button>
                             <Button
                               size="sm"
                               variant="ghost"
@@ -1090,6 +1128,15 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     >
                       <Edit className="h-3.5 w-3.5" />
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/30"
+                      onClick={() => setDeleteHall(h)}
+                      title="Delete hall"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -1121,6 +1168,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
         onOpenChange={setBillDialogOpen}
         booking={billingBooking}
         existingBill={editingBill}
+        mode={billMode}
         onSuccess={() => {
           loadData()
           onDataChanged()
@@ -1229,7 +1277,7 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
               const b = viewBooking
               const days = Math.max(1, b.days || 1)
               const ratePerDay = b.hallRatePerDay || b.hallRent / days
-              const balance = Math.max(0, Math.round((b.totalEstimated - b.advancePaid) * 100) / 100)
+              const balance = b.status === 'CANCELLED' ? 0 : balanceFor(b)
               const active = b.status !== 'COMPLETED' && b.status !== 'CANCELLED'
               const row = (label: string, value: React.ReactNode) =>
                 value === null || value === undefined || value === '' ? null : (
@@ -1309,15 +1357,23 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                       <span>Estimated total (before GST)</span>
                       <span>{formatINR(b.totalEstimated)}</span>
                     </div>
+                    {billOf(b) && (
+                      <div className="flex justify-between text-sm font-bold">
+                        <span>Invoice {billOf(b)!.billNumber} (with GST)</span>
+                        <span>{formatINR(billOf(b)!.grandTotal)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                      <span>Advance received</span>
-                      <span>{formatINR(b.advancePaid)}</span>
+                      <span>Paid</span>
+                      <span>{formatINR(paidFor(b))}</span>
                     </div>
                     <div className={`flex justify-between text-sm font-semibold ${balance > 0 ? 'text-red-600' : 'text-emerald-700'}`}>
                       <span>Balance</span>
                       <span>{formatINR(balance)}</span>
                     </div>
                   </div>
+
+                  <BanquetPaymentHistory bookingId={b.id} refreshKey={refreshKey + bills.length + Math.round(b.advancePaid)} />
 
                   {b.notes && (
                     <div className="rounded-lg border bg-muted/30 p-3 text-xs">
@@ -1345,6 +1401,11 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
                     >
                       <Edit className="h-4 w-4" /> Edit
                     </Button>
+                    {b.status !== 'CANCELLED' && balanceFor(b) > 0.01 && (
+                      <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setPayFor(b)}>
+                        <Wallet className="h-4 w-4" /> Record Payment
+                      </Button>
+                    )}
                     {active && (
                       <>
                         <Button
@@ -1588,6 +1649,38 @@ export function BanquetTab({ refreshKey, onDataChanged, initialFilter }: Banquet
           await apiAs(`/api/banquet-bookings?id=${deleteTargetBanquetBooking.id}`, getCachedUser(), { method: 'DELETE', adminPin })
           toast({ variant: 'success', title: 'Deleted', description: 'Banquet booking deleted.' })
           setDeleteTargetBanquetBooking(null)
+          loadData()
+          onDataChanged()
+        }}
+      />
+
+      {payFor && (
+        <BanquetPaymentDialog
+          booking={payFor}
+          balance={balanceFor(payFor)}
+          invoiceNumber={billOf(payFor)?.billNumber}
+          onClose={() => setPayFor(null)}
+          onSaved={() => {
+            setPayFor(null)
+            setViewBooking(null)
+            loadData()
+            onDataChanged()
+          }}
+        />
+      )}
+
+      <AdminDeleteDialog
+        open={!!deleteHall}
+        onOpenChange={(open) => !open && setDeleteHall(null)}
+        title="Delete Banquet Hall"
+        itemType="Banquet hall"
+        itemName={deleteHall ? `${deleteHall.name} (capacity ${deleteHall.capacity})` : ''}
+        warningNotice="A hall that has bookings cannot be deleted; set it to MAINTENANCE instead."
+        onConfirm={async (adminPin) => {
+          if (!deleteHall) return
+          await apiAs(`/api/banquet-halls?id=${deleteHall.id}`, getCachedUser(), { method: 'DELETE', adminPin })
+          toast({ variant: 'success', title: 'Hall deleted', description: deleteHall.name })
+          setDeleteHall(null)
           loadData()
           onDataChanged()
         }}
